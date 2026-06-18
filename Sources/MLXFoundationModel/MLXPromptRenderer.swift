@@ -27,12 +27,15 @@ public enum MLXPromptRenderer {
 
     private static func renderPlain(_ request: MLXBridgeRequest) -> String {
         var sections: [String] = []
-        if let instructions = request.instructions, !instructions.isEmpty {
-            sections.append("System:\n\(instructions)")
-        }
         let toolText = renderTools(request.tools)
         if !toolText.isEmpty {
             sections.append(toolText)
+        }
+        if let instructions = request.instructions, !instructions.isEmpty {
+            sections.append("System:\n\(instructions)")
+        }
+        if let constraintText = renderResponseConstraint(request.responseConstraint) {
+            sections.append(constraintText)
         }
         sections.append(contentsOf: request.messages.map(renderPlainMessage))
         sections.append("Assistant:")
@@ -58,7 +61,11 @@ public enum MLXPromptRenderer {
 
     private static func renderChatML(_ request: MLXBridgeRequest) -> String {
         var messages: [MLXBridgeMessage] = []
-        let systemContent = [request.instructions, renderTools(request.tools)]
+        let systemContent = [
+            renderTools(request.tools),
+            request.instructions,
+            renderResponseConstraint(request.responseConstraint)
+        ]
             .compactMap(\.self)
             .filter { !$0.isEmpty }
             .joined(separator: "\n\n")
@@ -71,6 +78,21 @@ public enum MLXPromptRenderer {
             "<|im_start|>\(chatMLRole(message))\n\(message.content)<|im_end|>"
         }
         return (rendered + ["<|im_start|>assistant\n"]).joined(separator: "\n")
+    }
+
+    private static func renderResponseConstraint(
+        _ constraint: MLXBridgeResponseConstraint?
+    ) -> String? {
+        guard let constraint else {
+            return nil
+        }
+        let instructions = constraint.instructions ?? "Return only JSON that conforms to this schema."
+        return """
+        Response constraints:
+        \(instructions)
+        schema:
+        \(constraint.jsonSchema)
+        """
     }
 
     private static func chatMLRole(_ message: MLXBridgeMessage) -> String {
@@ -104,7 +126,7 @@ public enum MLXPromptRenderer {
         \(definitions)
 
         To call a tool, respond with a single JSON object:
-        {"tool_name":"tool_name","arguments":{}}
+        {"tool_name":"<tool-name>","arguments":{"<argument-name>":"<argument-value>"}}
         """
     }
 }

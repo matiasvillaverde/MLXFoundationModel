@@ -4,9 +4,11 @@ import Foundation
 public enum MLXToolCallExtractor {
     /// Extract a single JSON tool call from generated text.
     public static func extract(from text: String) -> MLXExtractedToolCall? {
-        let trimmed = stripCodeFence(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        guard let jsonText = MLXJSONTextExtractor.firstJSONObject(in: text) else {
+            return nil
+        }
         guard
-            let data = trimmed.data(using: .utf8),
+            let data = jsonText.data(using: .utf8),
             let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
         else {
             return nil
@@ -44,21 +46,6 @@ public enum MLXToolCallExtractor {
             return MLXExtractedToolCall(name: name, argumentsJSON: argumentsString)
         }
         return MLXExtractedToolCall(name: name, argumentsJSON: canonicalJSONString(arguments))
-    }
-
-    private static func stripCodeFence(_ text: String) -> String {
-        guard text.hasPrefix("```") else {
-            return text
-        }
-        var lines = text.components(separatedBy: .newlines)
-        guard lines.count >= 3 else {
-            return text
-        }
-        lines.removeFirst()
-        if lines.last?.trimmingCharacters(in: .whitespacesAndNewlines) == "```" {
-            lines.removeLast()
-        }
-        return lines.joined(separator: "\n")
     }
 
     private static func canonicalJSONString(_ value: Any) -> String {

@@ -27,6 +27,22 @@ struct MLXToolCallExtractorTests {
         #expect(call.argumentsJSON == #"{"query":"MLX Swift"}"#)
     }
 
+    @Test("extracts embedded JSON tool call")
+    func extractsEmbeddedJSONToolCall() throws {
+        let call = try #require(MLXToolCallExtractor.extract(
+            from: """
+            <think>
+            The user needs current weather, so I should call a tool.
+            </think>
+
+            {"tool_name":"weather","arguments":{"city":"Berlin"}}
+            """
+        ))
+
+        #expect(call.name == "weather")
+        #expect(call.argumentsJSON == #"{"city":"Berlin"}"#)
+    }
+
     @Test("ignores normal assistant prose")
     func ignoresNormalAssistantProse() {
         let call = MLXToolCallExtractor.extract(from: "I can answer without tools.")

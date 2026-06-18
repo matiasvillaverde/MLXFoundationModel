@@ -32,6 +32,7 @@ enum FoundationModelsRequestBuilder {
         return MLXBridgeRequest(
             messages: messages,
             instructions: instructions.filter { !$0.isEmpty }.joined(separator: "\n\n"),
+            responseConstraint: request.schema.map(responseConstraint),
             tools: request.enabledToolDefinitions.map(toolDefinition)
         )
     }
@@ -102,6 +103,15 @@ enum FoundationModelsRequestBuilder {
             name: definition.name,
             description: definition.description,
             parametersJSONSchema: jsonSchemaString(from: definition.parameters)
+        )
+    }
+
+    private static func responseConstraint(
+        from schema: GenerationSchema
+    ) -> MLXBridgeResponseConstraint {
+        MLXBridgeResponseConstraint(
+            jsonSchema: jsonSchemaString(from: schema),
+            instructions: "Return only a structured response matching this schema."
         )
     }
 
