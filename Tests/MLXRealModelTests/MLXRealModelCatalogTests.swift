@@ -25,6 +25,18 @@ struct MLXRealModelCatalogTests {
         #expect(downloadable.allSatisfy { $0.repository?.hasPrefix("mlx-community/") == true })
     }
 
+    @Test("main scope includes representative downloadable architectures")
+    func mainScopeIncludesRepresentativeDownloadableArchitectures() throws {
+        let models = try MLXRealModelCatalog.load()
+        let mainModels = models.filter { $0.tags.contains("main") }
+        let architectures = Set(mainModels.map(\.architecture))
+        let allMainModelsDownloadable = mainModels.allSatisfy(\.isDownloadable)
+
+        #expect(!mainModels.isEmpty)
+        #expect(allMainModelsDownloadable)
+        #expect(Self.expectedMainArchitectures.subtracting(architectures).isEmpty)
+    }
+
     private static let expectedArchitectures: Set<String> = [
         "acereason",
         "afmoe",
@@ -78,6 +90,24 @@ struct MLXRealModelCatalogTests {
         "qwen3_5_text",
         "qwen3_moe",
         "qwen3_next",
+        "smollm3",
+        "starcoder2"
+    ]
+
+    private static let expectedMainArchitectures: Set<String> = [
+        "bitnet",
+        "ernie4_5",
+        "exaone4",
+        "gemma3",
+        "gemma4",
+        "granite",
+        "lfm2",
+        "llama",
+        "mistral",
+        "openelm",
+        "phi3",
+        "qwen2",
+        "qwen3",
         "smollm3",
         "starcoder2"
     ]

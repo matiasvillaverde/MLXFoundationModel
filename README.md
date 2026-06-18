@@ -66,6 +66,9 @@ swift build -Xswiftc -DFOUNDATION_MODELS_PROVIDER_API
 - Structured response constraints rendered into prompts for schema-guided JSON.
 - Tool-call extraction through a best-effort JSON parser plus opt-in real-model
   tests for tool-router prompts.
+- Foundation Models session overload compatibility tests under
+  `FOUNDATION_MODELS_PROVIDER_API`; native `LanguageModelSession(model:)`
+  execution requires a host OS where Apple's provider APIs are available.
 
 ## Guided Generation
 
@@ -88,9 +91,14 @@ Real-model tests are opt-in and run serially because MLX uses the GPU:
 ```sh
 MLX_ASSUME_YES=1 MLX_MODEL_FILTER=smoke make download-test-models
 make test-real-models
+
+MLX_ASSUME_YES=1 make download-main-models
+make test-main-architectures
+
 make test-all-architectures
 ```
 
 Models download into ignored `.models/` by default. Set `MLX_TEST_MODELS_DIR`
 to reuse an existing model directory, `MLX_MODEL_FILTER` to download a subset,
+`MLX_REAL_MODEL_SCOPE=main` to require representative main architecture models,
 and `MLX_REAL_MODEL_SCOPE=all` to require every downloadable catalog model.

@@ -8,7 +8,7 @@
     "prompt": "Write one short sentence about reliable software.",
     "expectedTokens": ["software", "reliable", "code"],
     "maxTokens": 12,
-    "tags": ["smoke", "latest", "small"]
+    "tags": ["smoke", "main", "latest", "small"]
   },
   {
     "id": "qwen3-1.7b-4bit",
@@ -63,7 +63,7 @@
     "prompt": "Write one short sentence about compact models.",
     "expectedTokens": ["compact", "model", "models"],
     "maxTokens": 12,
-    "tags": []
+    "tags": ["main"]
   },
   {
     "id": "qwen2.5-7b-4bit",
@@ -96,7 +96,7 @@
     "prompt": "The capital of France is",
     "expectedTokens": ["Paris"],
     "maxTokens": 8,
-    "tags": ["smoke", "small"]
+    "tags": ["smoke", "main", "small"]
   },
   {
     "id": "llama-3.2-3b-instruct-4bit",
@@ -140,7 +140,7 @@
     "prompt": "What is machine learning?",
     "expectedTokens": ["machine", "learning", "data"],
     "maxTokens": 15,
-    "tags": []
+    "tags": ["main"]
   },
   {
     "id": "mistral-7b-v0.2-4bit",
@@ -184,7 +184,7 @@
     "prompt": "What is artificial intelligence?",
     "expectedTokens": ["artificial", "intelligence", "AI"],
     "maxTokens": 15,
-    "tags": []
+    "tags": ["main"]
   },
   {
     "id": "phi-3.5-moe-instruct-4bit",
@@ -239,7 +239,7 @@
     "prompt": "Write one short sentence about coding.",
     "expectedTokens": ["code", "coding", "software"],
     "maxTokens": 12,
-    "tags": ["smoke", "latest", "small"]
+    "tags": ["smoke", "main", "latest", "small"]
   },
   {
     "id": "gemma-3-1b-it-4bit",
@@ -316,7 +316,7 @@
     "prompt": "Write one short sentence about private local AI.",
     "expectedTokens": ["private", "local", "AI"],
     "maxTokens": 10,
-    "tags": ["smoke", "latest"]
+    "tags": ["smoke", "main", "latest"]
   },
   {
     "id": "gemma-4-e4b-it-4bit",
@@ -349,7 +349,7 @@
     "prompt": "Explain cloud computing in one sentence.",
     "expectedTokens": ["cloud", "computing", "server"],
     "maxTokens": 15,
-    "tags": ["latest"]
+    "tags": ["main", "latest"]
   },
   {
     "id": "granite-moe-hybrid",
@@ -382,18 +382,18 @@
     "prompt": "The quick brown fox",
     "expectedTokens": ["jumps", "over", "fox"],
     "maxTokens": 12,
-    "tags": ["latest"]
+    "tags": ["main", "latest"]
   },
   {
-    "id": "lfm2-1.2b-4bit",
-    "displayName": "LFM2 1.2B 4-bit",
+    "id": "lfm2.5-1.2b-thinking-4bit",
+    "displayName": "LFM2.5 1.2B Thinking 4-bit",
     "architecture": "lfm2",
-    "repository": "mlx-community/LFM2-1.2B-4bit",
-    "relativePath": "LFM2-1.2B-4bit",
-    "prompt": "Write one short sentence about weather.",
-    "expectedTokens": ["weather", "sun", "cloud"],
+    "repository": "mlx-community/LFM2.5-1.2B-Thinking-4bit",
+    "relativePath": "LFM2.5-1.2B-Thinking-4bit",
+    "prompt": "/no_think\nWrite one short sentence about weather.",
+    "expectedTokens": ["weather", "sun", "cloud", "model"],
     "maxTokens": 12,
-    "tags": ["latest"]
+    "tags": ["main", "latest", "native-template-only"]
   },
   {
     "id": "lfm2-moe",
@@ -415,7 +415,7 @@
     "prompt": "What is machine learning?",
     "expectedTokens": ["machine", "learning", "data"],
     "maxTokens": 15,
-    "tags": ["latest", "small"]
+    "tags": ["main", "latest", "small"]
   },
   {
     "id": "ernie-4.5-0.3b-bf16",
@@ -426,7 +426,7 @@
     "prompt": "Natural language processing is",
     "expectedTokens": ["language", "processing", "text"],
     "maxTokens": 12,
-    "tags": ["smoke", "latest", "small"]
+    "tags": ["smoke", "main", "latest", "small"]
   },
   {
     "id": "bitnet-b1.58-2b-4t-4bit",
@@ -437,7 +437,7 @@
     "prompt": "Binary neural networks are",
     "expectedTokens": ["binary", "network", "bit"],
     "maxTokens": 12,
-    "tags": ["latest"]
+    "tags": ["main", "latest"]
   },
   {
     "id": "baichuan-m1-14b-4bit",
@@ -547,7 +547,7 @@
     "prompt": "def fibonacci(n):",
     "expectedTokens": ["return", "if", "fibonacci"],
     "maxTokens": 20,
-    "tags": []
+    "tags": ["main"]
   },
   {
     "id": "cohere-command-r-v01-4bit",
@@ -569,7 +569,7 @@
     "prompt": "Once upon a time",
     "expectedTokens": ["there", "was", "time"],
     "maxTokens": 12,
-    "tags": ["smoke", "small"]
+    "tags": ["smoke", "main", "small"]
   },
   {
     "id": "internlm2-chat-1.8b-4bit",

@@ -6,6 +6,7 @@ import Testing
 enum MLXRealModelHarness {
     struct GenerationResult: Sendable {
         let text: String
+        let textChunkCount: Int
         let metrics: ChunkMetrics?
     }
 
@@ -15,14 +16,21 @@ enum MLXRealModelHarness {
         sampling: SamplingParameters = .deterministic,
         limits: ResourceLimits? = nil
     ) async throws -> GenerationResult {
+        let input = LLMInput(
+            context: prompt ?? model.prompt,
+            sampling: sampling,
+            limits: limits ?? ResourceLimits(maxTokens: model.maxTokens, maxTime: .seconds(120))
+        )
+        return try await run(model: model, input: input)
+    }
+
+    static func run(
+        model: MLXRealModelCatalog.Model,
+        input: LLMInput
+    ) async throws -> GenerationResult {
         let session = MLXSessionFactory.create()
         do {
             try await preload(session: session, model: model)
-            let input = LLMInput(
-                context: prompt ?? model.prompt,
-                sampling: sampling,
-                limits: limits ?? ResourceLimits(maxTokens: model.maxTokens, maxTime: .seconds(120))
-            )
             let result = try await collectGeneration(from: await session.stream(input))
             await session.unload()
             return result
@@ -40,6 +48,26 @@ enum MLXRealModelHarness {
         try await MLXGenerationDiagnostics.withRecording {
             try await run(model: model, sampling: sampling, limits: limits)
         }
+    }
+
+    static func runRenderedRequest(
+        model: MLXRealModelCatalog.Model,
+        request: MLXBridgeRequest,
+        limits: ResourceLimits,
+        style: MLXPromptStyle = .plain,
+        sampling: SamplingParameters = .deterministic
+    ) async throws -> GenerationResult {
+        let rendered = MLXPromptRenderer.render(request, style: style)
+        let input = LLMInput(
+            context: rendered.prompt,
+            promptMetadata: style == .plain ? nil : PromptRenderMetadata(rendererID: rendered.rendererID),
+            promptCacheIdentity: style == .plain ? nil : PromptCacheIdentity(
+                stableFingerprint: rendered.cacheFingerprint
+            ),
+            sampling: sampling,
+            limits: limits
+        )
+        return try await run(model: model, input: input)
     }
 
     static func requireModel(
@@ -60,6 +88,7 @@ enum MLXRealModelHarness {
     ) {
         let text = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         #expect(!text.isEmpty)
+        #expect(result.textChunkCount > 0)
         #expect((result.metrics?.usage?.generatedTokens ?? 0) > 0)
         #expect(result.metrics?.generation?.stopReason != nil)
         guard !expectedTokens.isEmpty else {
@@ -92,7 +121,8 @@ enum MLXRealModelHarness {
             location: MLXRealModelEnvironment.modelURL(for: model),
             authentication: .noAuth,
             modelName: model.displayName,
-            compute: .small
+            compute: .small,
+            runtime: ModelRuntimePreferences(promptCachePolicy: .memory)
         )
         let progress = await session.preload(configuration: configuration)
         for try await _ in progress {
@@ -104,13 +134,17 @@ enum MLXRealModelHarness {
         from stream: AsyncThrowingStream<LLMStreamChunk, Error>
     ) async throws -> GenerationResult {
         var text = ""
+        var textChunkCount = 0
         var metrics: ChunkMetrics?
         for try await chunk in stream {
             if case .text = chunk.event {
                 text += chunk.text
+                if !chunk.text.isEmpty {
+                    textChunkCount += 1
+                }
             }
             metrics = chunk.metrics ?? metrics
         }
-        return GenerationResult(text: text, metrics: metrics)
+        return GenerationResult(text: text, textChunkCount: textChunkCount, metrics: metrics)
     }
 }

@@ -22,9 +22,16 @@ enum MLXRealModelEnvironment {
 
     static func selectedModels(from models: [MLXRealModelCatalog.Model]) -> [MLXRealModelCatalog.Model] {
         let downloadable = models.filter(\.isDownloadable)
+        let selectedIDs = selectedModelIDs
+        if !selectedIDs.isEmpty {
+            return downloadable.filter { selectedIDs.contains($0.id) }
+        }
         switch scope {
         case "all":
             return downloadable
+
+        case "main":
+            return downloadable.filter { $0.tags.contains("main") }
 
         case "downloaded":
             return downloadable.filter { hasModelFiles(for: $0) }
@@ -32,6 +39,18 @@ enum MLXRealModelEnvironment {
         default:
             return downloadable.filter { $0.tags.contains("smoke") }
         }
+    }
+
+    private static var selectedModelIDs: Set<String> {
+        guard let value = environment["MLX_REAL_MODEL_IDS"], !value.isEmpty else {
+            return []
+        }
+        return Set(
+            value
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        )
     }
 
     static func modelURL(for model: MLXRealModelCatalog.Model) -> URL {
@@ -61,9 +80,19 @@ enum MLXRealModelEnvironment {
         return """
         Missing model weights for: \(ids)
         Download with:
-        MLX_ASSUME_YES=1 MLX_MODEL_FILTER=\(scope) scripts/download-test-models.sh
+        \(downloadCommand)
         or set MLX_TEST_MODELS_DIR to an existing model root.
         """
+    }
+
+    private static var downloadCommand: String {
+        switch scope {
+        case "all", "downloaded":
+            return "MLX_ASSUME_YES=1 scripts/download-test-models.sh"
+
+        default:
+            return "MLX_ASSUME_YES=1 MLX_MODEL_FILTER=\(scope) scripts/download-test-models.sh"
+        }
     }
 
     private static func expandTilde(in path: String) -> String {

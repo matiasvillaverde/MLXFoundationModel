@@ -25,10 +25,15 @@ struct MLXRealModelGenerationTests {
             return
         }
 
+        var failures: [String] = []
         for model in selected {
-            let result = try await MLXRealModelHarness.run(model: model)
-            MLXRealModelHarness.verifyGenerated(result, expectedTokens: model.expectedTokens)
+            do {
+                try await Self.verifyGeneration(for: model)
+            } catch {
+                failures.append("\(model.id): \(error)")
+            }
         }
+        #expect(failures.isEmpty, Comment(rawValue: failures.joined(separator: "\n")))
     }
 
     @Test("Qwen3 stops on configured stop sequence")
@@ -54,5 +59,12 @@ struct MLXRealModelGenerationTests {
 
         MLXRealModelHarness.verifyGenerated(result)
         #expect(!result.text.contains("STOP"))
+    }
+
+    private static func verifyGeneration(
+        for model: MLXRealModelCatalog.Model
+    ) async throws {
+        let result = try await MLXRealModelHarness.run(model: model)
+        MLXRealModelHarness.verifyGenerated(result, expectedTokens: model.expectedTokens)
     }
 }
