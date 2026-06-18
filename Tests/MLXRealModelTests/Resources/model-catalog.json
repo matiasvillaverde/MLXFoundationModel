@@ -8,7 +8,7 @@
     "prompt": "Write one short sentence about reliable software.",
     "expectedTokens": ["software", "reliable", "code"],
     "maxTokens": 12,
-    "tags": ["smoke", "main", "latest", "small"]
+    "tags": ["smoke", "main", "relevant", "latest", "small"]
   },
   {
     "id": "qwen3-1.7b-4bit",
@@ -52,7 +52,7 @@
     "prompt": "Write one short sentence about mixture-of-experts models.",
     "expectedTokens": ["expert", "experts", "model"],
     "maxTokens": 12,
-    "tags": ["latest", "large"]
+    "tags": ["relevant", "latest", "large"]
   },
   {
     "id": "qwen2.5-1.5b-4bit",
@@ -96,7 +96,7 @@
     "prompt": "The capital of France is",
     "expectedTokens": ["Paris"],
     "maxTokens": 8,
-    "tags": ["smoke", "main", "small"]
+    "tags": ["smoke", "main", "relevant", "small"]
   },
   {
     "id": "llama-3.2-3b-instruct-4bit",
@@ -165,6 +165,17 @@
     "tags": []
   },
   {
+    "id": "mistral-small-24b-2501-4bit",
+    "displayName": "Mistral Small 24B Instruct 2501 4-bit",
+    "architecture": "mistral",
+    "repository": "mlx-community/Mistral-Small-24B-Instruct-2501-4bit",
+    "relativePath": "Mistral-Small-24B-Instruct-2501-4bit",
+    "prompt": "Write one short sentence about helpful local assistants.",
+    "expectedTokens": ["helpful", "local", "assistant"],
+    "maxTokens": 12,
+    "tags": ["relevant", "latest"]
+  },
+  {
     "id": "phi-2-hf-4bit-mlx",
     "displayName": "Phi-2 4-bit MLX",
     "architecture": "phi",
@@ -185,6 +196,17 @@
     "expectedTokens": ["artificial", "intelligence", "AI"],
     "maxTokens": 15,
     "tags": ["main"]
+  },
+  {
+    "id": "phi-4-mini-instruct-4bit",
+    "displayName": "Phi-4 Mini Instruct 4-bit",
+    "architecture": "phi3",
+    "repository": "mlx-community/Phi-4-mini-instruct-4bit",
+    "relativePath": "Phi-4-mini-instruct-4bit",
+    "prompt": "Write one short sentence about small reasoning models.",
+    "expectedTokens": ["small", "reasoning", "model"],
+    "maxTokens": 12,
+    "tags": ["relevant", "latest", "small"]
   },
   {
     "id": "phi-3.5-moe-instruct-4bit",
@@ -239,7 +261,7 @@
     "prompt": "Write one short sentence about coding.",
     "expectedTokens": ["code", "coding", "software"],
     "maxTokens": 12,
-    "tags": ["smoke", "main", "latest", "small"]
+    "tags": ["smoke", "main", "relevant", "latest", "small"]
   },
   {
     "id": "gemma-3-1b-it-4bit",
@@ -272,7 +294,7 @@
     "prompt": "Write one short sentence about multimodal models.",
     "expectedTokens": ["model", "models", "multimodal"],
     "maxTokens": 12,
-    "tags": ["latest"]
+    "tags": ["relevant", "latest", "small"]
   },
   {
     "id": "gemma-3n-e4b-it-lm-4bit",
@@ -316,7 +338,7 @@
     "prompt": "Write one short sentence about private local AI.",
     "expectedTokens": ["private", "local", "AI"],
     "maxTokens": 10,
-    "tags": ["smoke", "main", "latest"]
+    "tags": ["smoke", "main", "relevant", "latest"]
   },
   {
     "id": "gemma-4-e4b-it-4bit",
@@ -349,7 +371,7 @@
     "prompt": "Explain cloud computing in one sentence.",
     "expectedTokens": ["cloud", "computing", "server"],
     "maxTokens": 15,
-    "tags": ["main", "latest"]
+    "tags": ["main", "relevant", "latest"]
   },
   {
     "id": "granite-moe-hybrid",
@@ -382,7 +404,7 @@
     "prompt": "The quick brown fox",
     "expectedTokens": ["jumps", "over", "fox"],
     "maxTokens": 12,
-    "tags": ["main", "latest"]
+    "tags": ["main", "relevant", "latest"]
   },
   {
     "id": "lfm2.5-1.2b-thinking-4bit",
@@ -393,7 +415,7 @@
     "prompt": "/no_think\nWrite one short sentence about weather.",
     "expectedTokens": ["weather", "sun", "cloud", "model"],
     "maxTokens": 12,
-    "tags": ["main", "latest", "native-template-only"]
+    "tags": ["main", "relevant", "latest", "native-template-only"]
   },
   {
     "id": "lfm2-moe",
@@ -415,7 +437,7 @@
     "prompt": "What is machine learning?",
     "expectedTokens": ["machine", "learning", "data"],
     "maxTokens": 15,
-    "tags": ["main", "latest", "small"]
+    "tags": ["main", "relevant", "latest", "small"]
   },
   {
     "id": "ernie-4.5-0.3b-bf16",
@@ -426,7 +448,7 @@
     "prompt": "Natural language processing is",
     "expectedTokens": ["language", "processing", "text"],
     "maxTokens": 12,
-    "tags": ["smoke", "main", "latest", "small"]
+    "tags": ["smoke", "main", "relevant", "latest", "small"]
   },
   {
     "id": "bitnet-b1.58-2b-4t-4bit",
@@ -437,10 +459,10 @@
     "prompt": "Binary neural networks are",
     "expectedTokens": ["binary", "network", "bit"],
     "maxTokens": 12,
-    "tags": ["main", "latest"]
+    "tags": ["main", "relevant", "latest"]
   },
   {
-    "id": "baichuan-m1-14b-4bit",
+    "id": "baichuan-m1-14b-instruct-4bit",
     "displayName": "Baichuan M1 14B Instruct 4-bit",
     "architecture": "baichuan_m1",
     "repository": "mlx-community/Baichuan-M1-14B-Instruct-4bit-ft",
@@ -448,7 +470,7 @@
     "prompt": "Write one short sentence about reasoning models.",
     "expectedTokens": ["reasoning", "model", "models"],
     "maxTokens": 12,
-    "tags": ["latest", "large"]
+    "tags": ["relevant", "latest", "large"]
   },
   {
     "id": "deepseek-r1-distill-qwen-7b-4bit",
@@ -459,7 +481,7 @@
     "prompt": "What is deep learning?",
     "expectedTokens": ["deep", "learning", "neural"],
     "maxTokens": 18,
-    "tags": []
+    "tags": ["relevant", "latest"]
   },
   {
     "id": "deepseek-r1-4bit",
@@ -473,15 +495,15 @@
     "tags": ["large"]
   },
   {
-    "id": "mimo-7b-sft-4bit",
-    "displayName": "MiMo 7B SFT 4-bit",
+    "id": "mimo-7b-rl-4bit",
+    "displayName": "MiMo 7B RL 4-bit",
     "architecture": "mimo",
-    "repository": "mlx-community/MiMo-7B-SFT-4bit",
-    "relativePath": "MiMo-7B-SFT-4bit",
+    "repository": "mlx-community/MiMo-7B-RL-4bit",
+    "relativePath": "MiMo-7B-RL-4bit",
     "prompt": "Write one short sentence about model distillation.",
     "expectedTokens": ["model", "distillation", "training"],
     "maxTokens": 12,
-    "tags": ["latest"]
+    "tags": ["relevant", "latest"]
   },
   {
     "id": "mimo-v2-flash",
@@ -503,7 +525,7 @@
     "prompt": "Write one short sentence about chat models.",
     "expectedTokens": ["chat", "model", "models"],
     "maxTokens": 12,
-    "tags": ["latest"]
+    "tags": ["relevant", "latest"]
   },
   {
     "id": "glm4-moe",
@@ -528,15 +550,15 @@
     "tags": ["registry-only"]
   },
   {
-    "id": "acereason-nemotron-7b-4bit",
-    "displayName": "AceReason Nemotron 7B 4-bit",
+    "id": "acereason-nemotron-1.1-7b-4bit",
+    "displayName": "AceReason Nemotron 1.1 7B 4-bit",
     "architecture": "acereason",
-    "repository": "mlx-community/AceReason-Nemotron-7B-4bit",
-    "relativePath": "AceReason-Nemotron-7B-4bit",
+    "repository": "mlx-community/AceReason-Nemotron-1.1-7B-4bit",
+    "relativePath": "AceReason-Nemotron-1.1-7B-4bit",
     "prompt": "Write one short sentence about reasoning.",
     "expectedTokens": ["reasoning", "answer", "logic"],
     "maxTokens": 12,
-    "tags": ["latest"]
+    "tags": ["relevant", "latest"]
   },
   {
     "id": "starcoder2-3b-4bit",
@@ -547,7 +569,7 @@
     "prompt": "def fibonacci(n):",
     "expectedTokens": ["return", "if", "fibonacci"],
     "maxTokens": 20,
-    "tags": ["main"]
+    "tags": ["main", "relevant"]
   },
   {
     "id": "cohere-command-r-v01-4bit",
@@ -569,7 +591,7 @@
     "prompt": "Once upon a time",
     "expectedTokens": ["there", "was", "time"],
     "maxTokens": 12,
-    "tags": ["smoke", "main", "small"]
+    "tags": ["smoke", "main", "relevant", "small"]
   },
   {
     "id": "internlm2-chat-1.8b-4bit",
@@ -586,23 +608,23 @@
     "id": "gpt-oss",
     "displayName": "GPT OSS",
     "architecture": "gpt_oss",
-    "repository": null,
-    "relativePath": "gpt-oss",
+    "repository": "mlx-community/gpt-oss-20b-MXFP4-Q8",
+    "relativePath": "gpt-oss-20b-MXFP4-Q8",
     "prompt": "Write one short sentence about open models.",
     "expectedTokens": ["open", "model", "models"],
     "maxTokens": 12,
-    "tags": ["registry-only", "latest"]
+    "tags": ["relevant", "latest"]
   },
   {
-    "id": "falcon-h1",
-    "displayName": "Falcon H1",
+    "id": "falcon-h1-0.5b-instruct-4bit",
+    "displayName": "Falcon H1 0.5B Instruct 4-bit",
     "architecture": "falcon_h1",
-    "repository": null,
-    "relativePath": "falcon-h1",
+    "repository": "mlx-community/Falcon-H1-0.5B-Instruct-4bit",
+    "relativePath": "Falcon-H1-0.5B-Instruct-4bit",
     "prompt": "Write one short sentence about hybrid sequence models.",
     "expectedTokens": ["hybrid", "sequence", "model"],
     "maxTokens": 12,
-    "tags": ["registry-only"]
+    "tags": ["relevant", "latest", "small"]
   },
   {
     "id": "minicpm",
@@ -630,34 +652,34 @@
     "id": "qwen3-next",
     "displayName": "Qwen3 Next",
     "architecture": "qwen3_next",
-    "repository": null,
-    "relativePath": "qwen3-next",
+    "repository": "mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit",
+    "relativePath": "Qwen3-Next-80B-A3B-Instruct-4bit",
     "prompt": "Write one short sentence about next generation models.",
     "expectedTokens": ["next", "model", "models"],
     "maxTokens": 12,
-    "tags": ["registry-only", "latest"]
+    "tags": ["latest", "large"]
   },
   {
     "id": "qwen3.5",
     "displayName": "Qwen3.5",
     "architecture": "qwen3_5",
-    "repository": null,
-    "relativePath": "qwen3.5",
+    "repository": "mlx-community/Qwen3.5-4B-MLX-4bit",
+    "relativePath": "Qwen3.5-4B-MLX-4bit",
     "prompt": "Write one short sentence about capable models.",
     "expectedTokens": ["capable", "model", "models"],
     "maxTokens": 12,
-    "tags": ["registry-only", "latest"]
+    "tags": ["relevant", "latest", "small"]
   },
   {
     "id": "qwen3.5-moe",
     "displayName": "Qwen3.5 MoE",
     "architecture": "qwen3_5_moe",
-    "repository": null,
-    "relativePath": "qwen3.5-moe",
+    "repository": "mlx-community/Qwen3.5-35B-A3B-4bit",
+    "relativePath": "Qwen3.5-35B-A3B-4bit",
     "prompt": "Write one short sentence about expert routing.",
     "expectedTokens": ["expert", "routing", "model"],
     "maxTokens": 12,
-    "tags": ["registry-only", "latest"]
+    "tags": ["relevant", "latest", "large"]
   },
   {
     "id": "qwen3.5-text",
@@ -707,12 +729,12 @@
     "id": "olmo3",
     "displayName": "OLMo3",
     "architecture": "olmo3",
-    "repository": null,
-    "relativePath": "olmo3",
+    "repository": "mlx-community/Olmo-3-7B-Instruct-4bit",
+    "relativePath": "Olmo-3-7B-Instruct-4bit",
     "prompt": "Write one short sentence about modern open models.",
     "expectedTokens": ["modern", "open", "model"],
     "maxTokens": 12,
-    "tags": ["registry-only", "latest"]
+    "tags": ["relevant", "latest"]
   },
   {
     "id": "bailing-moe",
@@ -784,11 +806,11 @@
     "id": "apertus",
     "displayName": "Apertus",
     "architecture": "apertus",
-    "repository": null,
-    "relativePath": "apertus",
+    "repository": "mlx-community/Apertus-8B-Instruct-2509-4bit",
+    "relativePath": "Apertus-8B-Instruct-2509-4bit",
     "prompt": "Write one short sentence about open multilingual models.",
     "expectedTokens": ["open", "multilingual", "model"],
     "maxTokens": 12,
-    "tags": ["registry-only"]
+    "tags": ["relevant", "latest"]
   }
 ]

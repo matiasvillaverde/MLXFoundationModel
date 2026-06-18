@@ -43,10 +43,11 @@ enum MLXRealModelHarness {
     static func runWithDiagnostics(
         model: MLXRealModelCatalog.Model,
         sampling: SamplingParameters,
-        limits: ResourceLimits
+        limits: ResourceLimits,
+        prompt: String? = nil
     ) async throws -> (result: GenerationResult, events: [MLXGenerationDiagnosticEvent]) {
         try await MLXGenerationDiagnostics.withRecording {
-            try await run(model: model, sampling: sampling, limits: limits)
+            try await run(model: model, prompt: prompt, sampling: sampling, limits: limits)
         }
     }
 
@@ -111,6 +112,17 @@ enum MLXRealModelHarness {
             return snapshot
         }
         return try #require(snapshots.last)
+    }
+
+    static func grammarSnapshots(
+        from events: [MLXGenerationDiagnosticEvent]
+    ) -> [MLXGrammarConstraintSnapshot] {
+        events.compactMap { event in
+            guard case .grammarConstraint(let snapshot) = event else {
+                return nil
+            }
+            return snapshot
+        }
     }
 
     private static func preload(

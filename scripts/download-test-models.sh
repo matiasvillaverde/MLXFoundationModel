@@ -91,7 +91,8 @@ for MODEL in "${MODELS[@]}"; do
   echo "Repository:   $REPOSITORY"
   echo "Target:       $TARGET"
 
-  if [[ -f "$TARGET/config.json" && -f "$TARGET/tokenizer.json" ]] &&
+  if [[ -f "$TARGET/config.json" ]] &&
+    [[ -f "$TARGET/tokenizer.json" || -f "$TARGET/tokenizer.model" ]] &&
     find "$TARGET" -maxdepth 1 \( -name '*.safetensors' -o -name 'model.safetensors.index.json' \) \
       -type f -print -quit | grep -q .; then
     echo "Already downloaded."
@@ -101,6 +102,7 @@ for MODEL in "${MODELS[@]}"; do
   TMP_TARGET="$TARGET.tmp"
   rm -rf "$TMP_TARGET"
   if git clone --depth 1 "https://huggingface.co/$REPOSITORY" "$TMP_TARGET"; then
+    rm -rf "$TMP_TARGET/.git"
     rm -rf "$TARGET"
     mv "$TMP_TARGET" "$TARGET"
     echo "Downloaded $ID."

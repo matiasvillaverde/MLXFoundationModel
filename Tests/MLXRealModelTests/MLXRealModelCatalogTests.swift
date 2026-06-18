@@ -37,6 +37,18 @@ struct MLXRealModelCatalogTests {
         #expect(Self.expectedMainArchitectures.subtracting(architectures).isEmpty)
     }
 
+    @Test("relevant scope includes current downloadable architecture representatives")
+    func relevantScopeIncludesCurrentDownloadableArchitectureRepresentatives() throws {
+        let models = try MLXRealModelCatalog.load()
+        let relevantModels = models.filter { $0.tags.contains("relevant") }
+        let architectures = Set(relevantModels.map(\.architecture))
+        let allRelevantModelsDownloadable = relevantModels.allSatisfy(\.isDownloadable)
+
+        #expect(!relevantModels.isEmpty)
+        #expect(allRelevantModelsDownloadable)
+        #expect(Self.expectedRelevantArchitectures.subtracting(architectures).isEmpty)
+    }
+
     private static let expectedArchitectures: Set<String> = [
         "acereason",
         "afmoe",
@@ -108,6 +120,36 @@ struct MLXRealModelCatalogTests {
         "phi3",
         "qwen2",
         "qwen3",
+        "smollm3",
+        "starcoder2"
+    ]
+
+    private static let expectedRelevantArchitectures: Set<String> = [
+        "acereason",
+        "apertus",
+        "baichuan_m1",
+        "bitnet",
+        "deepseek_v3",
+        "ernie4_5",
+        "exaone4",
+        "falcon_h1",
+        "gemma3",
+        "gemma3n",
+        "gemma4",
+        "glm4",
+        "gpt_oss",
+        "granite",
+        "lfm2",
+        "llama",
+        "mimo",
+        "mistral",
+        "olmo3",
+        "openelm",
+        "phi3",
+        "qwen3",
+        "qwen3_5",
+        "qwen3_5_moe",
+        "qwen3_moe",
         "smollm3",
         "starcoder2"
     ]

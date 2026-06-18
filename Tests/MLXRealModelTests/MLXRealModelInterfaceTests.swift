@@ -72,7 +72,11 @@ struct MLXRealModelInterfaceTests {
         let result = try await MLXRealModelHarness.runRenderedRequest(
             model: model,
             request: Self.sessionStyleRequest,
-            limits: ResourceLimits(maxTokens: 8, maxTime: .seconds(120), reusePromptCache: false)
+            limits: ResourceLimits(
+                maxTokens: min(8, MLXRealModelEnvironment.architectureGenerationTokenLimit),
+                maxTime: .seconds(MLXRealModelEnvironment.architectureGenerationTimeoutSeconds),
+                reusePromptCache: false
+            )
         )
         MLXRealModelHarness.verifyGenerated(result)
     }

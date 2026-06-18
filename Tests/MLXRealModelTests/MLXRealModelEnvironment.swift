@@ -20,6 +20,14 @@ enum MLXRealModelEnvironment {
             .appendingPathComponent(".models", isDirectory: true)
     }
 
+    static var architectureGenerationTokenLimit: Int {
+        integerValue(for: "MLX_REAL_MODEL_GENERATION_TOKENS", defaultValue: 2, minimumValue: 1)
+    }
+
+    static var architectureGenerationTimeoutSeconds: Int {
+        integerValue(for: "MLX_REAL_MODEL_GENERATION_TIMEOUT_SECONDS", defaultValue: 120, minimumValue: 1)
+    }
+
     static func selectedModels(from models: [MLXRealModelCatalog.Model]) -> [MLXRealModelCatalog.Model] {
         let downloadable = models.filter(\.isDownloadable)
         let selectedIDs = selectedModelIDs
@@ -29,6 +37,9 @@ enum MLXRealModelEnvironment {
         switch scope {
         case "all":
             return downloadable
+
+        case "relevant":
+            return downloadable.filter { $0.tags.contains("relevant") }
 
         case "main":
             return downloadable.filter { $0.tags.contains("main") }
@@ -65,7 +76,9 @@ enum MLXRealModelEnvironment {
         let fileManager = FileManager.default
         let path = url.path
         let hasConfig = fileManager.fileExists(atPath: "\(path)/config.json")
-        let hasTokenizer = fileManager.fileExists(atPath: "\(path)/tokenizer.json")
+        let hasTokenizerJSON = fileManager.fileExists(atPath: "\(path)/tokenizer.json")
+        let hasSentencePieceTokenizer = fileManager.fileExists(atPath: "\(path)/tokenizer.model")
+        let hasTokenizer = hasTokenizerJSON || hasSentencePieceTokenizer
         let hasSingleFileWeights = fileManager.fileExists(atPath: "\(path)/model.safetensors")
         let hasIndexedWeights = fileManager.fileExists(atPath: "\(path)/model.safetensors.index.json")
         let hasShardWeights = (try? fileManager.contentsOfDirectory(atPath: path).contains { filename in
@@ -104,5 +117,19 @@ enum MLXRealModelEnvironment {
             return URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(suffix).path
         }
         return path
+    }
+
+    private static func integerValue(
+        for key: String,
+        defaultValue: Int,
+        minimumValue: Int
+    ) -> Int {
+        guard
+            let value = environment[key],
+            let integer = Int(value)
+        else {
+            return defaultValue
+        }
+        return max(integer, minimumValue)
     }
 }

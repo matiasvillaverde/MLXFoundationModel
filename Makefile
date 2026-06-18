@@ -43,6 +43,9 @@ test-all-architectures: ## Run opt-in real-model tests for all downloadable cata
 test-main-architectures: ## Run opt-in real-model tests for representative main architectures
 	@$(MAKE) test-real-models MLX_REAL_MODEL_SCOPE=main
 
+test-relevant-models: ## Run opt-in real-model tests for relevant/latest representative models
+	@MLX_REAL_MODEL_SCOPE=relevant bash scripts/test-real-models-by-id.sh
+
 test-acceptance: test-real-models ## Alias for opt-in real-model acceptance
 
 download-test-models: ## Download test models into ignored .models/
@@ -50,6 +53,9 @@ download-test-models: ## Download test models into ignored .models/
 
 download-main-models: ## Download representative main architecture test models
 	@MLX_MODEL_FILTER=main bash scripts/download-test-models.sh
+
+download-relevant-models: ## Download relevant/latest representative test models
+	@MLX_MODEL_FILTER=relevant bash scripts/download-test-models.sh
 
 models-size: ## Show downloaded model disk usage
 	@du -sh .models 2>/dev/null || echo "No downloaded models in .models"

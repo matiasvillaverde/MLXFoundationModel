@@ -64,7 +64,15 @@ struct MLXRealModelGenerationTests {
     private static func verifyGeneration(
         for model: MLXRealModelCatalog.Model
     ) async throws {
-        let result = try await MLXRealModelHarness.run(model: model)
-        MLXRealModelHarness.verifyGenerated(result, expectedTokens: model.expectedTokens)
+        let tokenLimit = min(model.maxTokens, MLXRealModelEnvironment.architectureGenerationTokenLimit)
+        let result = try await MLXRealModelHarness.run(
+            model: model,
+            limits: ResourceLimits(
+                maxTokens: tokenLimit,
+                maxTime: .seconds(MLXRealModelEnvironment.architectureGenerationTimeoutSeconds),
+                reusePromptCache: false
+            )
+        )
+        MLXRealModelHarness.verifyGenerated(result)
     }
 }

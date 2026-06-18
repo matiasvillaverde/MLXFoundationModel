@@ -22,6 +22,8 @@ open-source language models to Apple's Foundation Models provider shape.
 - `make test-all-architectures`
 - `make download-test-models`
 - `make download-main-models`
+- `make test-relevant-models`
+- `make download-relevant-models`
 - `make quality`
 
 ## Rules
