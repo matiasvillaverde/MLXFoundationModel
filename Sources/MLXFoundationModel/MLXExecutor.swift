@@ -37,6 +37,12 @@ public struct MLXExecutor: LanguageModelExecutor {
         session = MLXSessionFactory.create()
     }
 
+    public func prewarm(model: MLXLanguageModel, transcript: Transcript) {
+        // MLX model loading is asynchronous; respond(to:) drains preload progress before generation.
+        _ = model
+        _ = transcript
+    }
+
     public func respond(
         to request: LanguageModelExecutorGenerationRequest,
         model: MLXLanguageModel,

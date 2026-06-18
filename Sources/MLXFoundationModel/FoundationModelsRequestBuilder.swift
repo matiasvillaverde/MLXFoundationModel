@@ -9,16 +9,23 @@ enum FoundationModelsRequestBuilder {
         from request: LanguageModelExecutorGenerationRequest,
         model: MLXLanguageModel
     ) throws -> LLMInput {
-        let bridge = try bridgeRequest(from: request)
+        let bridge = try bridgeRequest(from: request, model: model)
         let rendered = MLXPromptRenderer.render(bridge, style: model.model.promptStyle)
         let maxTokens = request.generationOptions.maximumResponseTokens ?? model.maximumResponseTokens
         let promptMetadata = promptMetadata(for: rendered, style: model.model.promptStyle)
         let cacheIdentity = promptCacheIdentity(for: rendered, style: model.model.promptStyle)
+        let toolDefinitions = effectiveToolDefinitions(from: request)
+        let sampling = FoundationModelsSamplingMapper.sampling(
+            from: request.generationOptions,
+            schema: request.schema,
+            toolDefinitions: toolDefinitions,
+            fallback: model.sampling
+        )
         return LLMInput(
             context: rendered.prompt,
             promptMetadata: promptMetadata,
             promptCacheIdentity: cacheIdentity,
-            sampling: sampling(from: request.generationOptions, fallback: model.sampling),
+            sampling: sampling,
             limits: ResourceLimits(maxTokens: maxTokens)
         )
     }
@@ -44,87 +51,29 @@ enum FoundationModelsRequestBuilder {
     }
 
     private static func bridgeRequest(
-        from request: LanguageModelExecutorGenerationRequest
+        from request: LanguageModelExecutorGenerationRequest,
+        model: MLXLanguageModel
     ) throws -> MLXBridgeRequest {
-        var instructions: [String] = []
-        var messages: [MLXBridgeMessage] = []
-        for entry in request.transcript {
-            append(entry, to: &messages, instructions: &instructions)
+        var converted = FoundationModelsTranscriptBridge.convert(request.transcript)
+        guard converted.unsupportedEntries.isEmpty else {
+            throw LanguageModelError.unsupportedTranscriptContent(.init(
+                unsupportedContent: converted.unsupportedEntries,
+                debugDescription: "MLXFoundationModel only accepts text and structured transcript segments",
+                metadata: [
+                    "model": model.model.id
+                ]
+            ))
+        }
+        let toolDefinitions = effectiveToolDefinitions(from: request)
+        let requiresToolCall = FoundationModelsSamplingMapper.requiresToolCall(request.generationOptions)
+        if requiresToolCall, !toolDefinitions.isEmpty {
+            converted.instructions.append("Call one of the available tools before producing a final answer.")
         }
         return MLXBridgeRequest(
-            messages: messages,
-            instructions: instructions.filter { !$0.isEmpty }.joined(separator: "\n\n"),
-            responseConstraint: request.schema.map(responseConstraint),
-            tools: request.enabledToolDefinitions.map(toolDefinition)
-        )
-    }
-
-    private static func append(
-        _ entry: Transcript.Entry,
-        to messages: inout [MLXBridgeMessage],
-        instructions: inout [String]
-    ) {
-        switch entry {
-        case .instructions(let value):
-            instructions.append(text(of: value.segments))
-
-        case .prompt(let value):
-            messages.append(MLXBridgeMessage(role: .user, content: text(of: value.segments)))
-
-        case .response(let value):
-            messages.append(MLXBridgeMessage(role: .assistant, content: text(of: value.segments)))
-
-        case .toolCalls(let calls):
-            messages.append(
-                MLXBridgeMessage(
-                    role: .assistant,
-                    content: toolCallsText(calls)
-                )
-            )
-
-        case .toolOutput(let output):
-            messages.append(
-                MLXBridgeMessage(
-                    role: .tool,
-                    content: text(of: output.segments),
-                    name: output.id
-                )
-            )
-
-        case .reasoning:
-            return
-
-        @unknown default:
-            return
-        }
-    }
-
-    private static func text(of segments: [Transcript.Segment]) -> String {
-        segments.compactMap { segment in
-            switch segment {
-            case .text(let text):
-                text.content
-
-            case .structure(let structure):
-                structure.content.jsonString
-
-            case .attachment, .custom:
-                nil
-
-            @unknown default:
-                nil
-            }
-        }
-        .joined(separator: "\n")
-    }
-
-    private static func toolDefinition(
-        _ definition: Transcript.ToolDefinition
-    ) -> MLXBridgeToolDefinition {
-        MLXBridgeToolDefinition(
-            name: definition.name,
-            description: definition.description,
-            parametersJSONSchema: jsonSchemaString(from: definition.parameters)
+            messages: converted.messages,
+            instructions: converted.instructions.filter { !$0.isEmpty }.joined(separator: "\n\n"),
+            responseConstraint: responseConstraint(from: request),
+            tools: toolDefinitions.map(FoundationModelsToolSchemaBuilder.bridgeToolDefinition)
         )
     }
 
@@ -132,68 +81,33 @@ enum FoundationModelsRequestBuilder {
         from schema: GenerationSchema
     ) -> MLXBridgeResponseConstraint {
         MLXBridgeResponseConstraint(
-            jsonSchema: jsonSchemaString(from: schema),
+            jsonSchema: FoundationModelsSchemaSupport.jsonSchemaString(from: schema),
             instructions: "Return only a structured response matching this schema."
         )
     }
 
-    private static func jsonSchemaString(from schema: GenerationSchema) -> String {
-        guard
-            let data = try? JSONEncoder().encode(schema),
-            let string = String(data: data, encoding: .utf8)
-        else {
-            return "{}"
+    private static func responseConstraint(
+        from request: LanguageModelExecutorGenerationRequest
+    ) -> MLXBridgeResponseConstraint? {
+        guard request.contextOptions.includeSchemaInPrompt ?? true else {
+            return nil
         }
-        return string
+        return request.schema.map(responseConstraint)
     }
 
-    private static func toolCallsText(_ calls: Transcript.ToolCalls) -> String {
-        calls.map { call in
-            """
-            {"tool_name":"\(call.toolName)","arguments":\(call.arguments.jsonString)}
-            """
-        }
-        .joined(separator: "\n")
-    }
+    private static func effectiveToolDefinitions(
+        from request: LanguageModelExecutorGenerationRequest
+    ) -> [Transcript.ToolDefinition] {
+        switch request.generationOptions.toolCallingMode?.kind {
+        case .disallowed:
+            return []
 
-    private static func sampling(
-        from options: GenerationOptions,
-        fallback: SamplingParameters
-    ) -> SamplingParameters {
-        var temperature = options.temperature.map(Float.init) ?? fallback.temperature
-        var topP = fallback.topP
-        var topK = fallback.topK
-
-        switch options.samplingMode?.kind {
-        case .greedy:
-            temperature = 0
-            topK = 1
-
-        case .top(let value, _):
-            topK = value
-
-        case .nucleus(let threshold, _):
-            topP = Float(threshold)
-
-        case nil:
-            break
+        case .allowed, .required, nil:
+            return request.enabledToolDefinitions
 
         @unknown default:
-            break
+            return request.enabledToolDefinitions
         }
-
-        return SamplingParameters(
-            temperature: temperature,
-            topP: topP,
-            topK: topK,
-            repetitionPenalty: fallback.repetitionPenalty,
-            frequencyPenalty: fallback.frequencyPenalty,
-            presencePenalty: fallback.presencePenalty,
-            repetitionPenaltyRange: fallback.repetitionPenaltyRange,
-            seed: fallback.seed,
-            stopSequences: fallback.stopSequences,
-            advanced: fallback.advanced
-        )
     }
 }
 #endif

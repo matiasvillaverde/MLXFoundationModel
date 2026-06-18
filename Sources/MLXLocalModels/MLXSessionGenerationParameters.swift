@@ -22,6 +22,7 @@ extension MLXSession {
             frequencyPenalty: sampling.frequencyPenalty,
             frequencyContextSize: penaltyContextSize,
             seed: sampling.seed,
+            grammar: sampling.advanced.grammar,
             logitBias: sampling.advanced.logitBias.reduce(into: [:]) { result, item in
                 result[Int(item.key)] = item.value
             },

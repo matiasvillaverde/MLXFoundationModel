@@ -139,14 +139,80 @@ public struct ComputeConfiguration: Sendable, Equatable, Hashable {
     public static let large = ComputeConfiguration(contextSize: 4_096, batchSize: 1_024, threadCount: 16)
 }
 
-/// Optional grammar constraints for structured generation.
+/// Supported token-level grammar constraint kinds.
+public enum GrammarConstraintKind: String, Sendable, Equatable, Hashable {
+    case builtinJSON
+    case jsonSchema
+    case ebnf
+    case regex
+    case choices
+}
+
+/// Optional token-level grammar constraints for structured generation.
 public struct GrammarSamplingConfiguration: Sendable, Equatable, Hashable {
+    public let kind: GrammarConstraintKind
     public let grammar: String
     public let root: String
+    public let strict: Bool
 
-    public init(grammar: String, root: String = "root") {
+    public init(
+        kind: GrammarConstraintKind,
+        grammar: String = "",
+        root: String = "root",
+        strict: Bool = true
+    ) {
+        self.kind = kind
         self.grammar = grammar
         self.root = root
+        self.strict = strict
+    }
+
+    public init(grammar: String, root: String = "root") {
+        self.init(kind: .ebnf, grammar: grammar, root: root)
+    }
+
+    public static func jsonSchema(_ schema: String, strict: Bool = true) -> Self {
+        Self(kind: .jsonSchema, grammar: schema, strict: strict)
+    }
+
+    public static func json() -> Self {
+        Self(kind: .builtinJSON)
+    }
+
+    public static func regex(_ regex: String) -> Self {
+        Self(kind: .regex, grammar: regex)
+    }
+
+    public static func choices(_ choices: [String]) -> Self {
+        precondition(!choices.isEmpty, "Grammar choices must not be empty")
+        let alternatives = choices
+            .map { #""\#(Self.escapedEBNFLiteral($0))""# }
+            .joined(separator: " | ")
+        return Self(kind: .choices, grammar: "root ::= \(alternatives)")
+    }
+
+    private static func escapedEBNFLiteral(_ value: String) -> String {
+        value.reduce(into: "") { result, character in
+            switch character {
+            case "\"":
+                result += #"\""#
+
+            case "\\":
+                result += #"\\"#
+
+            case "\n":
+                result += #"\n"#
+
+            case "\r":
+                result += #"\r"#
+
+            case "\t":
+                result += #"\t"#
+
+            default:
+                result.append(character)
+            }
+        }
     }
 }
 

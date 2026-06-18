@@ -63,7 +63,7 @@ swift build -Xswiftc -DFOUNDATION_MODELS_PROVIDER_API
 - Streaming text deltas into Foundation Models executor channels when available.
 - Prompt rendering for plain and ChatML-style instruction models.
 - Tool definitions rendered into the prompt.
-- Structured response constraints rendered into prompts for schema-guided JSON.
+- Structured response constraints mapped to token-level constrained decoding.
 - Tool-call extraction through a best-effort JSON parser plus opt-in real-model
   tests for tool-router prompts.
 - Foundation Models session overload compatibility tests under
@@ -73,10 +73,12 @@ swift build -Xswiftc -DFOUNDATION_MODELS_PROVIDER_API
 ## Guided Generation
 
 Apple `@Generable` relies on guided generation. For local MLX models, this
-package maps Foundation Models schemas into prompt-level JSON constraints.
-Token-level grammar/logit masking is still a deeper runtime project, so the
-real-model suite validates that supported instruction models follow the rendered
-constraints.
+package maps Foundation Models schemas into XGrammar-backed token masks at the
+inference layer. Supported constraints are JSON Schema, builtin JSON, EBNF, and
+regex, plus direct finite-choice constraints such as `apple | pear | banana`.
+The prompt renderer still includes response-format instructions because Apple's
+public design combines prompt guidance with constrained sampling, but validity
+is enforced by logit masking before each token is sampled.
 
 ## Development
 
