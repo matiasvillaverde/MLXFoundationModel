@@ -45,7 +45,20 @@ let package = Package(
         ),
         .testTarget(
             name: "MLXFoundationModelTests",
-            dependencies: ["MLXFoundationModel"]
+            dependencies: [
+                "MLXFoundationModel",
+                "MLXLocalModels"
+            ]
+        ),
+        .testTarget(
+            name: "MLXRealModelTests",
+            dependencies: [
+                "MLXFoundationModel",
+                "MLXLocalModels"
+            ],
+            resources: [
+                .copy("Resources")
+            ]
         )
     ]
 )

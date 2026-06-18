@@ -63,14 +63,17 @@ swift build -Xswiftc -DFOUNDATION_MODELS_PROVIDER_API
 - Streaming text deltas into Foundation Models executor channels when available.
 - Prompt rendering for plain and ChatML-style instruction models.
 - Tool definitions rendered into the prompt.
-- Tool-call extraction is scaffolded as a best-effort JSON parser; true tool
-  calling parity requires dialect-specific constrained output work.
+- Structured response constraints rendered into prompts for schema-guided JSON.
+- Tool-call extraction through a best-effort JSON parser plus opt-in real-model
+  tests for tool-router prompts.
 
 ## Guided Generation
 
 Apple `@Generable` relies on guided generation. For local MLX models, this
-requires constrained decoding or schema-aware logit masking. This package keeps
-the bridge points in place but does not yet claim full `@Generable` parity.
+package maps Foundation Models schemas into prompt-level JSON constraints.
+Token-level grammar/logit masking is still a deeper runtime project, so the
+real-model suite validates that supported instruction models follow the rendered
+constraints.
 
 ## Development
 
@@ -79,3 +82,15 @@ make lint
 make build
 make test
 ```
+
+Real-model tests are opt-in and run serially because MLX uses the GPU:
+
+```sh
+MLX_ASSUME_YES=1 MLX_MODEL_FILTER=smoke make download-test-models
+make test-real-models
+make test-all-architectures
+```
+
+Models download into ignored `.models/` by default. Set `MLX_TEST_MODELS_DIR`
+to reuse an existing model directory, `MLX_MODEL_FILTER` to download a subset,
+and `MLX_REAL_MODEL_SCOPE=all` to require every downloadable catalog model.

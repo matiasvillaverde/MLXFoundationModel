@@ -3,8 +3,13 @@
 CONFIGURATION ?= debug
 SWIFT_BUILD_FLAGS = --configuration $(CONFIGURATION)
 SWIFT_TEST_FLAGS = --configuration $(CONFIGURATION) --parallel
+SWIFT_TEST_SERIAL_FLAGS = --configuration $(CONFIGURATION) --no-parallel
+FAST_TEST_FILTER ?= MLXFoundationModelTests
+REAL_MODEL_TEST_FILTER ?= MLXRealModel
+MLX_REAL_MODEL_SCOPE ?= smoke
 
 GREEN = \033[0;32m
+YELLOW = \033[0;33m
 BLUE = \033[0;34m
 RED = \033[0;31m
 NC = \033[0m
@@ -23,8 +28,25 @@ build-ci: lint ## Build with warnings as errors
 
 test: build ## Run unit tests
 	@echo "$(BLUE)Testing MLXFoundationModel...$(NC)"
-	@swift test $(SWIFT_TEST_FLAGS)
+	@swift test $(SWIFT_TEST_FLAGS) --filter '$(FAST_TEST_FILTER)'
 	@echo "$(GREEN)Tests passed$(NC)"
+
+test-real-models: ## Run opt-in real-model smoke tests against downloaded weights
+	@echo "$(YELLOW)Running real-model tests with scope $(MLX_REAL_MODEL_SCOPE)...$(NC)"
+	@MLX_RUN_REAL_MODEL_TESTS=1 MLX_REAL_MODEL_SCOPE=$(MLX_REAL_MODEL_SCOPE) \
+		swift test $(SWIFT_TEST_SERIAL_FLAGS) --filter '$(REAL_MODEL_TEST_FILTER)'
+	@echo "$(GREEN)Real-model tests passed$(NC)"
+
+test-all-architectures: ## Run opt-in real-model tests for all downloadable catalog entries
+	@$(MAKE) test-real-models MLX_REAL_MODEL_SCOPE=all
+
+test-acceptance: test-real-models ## Alias for opt-in real-model acceptance
+
+download-test-models: ## Download test models into ignored .models/
+	@bash scripts/download-test-models.sh
+
+models-size: ## Show downloaded model disk usage
+	@du -sh .models 2>/dev/null || echo "No downloaded models in .models"
 
 lint: ## Run SwiftLint validation
 	@echo "$(BLUE)Running SwiftLint...$(NC)"
