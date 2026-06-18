@@ -1,0 +1,52 @@
+# Inherit shared semantic-color rules copied from the source repo.
+parent_config: .swiftlint-design-rules.yml
+
+# Enable all available rules.
+opt_in_rules:
+  - all
+
+disabled_rules:
+  - contrasted_opening_brace
+  - type_contents_order
+  - redundant_type_annotation
+  - extension_access_modifier
+  - explicit_type_interface
+  - explicit_acl
+  - explicit_top_level_acl
+  - no_magic_numbers
+  - unused_parameter
+  - async_without_await
+  - unneeded_throws_rethrows
+
+# Make rules strict.
+strict: true
+
+# Directories to include/exclude during linting.
+included:
+  - Sources/MLXFoundationModel
+  - Sources/MLXLocalModels/MLXSession.swift
+  - Sources/MLXLocalModels/MLXSession+GenerationStreaming.swift
+  - Sources/MLXLocalModels/MLXSession+IteratorFactory.swift
+  - Sources/MLXLocalModels/MLXSession+PromptCacheStorage.swift
+  - Sources/MLXLocalModels/MLXSessionFactory.swift
+  - Sources/MLXLocalModels/MLXSpeculativeDecodingConfiguration.swift
+  - Sources/MLXLocalModels/MetricsData+ChunkMetrics.swift
+  - Tests
+
+excluded:
+  - .build
+  - Sources/MLXLocalModels/Common
+  - Sources/MLXLocalModels/MLXLLM
+
+# Customize rule parameters.
+line_length:
+  warning: 110
+  error: 120
+
+function_body_length:
+  warning: 30
+  error: 50 # Allow slightly longer test methods
+
+cyclomatic_complexity:
+  warning: 8
+  error: 8

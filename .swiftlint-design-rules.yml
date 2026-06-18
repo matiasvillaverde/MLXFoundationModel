@@ -1,0 +1,111 @@
+# Shared SwiftLint custom rules — design-system enforcement.
+#
+# Imported by every per-module `.swiftlint.yml` and by the root config via
+# `parent_config: <relative path to this file>`. Keeping the rules in one
+# place applies the same DRY principle to lint config that we apply to
+# `Color.swift` / `Font.swift` themselves.
+#
+# Rules cover two design-system surfaces:
+#
+# 1. **Colors** — direct use of literal SwiftUI hues (`Color.red`,
+#    `.foregroundStyle(.green)`), raw RGB constructors (`Color(red:green:blue:)`),
+#    bare-dot color-with-opacity chains (`.gray.opacity(...)` inside multi-line
+#    `.shadow(color:...)`), and string-asset lookups (`Color("Foo")`) are all
+#    banned. Every color must go through a semantic name declared in
+#    `UIComponents/Sources/UIComponents/Color.swift` (e.g. `Color.brand`,
+#    `Color.iconAlert`, `Color.chartPrimary`, `Color.shadowDefault`).
+#
+# 2. **Fonts** — direct use of `.font(.system(size: …))` and
+#    `Font.system(size: …)` is banned. Every font must go through Apple's
+#    semantic text styles (`.body`, `.title2`, etc.) or the app-specific
+#    roles in `UIComponents/Sources/UIComponents/Font.swift`
+#    (e.g. `.iconHero`, `.codeCaption`).
+#
+# Why: dark-mode adaptability, Dynamic Type compatibility, single source
+# of truth, intent-named call sites. `Color.swift` and `Font.swift` are
+# the only places allowed to bind a semantic name to a literal.
+custom_rules:
+  no_literal_color_property:
+    name: "Literal SwiftUI Color"
+    regex: '\bColor\.(red|green|blue|orange|yellow|purple|pink|cyan|brown|mint|teal|indigo|gray|black|white)\b'
+    message: "Use a semantic Color from Color.swift (e.g. Color.iconAlert, Color.chartPrimary, Color.shadowDefault) instead of a literal hue."
+    severity: error
+    included:
+      - ".*\\.swift"
+    excluded:
+      - ".*/Color\\.swift"
+
+  no_inline_literal_color:
+    name: "Inline Literal SwiftUI Color"
+    regex: '\.(foregroundStyle|foregroundColor|tint|fill|stroke|strokeBorder|background|shadow|underline|overlay|border)\(\s*\.(red|green|blue|orange|yellow|purple|pink|cyan|brown|mint|teal|indigo|gray|black|white)\b'
+    message: "Use a semantic Color (e.g. Color.iconAlert, Color.chartPrimary) instead of a literal hue."
+    severity: error
+    included:
+      - ".*\\.swift"
+    excluded:
+      - ".*/Color\\.swift"
+
+  no_bare_color_literal_opacity:
+    name: "Bare Color Literal With Opacity"
+    regex: '(?<![a-zA-Z_$0-9])\.(red|green|blue|orange|yellow|purple|pink|cyan|brown|mint|teal|indigo|gray|black|white)\.opacity\('
+    message: "Use a semantic Color from Color.swift (e.g. Color.shadowDefault.opacity(...)) instead of a literal hue. The per-line linter cannot catch multi-line `.shadow(\\n  color: .black.opacity(...))`; this rule does."
+    severity: error
+    included:
+      - ".*\\.swift"
+    excluded:
+      - ".*/Color\\.swift"
+
+  no_bare_literal_color:
+    name: "Bare Literal SwiftUI Color"
+    regex: '(?<![a-zA-Z_$0-9])\.(red|green|blue|orange|yellow|purple|pink|cyan|brown|mint|teal|indigo|gray|black|white)\b'
+    message: "Use a semantic Color from Color.swift instead of a bare literal hue."
+    severity: error
+    included:
+      - ".*\\.swift"
+    excluded:
+      - ".*/Color\\.swift"
+
+  no_color_rgb_constructor:
+    name: "Raw Color RGB Constructor"
+    regex: '\bColor\(\s*(red|hue):\s*[0-9.]'
+    message: "Use a semantic Color from Color.swift (and add a colorset to Assets.xcassets) instead of constructing a Color from raw RGB/HSB values."
+    severity: error
+    included:
+      - ".*\\.swift"
+    excluded:
+      - ".*/Color\\.swift"
+      # Data-driven color computation — third-party model architecture logos
+      # interpolate brand colors of OpenAI/Anthropic/etc., and the perplexity
+      # heatmap interpolates per-cell across a cool→warm gradient. Both are
+      # data viz, not design tokens; routing them through the palette would
+      # lose their intent.
+      - ".*/ArchitectureLogoProvider\\+Styling\\.swift"
+      - ".*/PerplexityHeatMapViewModel\\.swift"
+
+  no_color_asset_string_lookup:
+    name: "Bypass Color.swift via Asset String"
+    regex: '\bColor\(\s*"[A-Za-z]'
+    message: "Add a semantic property to Color.swift bound to this colorset instead of calling Color(\"AssetName\") directly — keeps the palette a single source of truth."
+    severity: error
+    included:
+      - ".*\\.swift"
+    excluded:
+      - ".*/Color\\.swift"
+
+  no_marketing_color:
+    name: "Obsolete Marketing Color Token"
+    regex: '\b(Color\.)?marketing(Primary|Secondary|SecondaryText)\b'
+    message: "marketingPrimary / marketingSecondary / marketingSecondaryText were retired when pink became the singular brand. Use Color.brand, Color.brandHover, Color.brandText, Color.brandHeading, or Color.onBrand from Color.swift."
+    severity: error
+    included:
+      - ".*\\.swift"
+
+  no_literal_font_size:
+    name: "Literal Font Size"
+    regex: '(?:\.font\(\s*\.system\(\s*size:|\bFont\.system\(\s*size:)'
+    message: "Use a semantic Font — Apple text styles (.body, .title2, .headline, …) or the app-specific roles in Font.swift (.iconHero, .iconLarge, .codeCaption, …) — instead of .system(size:)."
+    severity: error
+    included:
+      - ".*\\.swift"
+    excluded:
+      - ".*/Font\\.swift"
