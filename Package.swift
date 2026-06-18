@@ -21,6 +21,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/ml-explore/mlx-swift", .upToNextMinor(from: "0.31.4")),
+        .package(url: "https://github.com/mlc-ai/xgrammar", .upToNextMinor(from: "0.2.2")),
         .package(
             url: "https://github.com/huggingface/swift-transformers",
             .upToNextMajor(from: "1.3.3")
@@ -30,6 +31,7 @@ let package = Package(
         .target(
             name: "MLXLocalModels",
             dependencies: [
+                "CXGrammarBridge",
                 .product(name: "MLX", package: "mlx-swift"),
                 .product(name: "MLXFast", package: "mlx-swift"),
                 .product(name: "MLXNN", package: "mlx-swift"),
@@ -37,6 +39,18 @@ let package = Package(
                 .product(name: "MLXRandom", package: "mlx-swift"),
                 .product(name: "MLXLinalg", package: "mlx-swift"),
                 .product(name: "Transformers", package: "swift-transformers")
+            ]
+        ),
+        .target(
+            name: "CXGrammarBridge",
+            dependencies: [
+                .product(name: "XGrammar", package: "xgrammar")
+            ],
+            publicHeadersPath: "include",
+            cxxSettings: [
+                .headerSearchPath("private_include"),
+                .define("XGRAMMAR_ENABLE_LOG_DEBUG", to: "0"),
+                .define("XGRAMMAR_ENABLE_CPPTRACE", to: "0")
             ]
         ),
         .target(
@@ -60,5 +74,6 @@ let package = Package(
                 .copy("Resources")
             ]
         )
-    ]
+    ],
+    cxxLanguageStandard: .cxx17
 )

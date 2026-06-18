@@ -494,12 +494,40 @@ internal final class LLMModelFactory: ModelFactory {
 
         // Step 4: Load tokenizer (80-100%)
         let tokenizer = try await tokenizerTask
+        var grammarStopTokenIds = resolvedConfiguration.eosTokenIds
+        if let eosTokenId = tokenizer.eosTokenId {
+            grammarStopTokenIds.insert(eosTokenId)
+        }
+        if let unknownTokenId = tokenizer.unknownTokenId {
+            grammarStopTokenIds.insert(unknownTokenId)
+        }
+        grammarStopTokenIds.formUnion(
+            resolvedConfiguration.extraEOSTokens
+                .compactMap { tokenizer.convertTokenToId($0) }
+        )
+        let grammarCompiler: GrammarConstraintCompiler?
+        let grammarCompilerError: Error?
+        do {
+            grammarCompiler = try GrammarConstraintCompiler(
+                modelDirectory: modelDirectory,
+                stopTokenIds: grammarStopTokenIds
+            )
+            grammarCompilerError = nil
+        } catch {
+            grammarCompiler = nil
+            grammarCompilerError = error
+        }
 
         progress.completedUnitCount = 100
         progressHandler(progress)
 
         return .init(
-            configuration: resolvedConfiguration, model: model, tokenizer: tokenizer)
+            configuration: resolvedConfiguration,
+            model: model,
+            tokenizer: tokenizer,
+            grammarCompiler: grammarCompiler,
+            grammarCompilerError: grammarCompilerError
+        )
     }
 
     private func loadEOSTokenIds(

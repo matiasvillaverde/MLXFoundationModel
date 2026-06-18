@@ -76,14 +76,20 @@ internal struct ModelContext: @unchecked Sendable {
     internal var configuration: ModelConfiguration
     internal var model: any LanguageModel
     internal var tokenizer: Tokenizer
+    internal var grammarCompiler: GrammarConstraintCompiler?
+    internal var grammarCompilerError: Error?
 
     internal init(
         configuration: ModelConfiguration, model: any LanguageModel,
-        tokenizer: any Tokenizer
+        tokenizer: any Tokenizer,
+        grammarCompiler: GrammarConstraintCompiler? = nil,
+        grammarCompilerError: Error? = nil
     ) {
         self.configuration = configuration
         self.model = model
         self.tokenizer = tokenizer
+        self.grammarCompiler = grammarCompiler
+        self.grammarCompilerError = grammarCompilerError
     }
 
     /// Convert a text prompt into tokenized input for the model.

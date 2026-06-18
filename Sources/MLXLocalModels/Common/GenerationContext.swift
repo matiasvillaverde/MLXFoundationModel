@@ -7,6 +7,7 @@ internal enum MLXGenerationDiagnosticEvent: Sendable, Equatable {
     case prefillChunk(MLXPrefillChunkSnapshot)
     case cacheSnapshot(MLXCacheSnapshot)
     case quantizedKVConversion(MLXQuantizedKVConversionSnapshot)
+    case grammarConstraint(MLXGrammarConstraintSnapshot)
 }
 
 internal struct MLXGenerationParameterSnapshot: Sendable, Equatable {
@@ -28,6 +29,7 @@ internal struct MLXGenerationParameterSnapshot: Sendable, Equatable {
     let frequencyContextSize: Int
     let seed: Int?
     let logitBiasCount: Int
+    let grammarKind: GrammarConstraintKind?
 }
 
 internal struct MLXPromptCachePlanSnapshot: Sendable, Equatable {
@@ -64,6 +66,33 @@ internal struct MLXQuantizedKVConversionSnapshot: Sendable, Equatable {
     let kvGroupSize: Int
     let quantizedKVStart: Int
     let convertedCount: Int
+}
+
+internal struct MLXGrammarConstraintSnapshot: Sendable, Equatable {
+    enum Stage: String, Sendable {
+        case compilerReady
+        case compilerUnavailable
+        case matcherPrepared
+        case maskApplied
+        case mlxMaskPrepared
+        case mlxMaskReused
+        case maskSkipped
+        case tokenAccepted
+        case tokenRejected
+        case processorFailedClosed
+        case speculativeBypassed
+    }
+
+    let stage: Stage
+    let kind: GrammarConstraintKind?
+    let mode: GrammarTokenMask.Mode?
+    let tokenCount: Int?
+    let tokenID: Int?
+    let vocabularySize: Int?
+    let bitmaskSize: Int?
+    let isCompleted: Bool?
+    let isTerminated: Bool?
+    let message: String?
 }
 
 internal enum MLXGenerationDiagnostics {
@@ -115,7 +144,8 @@ internal enum MLXGenerationDiagnostics {
             frequencyPenalty: parameters.frequencyPenalty,
             frequencyContextSize: parameters.frequencyContextSize,
             seed: parameters.seed,
-            logitBiasCount: parameters.logitBias.count
+            logitBiasCount: parameters.logitBias.count,
+            grammarKind: parameters.grammar?.kind
         )), runID: currentRunID)
     }
 
@@ -174,6 +204,10 @@ internal enum MLXGenerationDiagnostics {
             quantizedKVStart: quantizedKVStart,
             convertedCount: convertedCount
         )), runID: currentRunID)
+    }
+
+    internal static func recordGrammarConstraint(_ snapshot: MLXGrammarConstraintSnapshot) {
+        store.record(.grammarConstraint(snapshot), runID: currentRunID)
     }
 }
 

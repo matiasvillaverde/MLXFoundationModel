@@ -40,8 +40,8 @@ internal protocol LogitProcessor: Sendable {
     /// called before token generation starts with the text tokens of the prompt
     mutating func prompt(_ prompt: MLXArray)
 
-    /// called to visit ad possibly modify the logits
-    func process(logits: MLXArray) -> MLXArray
+    /// called to visit and possibly modify the logits
+    mutating func process(logits: MLXArray) -> MLXArray
 
     /// called to provide the sampled token
     mutating func didSample(token: MLXArray)
@@ -113,6 +113,9 @@ internal struct GenerateParameters: Sendable {
     /// Per-token additive logit bias.
     internal var logitBias: [Int: Float]
 
+    /// Token-level grammar constraint.
+    internal var grammar: GrammarSamplingConfiguration?
+
     internal init(
         maxTokens: Int? = nil,
         maxKVSize: Int? = nil,
@@ -130,6 +133,7 @@ internal struct GenerateParameters: Sendable {
         frequencyPenalty: Float? = nil,
         frequencyContextSize: Int = GenerationConstants.defaultRepetitionContextSize,
         seed: Int? = nil,
+        grammar: GrammarSamplingConfiguration? = nil,
         logitBias: [Int: Float] = [:],
         prefillStepSize: Int = GenerationConstants.defaultPrefillStepSize
     ) {
@@ -149,6 +153,7 @@ internal struct GenerateParameters: Sendable {
         self.frequencyPenalty = frequencyPenalty
         self.frequencyContextSize = frequencyContextSize
         self.seed = seed
+        self.grammar = grammar
         self.logitBias = logitBias
         self.prefillStepSize = prefillStepSize
     }
@@ -173,7 +178,9 @@ internal struct GenerateParameters: Sendable {
         }
     }
 
-    internal func processor() -> LogitProcessor? {
+    internal func processor(
+        grammarCompiler: GrammarConstraintCompiler? = nil
+    ) throws -> LogitProcessor? {
         let repetitionContext: RepetitionContext?
         if let repetitionPenalty, repetitionPenalty != 0, repetitionPenalty != 1,
            repetitionContextSize > 0
@@ -207,9 +214,20 @@ internal struct GenerateParameters: Sendable {
         }
 
         let logitBiasContext = logitBias.isEmpty ? nil : LogitBiasProcessor(logitBias: logitBias)
+        let grammarContext: GrammarConstrainedLogitProcessor?
+        if let grammar {
+            guard let grammarCompiler else {
+                throw GrammarConstraintError.missingGrammarCompiler
+            }
+            grammarContext = try GrammarConstrainedLogitProcessor(
+                matcher: grammarCompiler.makeMatcher(for: grammar)
+            )
+        } else {
+            grammarContext = nil
+        }
 
         if repetitionContext == nil && presenceContext == nil && frequencyContext == nil &&
-            logitBiasContext == nil
+            logitBiasContext == nil && grammarContext == nil
         {
             return nil
         }
@@ -218,7 +236,8 @@ internal struct GenerateParameters: Sendable {
             logitBiasContext: logitBiasContext,
             repetitionContext: repetitionContext,
             presenceContext: presenceContext,
-            frequencyContext: frequencyContext
+            frequencyContext: frequencyContext,
+            grammarContext: grammarContext
         )
     }
 }
@@ -419,7 +438,7 @@ internal struct RepetitionContext: LogitProcessor, @unchecked Sendable {
         ring.loadPrompt(prompt)
     }
 
-    internal func process(logits: MLXArray) -> MLXArray {
+    mutating internal func process(logits: MLXArray) -> MLXArray {
         guard let indices = ring.validTokens?.asType(.uint32) else {
             return logits
         }
@@ -455,7 +474,7 @@ internal struct PresencePenaltyContext: LogitProcessor, @unchecked Sendable {
         ring.loadPrompt(prompt)
     }
 
-    internal func process(logits: MLXArray) -> MLXArray {
+    mutating internal func process(logits: MLXArray) -> MLXArray {
         guard let indices = ring.validTokens?.asType(.uint32) else {
             return logits
         }
@@ -484,7 +503,7 @@ internal struct FrequencyPenaltyContext: LogitProcessor, @unchecked Sendable {
         ring.loadPrompt(prompt)
     }
 
-    internal func process(logits: MLXArray) -> MLXArray {
+    mutating internal func process(logits: MLXArray) -> MLXArray {
         guard let validTokens = ring.validTokens else {
             return logits
         }
@@ -516,7 +535,7 @@ internal struct LogitBiasProcessor: LogitProcessor, @unchecked Sendable {
 
     mutating internal func prompt(_ prompt: MLXArray) {}
 
-    internal func process(logits: MLXArray) -> MLXArray {
+    mutating internal func process(logits: MLXArray) -> MLXArray {
         let vocabularySize = logits.dim(-1)
         let bias = MLXArray.zeros([vocabularySize], type: Float32.self)
             .at[indices]
@@ -533,17 +552,20 @@ internal struct PenaltyProcessor: LogitProcessor, @unchecked Sendable {
     var repetitionContext: RepetitionContext?
     var presenceContext: PresencePenaltyContext?
     var frequencyContext: FrequencyPenaltyContext?
+    var grammarContext: GrammarConstrainedLogitProcessor?
 
     internal init(
         logitBiasContext: LogitBiasProcessor?,
         repetitionContext: RepetitionContext?,
         presenceContext: PresencePenaltyContext?,
-        frequencyContext: FrequencyPenaltyContext?
+        frequencyContext: FrequencyPenaltyContext?,
+        grammarContext: GrammarConstrainedLogitProcessor?
     ) {
         self.logitBiasContext = logitBiasContext
         self.repetitionContext = repetitionContext
         self.presenceContext = presenceContext
         self.frequencyContext = frequencyContext
+        self.grammarContext = grammarContext
     }
 
     mutating internal func prompt(_ prompt: MLXArray) {
@@ -551,14 +573,16 @@ internal struct PenaltyProcessor: LogitProcessor, @unchecked Sendable {
         repetitionContext?.prompt(prompt)
         presenceContext?.prompt(prompt)
         frequencyContext?.prompt(prompt)
+        grammarContext?.prompt(prompt)
     }
 
-    internal func process(logits: MLXArray) -> MLXArray {
+    mutating internal func process(logits: MLXArray) -> MLXArray {
         var logits = logits
         logits = logitBiasContext?.process(logits: logits) ?? logits
         logits = repetitionContext?.process(logits: logits) ?? logits
         logits = presenceContext?.process(logits: logits) ?? logits
         logits = frequencyContext?.process(logits: logits) ?? logits
+        logits = grammarContext?.process(logits: logits) ?? logits
 
         return logits
     }
@@ -568,6 +592,7 @@ internal struct PenaltyProcessor: LogitProcessor, @unchecked Sendable {
         repetitionContext?.didSample(token: token)
         presenceContext?.didSample(token: token)
         frequencyContext?.didSample(token: token)
+        grammarContext?.didSample(token: token)
     }
 }
 
@@ -628,7 +653,7 @@ internal struct TokenIterator: Sequence, IteratorProtocol {
         self.y = .init(tokens: prompt)
         self.cache = cache ?? model.newCache(parameters: parameters)
 
-        self.processor = parameters.processor()
+        self.processor = try parameters.processor()
         self.sampler = parameters.sampler()
         self.maxTokens = parameters.maxTokens
 
@@ -654,13 +679,14 @@ internal struct TokenIterator: Sequence, IteratorProtocol {
     internal init(
         input: LMInput, model: any LanguageModel, cache: [KVCache]? = nil,
         parameters: GenerateParameters,
-        processorPrompt: LMInput.Text? = nil
+        processorPrompt: LMInput.Text? = nil,
+        grammarCompiler: GrammarConstraintCompiler? = nil
     ) throws {
         self.model = model
         self.y = input.text
         self.cache = cache ?? model.newCache(parameters: parameters)
 
-        self.processor = parameters.processor()
+        self.processor = try parameters.processor(grammarCompiler: grammarCompiler)
         self.sampler = parameters.sampler()
         self.maxTokens = parameters.maxTokens
 
@@ -816,7 +842,8 @@ internal struct SpeculativeTokenIterator: Sequence, IteratorProtocol {
         draftCache: [KVCache]? = nil,
         parameters: GenerateParameters,
         numDraftTokens: Int,
-        processorPrompt: LMInput.Text? = nil
+        processorPrompt: LMInput.Text? = nil,
+        grammarCompiler: GrammarConstraintCompiler? = nil
     ) throws {
         self.y = input.text
         self.draftY = input.text
@@ -828,7 +855,7 @@ internal struct SpeculativeTokenIterator: Sequence, IteratorProtocol {
             throw KVCacheError(message: "Speculative decoding requires trimmable KV caches.")
         }
 
-        self.processor = parameters.processor()
+        self.processor = try parameters.processor(grammarCompiler: grammarCompiler)
         self.sampler = parameters.sampler()
         self.maxTokens = parameters.maxTokens
         self.numDraftTokens = Swift.max(0, numDraftTokens)
