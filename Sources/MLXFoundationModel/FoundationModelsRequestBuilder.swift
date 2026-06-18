@@ -12,13 +12,35 @@ enum FoundationModelsRequestBuilder {
         let bridge = try bridgeRequest(from: request)
         let rendered = MLXPromptRenderer.render(bridge, style: model.model.promptStyle)
         let maxTokens = request.generationOptions.maximumResponseTokens ?? model.maximumResponseTokens
+        let promptMetadata = promptMetadata(for: rendered, style: model.model.promptStyle)
+        let cacheIdentity = promptCacheIdentity(for: rendered, style: model.model.promptStyle)
         return LLMInput(
             context: rendered.prompt,
-            promptMetadata: PromptRenderMetadata(rendererID: rendered.rendererID),
-            promptCacheIdentity: PromptCacheIdentity(stableFingerprint: rendered.cacheFingerprint),
+            promptMetadata: promptMetadata,
+            promptCacheIdentity: cacheIdentity,
             sampling: sampling(from: request.generationOptions, fallback: model.sampling),
             limits: ResourceLimits(maxTokens: maxTokens)
         )
+    }
+
+    private static func promptMetadata(
+        for rendered: MLXRenderedRequest,
+        style: MLXPromptStyle
+    ) -> PromptRenderMetadata? {
+        guard style != .plain else {
+            return nil
+        }
+        return PromptRenderMetadata(rendererID: rendered.rendererID)
+    }
+
+    private static func promptCacheIdentity(
+        for rendered: MLXRenderedRequest,
+        style: MLXPromptStyle
+    ) -> PromptCacheIdentity? {
+        guard style != .plain else {
+            return nil
+        }
+        return PromptCacheIdentity(stableFingerprint: rendered.cacheFingerprint)
     }
 
     private static func bridgeRequest(
