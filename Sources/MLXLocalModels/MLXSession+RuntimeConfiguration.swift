@@ -71,15 +71,23 @@ extension MLXSession {
             return
         }
 
-        let (cache, metadata) = try loadPromptCache(url: url)
-        guard let encodedEnvelope = metadata?[Self.persistedPromptCacheMetadataKey],
-            let envelopeData = Data(base64Encoded: encodedEnvelope)
-        else {
-            logger.warning("Persistent prompt cache metadata missing for \(url.path)")
+        let cache: [KVCache]
+        let envelope: PersistedPromptCacheEnvelope
+        do {
+            let payload = try loadPromptCache(url: url)
+            cache = payload.0
+            guard let encodedEnvelope = payload.1?[Self.persistedPromptCacheMetadataKey],
+                let envelopeData = Data(base64Encoded: encodedEnvelope)
+            else {
+                throw LLMError.invalidConfiguration("Persistent prompt cache metadata missing")
+            }
+            envelope = try JSONDecoder().decode(PersistedPromptCacheEnvelope.self, from: envelopeData)
+        } catch {
+            logger.warning("Skipping corrupt persistent prompt cache at \(url.path): \(error.localizedDescription)")
+            try? FileManager.default.removeItem(at: url)
             return
         }
 
-        let envelope = try JSONDecoder().decode(PersistedPromptCacheEnvelope.self, from: envelopeData)
         let byteCount = PromptCachePlanner.cacheByteCount(cache)
         guard byteCount <= runtimePreferences.promptCacheByteLimit else {
             logger.info("Skipping oversized persistent prompt cache restore for \(url.path)")
