@@ -17,6 +17,14 @@ let package = Package(
         .library(
             name: "MLXLocalModels",
             targets: ["MLXLocalModels"]
+        ),
+        .library(
+            name: "MLXFoundationModelExamples",
+            targets: ["MLXFoundationModelExamples"]
+        ),
+        .executable(
+            name: "FoundationModelsPlayground",
+            targets: ["FoundationModelsPlayground"]
         )
     ],
     dependencies: [
@@ -57,6 +65,22 @@ let package = Package(
             name: "MLXFoundationModel",
             dependencies: ["MLXLocalModels"]
         ),
+        .target(
+            name: "MLXFoundationModelExamples",
+            dependencies: [
+                "MLXFoundationModel",
+                "MLXLocalModels"
+            ]
+        ),
+        .executableTarget(
+            name: "FoundationModelsPlayground",
+            dependencies: [
+                "MLXFoundationModel",
+                "MLXFoundationModelExamples",
+                "MLXLocalModels"
+            ],
+            path: "Examples/FoundationModelsPlayground"
+        ),
         .testTarget(
             name: "MLXFoundationModelTests",
             dependencies: [
@@ -68,6 +92,7 @@ let package = Package(
             name: "MLXRealModelTests",
             dependencies: [
                 "MLXFoundationModel",
+                "MLXFoundationModelExamples",
                 "MLXLocalModels"
             ],
             resources: [
