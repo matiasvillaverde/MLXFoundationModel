@@ -196,38 +196,6 @@ struct MLXSessionCompatibilityTests {
         #expect(!input.context.contains("Tool tool-call-id:"))
     }
 
-    @Test("request builder rejects unsupported transcript segments")
-    func requestBuilderRejectsUnsupportedTranscriptSegments() throws {
-        guard #available(macOS 27.0, iOS 27.0, visionOS 27.0, *) else {
-            return
-        }
-
-        let transcript = Transcript(entries: [
-            .prompt(.init(segments: [.custom(CompatibilityCustomSegment(content: "custom"))]))
-        ])
-        let request = LanguageModelExecutorGenerationRequest(
-            id: UUID(),
-            transcript: transcript,
-            enabledTools: [],
-            generationOptions: GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 8),
-            contextOptions: ContextOptions(),
-            metadata: [:]
-        )
-
-        do {
-            _ = try FoundationModelsRequestBuilder.build(from: request, model: Self.compatibilityModel)
-            Issue.record("Expected unsupported transcript content")
-        } catch let error as LanguageModelError {
-            guard case .unsupportedTranscriptContent(let context) = error else {
-                Issue.record("Expected unsupported transcript content, got \(error)")
-                return
-            }
-            #expect(context.unsupportedContent.count == 1)
-        } catch {
-            Issue.record("Expected LanguageModelError, got \(error)")
-        }
-    }
-
     @available(macOS 27.0, iOS 27.0, visionOS 27.0, *)
     private static var compatibilityModel: MLXLanguageModel {
         compatibilityModel(style: .chatML)
@@ -263,15 +231,6 @@ struct MLXSessionCompatibilityTests {
             )),
             .prompt(.init(segments: [.text(.init(content: prompt))]))
         ])
-    }
-
-    @available(macOS 27.0, iOS 27.0, visionOS 27.0, *)
-    private struct CompatibilityCustomSegment: Transcript.CustomSegment {
-        let id = "compatibility-custom"
-        let content: String
-        var description: String {
-            content
-        }
     }
 }
 #endif

@@ -20,6 +20,18 @@ enum MLXErrorMapper {
                 .init(resetDate: resetDate, debugDescription: String(describing: error))
             )
 
+        case .invalidConfiguration(let message) where message.contains("image inputs"):
+            return LanguageModelError.unsupportedCapability(.init(
+                capability: .vision,
+                debugDescription: message
+            ))
+
+        case .invalidConfiguration(let message) where message.contains("video inputs"):
+            return LanguageModelError.unsupportedTranscriptContent(.init(
+                unsupportedContent: [],
+                debugDescription: message
+            ))
+
         case .invalidConfiguration, .modelNotFound:
             return LanguageModelError.unsupportedTranscriptContent(
                 .init(unsupportedContent: [], debugDescription: String(describing: error))
