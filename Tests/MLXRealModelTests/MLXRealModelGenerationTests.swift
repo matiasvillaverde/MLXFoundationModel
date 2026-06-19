@@ -1,4 +1,4 @@
-import MLXLocalModels
+@testable import MLXLocalModels
 import Testing
 
 @Suite(
@@ -40,9 +40,8 @@ struct MLXRealModelGenerationTests {
     func qwen3StopsOnConfiguredStopSequence() async throws {
         let models = try MLXRealModelCatalog.load()
         let model = try MLXRealModelHarness.requireModel("qwen3-0.6b-4bit", in: models)
-        let result = try await MLXRealModelHarness.run(
+        let observed = try await MLXRealModelHarness.runWithDiagnostics(
             model: model,
-            prompt: "Write exactly: alpha STOP beta",
             sampling: SamplingParameters(
                 temperature: 0.0,
                 topP: 1.0,
@@ -54,25 +53,32 @@ struct MLXRealModelGenerationTests {
                 maxTokens: 12,
                 maxTime: .seconds(120),
                 reusePromptCache: false
-            )
+            ),
+            prompt: "Write exactly: alpha STOP beta"
         )
+        let tokenEvents = MLXRealModelHarness.generatedTokenSnapshots(from: observed.events)
 
-        MLXRealModelHarness.verifyGenerated(result)
-        #expect(!result.text.contains("STOP"))
+        MLXRealModelHarness.verifyGenerated(observed.result)
+        MLXRealModelHarness.verifyGeneratedTokenDiagnostics(tokenEvents, result: observed.result)
+        #expect(!observed.result.text.contains("STOP"))
     }
 
     private static func verifyGeneration(
         for model: MLXRealModelCatalog.Model
     ) async throws {
         let tokenLimit = min(model.maxTokens, MLXRealModelEnvironment.architectureGenerationTokenLimit)
-        let result = try await MLXRealModelHarness.run(
+        let observed = try await MLXRealModelHarness.runWithDiagnostics(
             model: model,
+            sampling: .deterministic,
             limits: ResourceLimits(
                 maxTokens: tokenLimit,
                 maxTime: .seconds(MLXRealModelEnvironment.architectureGenerationTimeoutSeconds),
                 reusePromptCache: false
             )
         )
-        MLXRealModelHarness.verifyGenerated(result)
+        let tokenEvents = MLXRealModelHarness.generatedTokenSnapshots(from: observed.events)
+
+        MLXRealModelHarness.verifyGenerated(observed.result)
+        MLXRealModelHarness.verifyGeneratedTokenDiagnostics(tokenEvents, result: observed.result)
     }
 }

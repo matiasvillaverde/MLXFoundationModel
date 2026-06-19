@@ -24,8 +24,10 @@ struct MLXRealModelConstrainedDecodingTests {
         )
         let parameters = try MLXRealModelHarness.parameterSnapshot(from: observed.events)
         let grammarEvents = MLXRealModelHarness.grammarSnapshots(from: observed.events)
+        let tokenEvents = MLXRealModelHarness.generatedTokenSnapshots(from: observed.events)
 
         MLXRealModelHarness.verifyGenerated(observed.result)
+        MLXRealModelHarness.verifyGeneratedTokenDiagnostics(tokenEvents, result: observed.result)
         let json = try Self.extractJSONObject(from: observed.result.text)
         #expect(parameters.grammarKind == .jsonSchema)
         Self.verifySuccessfulGrammarDiagnostics(grammarEvents, kind: .jsonSchema)
@@ -45,8 +47,10 @@ struct MLXRealModelConstrainedDecodingTests {
         )
         let text = observed.result.text.trimmingCharacters(in: .whitespacesAndNewlines)
         let grammarEvents = MLXRealModelHarness.grammarSnapshots(from: observed.events)
+        let tokenEvents = MLXRealModelHarness.generatedTokenSnapshots(from: observed.events)
 
         MLXRealModelHarness.verifyGenerated(observed.result)
+        MLXRealModelHarness.verifyGeneratedTokenDiagnostics(tokenEvents, result: observed.result)
         Self.verifySuccessfulGrammarDiagnostics(grammarEvents, kind: .choices)
         #expect(Self.fruitChoices.contains(text), "Expected a constrained fruit choice, got \(text)")
     }
@@ -69,9 +73,12 @@ struct MLXRealModelConstrainedDecodingTests {
                 prompt: "Do not output JSON. Say hello in plain English."
             )
             let grammarEvents = MLXRealModelHarness.grammarSnapshots(from: observed.events)
+            let tokenEvents = MLXRealModelHarness.generatedTokenSnapshots(from: observed.events)
 
             MLXRealModelHarness.verifyGenerated(observed.result)
+            MLXRealModelHarness.verifyGeneratedTokenDiagnostics(tokenEvents, result: observed.result)
             Self.verifySuccessfulGrammarDiagnostics(grammarEvents, kind: .ebnf)
+            #expect(tokenEvents.first?.tokenText.contains("{") == true)
             #expect(
                 observed.result.text == "{",
                 """

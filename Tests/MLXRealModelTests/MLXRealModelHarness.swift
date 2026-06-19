@@ -125,6 +125,38 @@ enum MLXRealModelHarness {
         }
     }
 
+    static func generatedTokenSnapshots(
+        from events: [MLXGenerationDiagnosticEvent]
+    ) -> [MLXGeneratedTokenSnapshot] {
+        events.compactMap { event in
+            guard case .generatedToken(let snapshot) = event else {
+                return nil
+            }
+            return snapshot
+        }
+    }
+
+    static func verifyGeneratedTokenDiagnostics(
+        _ tokens: [MLXGeneratedTokenSnapshot],
+        result: GenerationResult
+    ) {
+        let generatedTokens = result.metrics?.usage?.generatedTokens ?? 0
+        let summaryText = tokens
+            .map { token in
+                "index=\(token.index) id=\(token.tokenID) text=\(token.tokenText.debugDescription)"
+            }
+            .joined(separator: "\n")
+        let summary = Comment(rawValue: summaryText)
+
+        #expect(!tokens.isEmpty, summary)
+        #expect(generatedTokens > 0)
+        #expect(tokens.count == generatedTokens, summary)
+        if !tokens.isEmpty {
+            #expect(tokens.map(\.index) == Array(1 ... tokens.count), summary)
+        }
+        #expect(tokens.contains { !$0.tokenText.isEmpty }, summary)
+    }
+
     private static func preload(
         session: any MLXGeneratingSession,
         model: MLXRealModelCatalog.Model

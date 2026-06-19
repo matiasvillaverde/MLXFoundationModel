@@ -20,8 +20,10 @@ struct MLXRealModelSamplingTests {
             limits: ResourceLimits(maxTokens: 10, maxTime: .seconds(120), reusePromptCache: false)
         )
         let parameters = try MLXRealModelHarness.parameterSnapshot(from: observed.events)
+        let tokenEvents = MLXRealModelHarness.generatedTokenSnapshots(from: observed.events)
 
         MLXRealModelHarness.verifyGenerated(observed.result)
+        MLXRealModelHarness.verifyGeneratedTokenDiagnostics(tokenEvents, result: observed.result)
         #expect(parameters.temperature == 0.7)
         #expect(parameters.topP == 0.85)
         #expect(parameters.topK == 8)

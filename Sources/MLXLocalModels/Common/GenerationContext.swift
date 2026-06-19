@@ -8,6 +8,7 @@ internal enum MLXGenerationDiagnosticEvent: Sendable, Equatable {
     case cacheSnapshot(MLXCacheSnapshot)
     case quantizedKVConversion(MLXQuantizedKVConversionSnapshot)
     case grammarConstraint(MLXGrammarConstraintSnapshot)
+    case generatedToken(MLXGeneratedTokenSnapshot)
 }
 
 internal struct MLXGenerationParameterSnapshot: Sendable, Equatable {
@@ -93,6 +94,12 @@ internal struct MLXGrammarConstraintSnapshot: Sendable, Equatable {
     let isCompleted: Bool?
     let isTerminated: Bool?
     let message: String?
+}
+
+internal struct MLXGeneratedTokenSnapshot: Sendable, Equatable {
+    let tokenID: Int
+    let tokenText: String
+    let index: Int
 }
 
 internal enum MLXGenerationDiagnostics {
@@ -208,6 +215,17 @@ internal enum MLXGenerationDiagnostics {
 
     internal static func recordGrammarConstraint(_ snapshot: MLXGrammarConstraintSnapshot) {
         store.record(.grammarConstraint(snapshot), runID: currentRunID)
+    }
+
+    internal static func recordGeneratedToken(tokenID: Int, tokenText: String, index: Int) {
+        guard let currentRunID else {
+            return
+        }
+        store.record(.generatedToken(MLXGeneratedTokenSnapshot(
+            tokenID: tokenID,
+            tokenText: tokenText,
+            index: index
+        )), runID: currentRunID)
     }
 }
 

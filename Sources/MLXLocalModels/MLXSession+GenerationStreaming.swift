@@ -9,6 +9,12 @@ extension MLXSession {
 
         tokenContext.state.allTokens.append(token)
         tokenContext.state.generatedTokenCount += 1
+        let tokenText = tokenContext.context.tokenizer.decode(tokens: [token])
+        MLXGenerationDiagnostics.recordGeneratedToken(
+            tokenID: token,
+            tokenText: tokenText,
+            index: tokenContext.state.generatedTokenCount
+        )
 
         if var detokenizer = tokenContext.state.detokenizer {
             detokenizer.append(token: token)
@@ -19,8 +25,7 @@ extension MLXSession {
                 return .stop
             }
         } else {
-            let text = tokenContext.context.tokenizer.decode(tokens: [token])
-            yieldText(text, tokenContext: tokenContext)
+            yieldText(tokenText, tokenContext: tokenContext)
         }
 
         if tokenContext.state.generatedTokenCount >= tokenContext.input.limits.maxTokens {

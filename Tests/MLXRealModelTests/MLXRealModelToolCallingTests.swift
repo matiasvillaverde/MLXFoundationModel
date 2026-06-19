@@ -1,4 +1,5 @@
 import MLXFoundationModel
+@testable import MLXLocalModels
 import Testing
 
 @Suite(
@@ -15,14 +16,19 @@ struct MLXRealModelToolCallingTests {
         let models = try MLXRealModelCatalog.load()
         let model = try MLXRealModelHarness.requireModel("qwen3-0.6b-4bit", in: models)
         let rendered = MLXPromptRenderer.render(Self.toolRequest, style: .chatML)
-        let result = try await MLXRealModelHarness.run(
-            model: model,
-            prompt: rendered.prompt,
-            sampling: .deterministic,
-            limits: ResourceLimits(maxTokens: 160, maxTime: .seconds(120), reusePromptCache: false)
-        )
+        let observed = try await MLXGenerationDiagnostics.withRecording {
+            try await MLXRealModelHarness.run(
+                model: model,
+                prompt: rendered.prompt,
+                sampling: .deterministic,
+                limits: ResourceLimits(maxTokens: 160, maxTime: .seconds(120), reusePromptCache: false)
+            )
+        }
+        let result = observed.result
+        let tokenEvents = MLXRealModelHarness.generatedTokenSnapshots(from: observed.events)
 
         MLXRealModelHarness.verifyGenerated(result)
+        MLXRealModelHarness.verifyGeneratedTokenDiagnostics(tokenEvents, result: result)
         let call = try #require(MLXToolCallExtractor.extract(from: result.text))
         #expect(call.name == "weather")
         #expect(call.argumentsJSON.contains("Berlin"))
