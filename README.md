@@ -1,32 +1,27 @@
 # MLXFoundationModel
 
-Use open-source MLX language models with Apple's Foundation Models interface.
+Run local MLX models from Swift with Apple's Foundation Models interface.
 
-MLXFoundationModel is a Swift package for apps that want Apple's
-`LanguageModelSession` interface, but with local models that run through MLX.
-The package keeps the MLX runtime in `MLXLocalModels` and exposes the
-Foundation Models bridge from `MLXFoundationModel`.
+This package adapts open-source MLX language models to
+`LanguageModelSession`. Models run locally on Apple silicon.
 
-> Alpha. Apple's custom-provider APIs require the OS 27 / Xcode 27 SDKs. The
-> package also builds on current SDKs with the provider conformance disabled, so
-> the local runtime, playground, and tests can run before those APIs are
-> available on the host.
+> Alpha. The Foundation Models provider path requires Xcode 27 and an OS 27 SDK.
+> The direct MLX runtime, tests, and playground also build on current SDKs.
 
 ## Requirements
 
 - Apple Silicon Mac for real MLX inference.
 - Swift 6.
-- Xcode 27 beta and an OS 27 SDK for `LanguageModelSession(model:)`
-  integration.
+- Xcode 27 beta and an OS 27 SDK for `LanguageModelSession(model:)`.
 
 ## Products
 
-- `MLXFoundationModel`: public bridge surface.
-- `MLXLocalModels`: direct local MLX generation session.
-- `MLXFoundationModelExamples`: shared examples for tests and the playground.
-- `FoundationModelsPlayground`: executable playground for a local model.
+- `MLXFoundationModel`: Foundation Models bridge.
+- `MLXLocalModels`: direct MLX generation.
+- `MLXFoundationModelExamples`: shared example requests.
+- `FoundationModelsPlayground`: runnable examples.
 
-## Quick Start
+## Usage
 
 ```swift
 import Foundation
@@ -46,30 +41,21 @@ let response = try await session.respond(to: "Write one sentence about local AI.
 print(response.content)
 ```
 
-Build the provider path with an SDK that exposes Apple's custom-provider
-protocols:
+Build the provider path:
 
 ```sh
 swift build -Xswiftc -DFOUNDATION_MODELS_PROVIDER_API
 ```
 
-## Playground Examples
+## Playground
 
-The playground runs the same examples as the opt-in real-model tests:
-
-- streaming chat
-- structured Trip Planner output
-- tool-call JSON
-- finite choices: `apple`, `pear`, or `banana`
-- structured content tags
-
-Download the smallest smoke-test model:
+Download the small test model:
 
 ```sh
 MLX_ASSUME_YES=1 MLX_MODEL_FILTER=smoke make download-test-models
 ```
 
-Run all examples:
+Run the examples:
 
 ```sh
 MLX_FOUNDATION_MODEL_PATH=.models/Qwen3-0.6B-4bit \
@@ -77,7 +63,7 @@ MLX_FOUNDATION_MODEL_ID=qwen3-0.6b-4bit \
 swift run FoundationModelsPlayground
 ```
 
-Run one example:
+Run one:
 
 ```sh
 MLX_FOUNDATION_MODEL_PATH=.models/Qwen3-0.6B-4bit \
@@ -85,7 +71,7 @@ MLX_FOUNDATION_MODEL_ID=qwen3-0.6b-4bit \
 swift run FoundationModelsPlayground --example apple-finite-choice-guided-generation
 ```
 
-The playground prints streamed model output and token usage:
+Example output:
 
 ```text
 === Apple finite-choice guided generation ===
@@ -93,27 +79,14 @@ apple
 tokens prompt=31 generated=1 total=32
 ```
 
-On OS 27 with provider APIs available, the playground can exercise the
-`LanguageModelSession(model:)` path. On older hosts it uses the direct MLX
-session path with the same prompts, tools, schemas, and constraints.
+## Features
 
-## Current Scope
-
-- Text generation from local MLX models.
-- Streaming text deltas into Foundation Models executor channels when available.
-- Prompt rendering for plain and ChatML-style instruction models.
-- Tool definitions rendered into the prompt.
-- Structured response constraints mapped to token-level constrained decoding.
-- Tool-call extraction through a best-effort JSON parser.
-- Foundation Models session overload compatibility tests under
-  `FOUNDATION_MODELS_PROVIDER_API`.
-
-## Guided Generation
-
-Guided generation is enforced during decoding, not by prompt text alone.
-Foundation Models schemas are mapped to XGrammar-backed token masks before each
-token is sampled. Supported constraints include JSON Schema, builtin JSON, EBNF,
-regex, and finite choices such as `apple | pear | banana`.
+- Local text generation with MLX models.
+- Streaming responses.
+- Tool definitions and tool-call parsing.
+- Structured output with token-level constrained decoding.
+- JSON Schema, JSON, EBNF, regex, and finite-choice constraints.
+- Provider compatibility tests behind `FOUNDATION_MODELS_PROVIDER_API`.
 
 ## Development
 
@@ -128,14 +101,7 @@ Real-model tests are opt-in and run serially because MLX uses the GPU:
 ```sh
 MLX_ASSUME_YES=1 MLX_MODEL_FILTER=smoke make download-test-models
 make test-real-models
-
-MLX_ASSUME_YES=1 make download-main-models
-make test-main-architectures
-
-make test-all-architectures
 ```
 
 Models download into ignored `.models/` by default. Set `MLX_TEST_MODELS_DIR`
-to reuse an existing model directory, `MLX_MODEL_FILTER` to download a subset,
-`MLX_REAL_MODEL_SCOPE=main` to require representative main architecture models,
-and `MLX_REAL_MODEL_SCOPE=all` to require every downloadable catalog model.
+to reuse an existing model directory.
