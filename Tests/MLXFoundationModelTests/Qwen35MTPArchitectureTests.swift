@@ -21,6 +21,26 @@ struct Qwen35MTPArchitectureTests {
         #expect(model.makeMTPCache(parameters: nil).count == 1)
     }
 
+    @Test("sanitizer disables native MTP when projection weights are absent")
+    func sanitizerDisablesNativeMTPWhenProjectionWeightsAreAbsent() throws {
+        let model = Qwen35TextModel(try Self.decodeConfig(mtpLayers: 1))
+
+        _ = model.sanitize(weights: [:])
+
+        #expect(!model.supportsNativeMTP)
+        #expect(model.makeMTPCache(parameters: nil).isEmpty)
+    }
+
+    @Test("top-level sanitizer disables config-only native MTP")
+    func topLevelSanitizerDisablesConfigOnlyNativeMTP() throws {
+        let model = Qwen35Model(try Self.decodeTopLevelConfig(mtpLayers: 1))
+
+        _ = model.sanitize(weights: [:])
+
+        #expect(!model.supportsNativeMTP)
+        #expect(model.makeMTPCache(parameters: nil).isEmpty)
+    }
+
     @Test(
         "sanitizer preserves native MTP weights only when configured",
         .disabled(

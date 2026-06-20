@@ -165,6 +165,43 @@ internal struct Qwen35TextConfiguration: Codable, Sendable {
     }
 }
 
+private protocol Qwen35NativeMTPActivationStrategy {
+    func shouldActivateNativeMTP(
+        configuration: Qwen35TextConfiguration,
+        weights: [String: MLXArray]
+    ) -> Bool
+
+    func removingNativeMTPWeights(from weights: [String: MLXArray]) -> [String: MLXArray]
+}
+
+private struct Qwen35WeightBackedNativeMTPActivationStrategy:
+    Qwen35NativeMTPActivationStrategy
+{
+    private let requiredProjectionKeys = [
+        "mtp.fc.weight",
+        "language_model.mtp.fc.weight",
+    ]
+
+    func shouldActivateNativeMTP(
+        configuration: Qwen35TextConfiguration,
+        weights: [String: MLXArray]
+    ) -> Bool {
+        guard configuration.hasNativeMTP else {
+            return false
+        }
+        return requiredProjectionKeys.contains { weights[$0] != nil }
+    }
+
+    func removingNativeMTPWeights(from weights: [String: MLXArray]) -> [String: MLXArray] {
+        weights.filter { !isNativeMTPWeightKey($0.key) }
+    }
+
+    private func isNativeMTPWeightKey(_ key: String) -> Bool {
+        key.hasPrefix("mtp.") ||
+            key.hasPrefix("language_model.mtp.")
+    }
+}
+
 // MARK: - GatedDeltaNet
 
 final class Qwen35GatedDeltaNet: Module {
@@ -666,6 +703,7 @@ internal class Qwen35TextModel: Module, LLMModel, KVCacheDimensionProvider, Nati
 
     internal let model: Qwen35TextModelInner
     let configuration: Qwen35TextConfiguration
+    private let nativeMTPActivationStrategy: Qwen35NativeMTPActivationStrategy
 
     @ModuleInfo(key: "lm_head") var lmHead: Linear?
     @ModuleInfo(key: "mtp") var mtp: Qwen35MTPModule?
@@ -675,6 +713,7 @@ internal class Qwen35TextModel: Module, LLMModel, KVCacheDimensionProvider, Nati
         self.vocabularySize = args.vocabularySize
         self.kvHeads = (0 ..< args.hiddenLayers).map { _ in args.kvHeads }
         self.model = Qwen35TextModelInner(args)
+        self.nativeMTPActivationStrategy = Qwen35WeightBackedNativeMTPActivationStrategy()
 
         if !args.tieWordEmbeddings {
             _lmHead.wrappedValue = Linear(args.hiddenSize, args.vocabularySize, bias: false)
@@ -761,13 +800,18 @@ internal class Qwen35TextModel: Module, LLMModel, KVCacheDimensionProvider, Nati
     internal func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
         var weights = normalizedMTPWeights(weights)
         let hasMTPWeights = weights.keys.contains { $0.contains("mtp.") }
+        let shouldActivateNativeMTP = nativeMTPActivationStrategy.shouldActivateNativeMTP(
+            configuration: configuration,
+            weights: weights
+        )
         let hasUnsanitizedConv1d = weights.contains { key, value in
             key.contains("conv1d.weight") && value.dim(-1) != 1
         }
         let shouldShiftNormWeights = hasMTPWeights || hasUnsanitizedConv1d
 
-        if !configuration.hasNativeMTP {
-            weights = weights.filter { !$0.key.contains("mtp.") }
+        if !shouldActivateNativeMTP {
+            disableNativeMTPModule()
+            weights = nativeMTPActivationStrategy.removingNativeMTPWeights(from: weights)
         }
 
         if configuration.tieWordEmbeddings {
@@ -811,6 +855,15 @@ internal class Qwen35TextModel: Module, LLMModel, KVCacheDimensionProvider, Nati
             return lmHead(hiddenStates)
         }
         return model.embedTokens.asLinear(hiddenStates)
+    }
+
+    private func disableNativeMTPModule() {
+        guard mtp != nil else {
+            return
+        }
+        var modules = ModuleChildren()
+        modules["mtp"] = NestedItem<String, Module>.none
+        update(modules: modules)
     }
 
     private func mtpHiddenStates(
