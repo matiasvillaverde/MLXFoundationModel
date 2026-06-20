@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MODEL_PATH="${MLX_PROFILE_MODEL_PATH:-$ROOT_DIR/.models/Qwen3-0.6B-4bit}"
+MODEL_ID="${MLX_PROFILE_MODEL_ID:-qwen3-0.6b-4bit}"
+EXAMPLE_ID="${MLX_PROFILE_EXAMPLE:-streaming-chat}"
+TEMPLATE="${MLX_PROFILE_TEMPLATE:-Time Profiler}"
+TIME_LIMIT="${MLX_PROFILE_TIME_LIMIT:-20s}"
+OUTPUT_DIR="${MLX_PROFILE_OUTPUT_DIR:-$ROOT_DIR/.build/reports/profiles}"
+MIN_FREE_GIB="${MLX_PROFILE_MIN_FREE_GIB:-8}"
+PRODUCT_NAME="${MLX_PROFILE_PRODUCT:-FoundationModelsPlayground}"
+BUILD_CONFIGURATION="${CONFIGURATION:-release}"
+
+usage() {
+  cat <<'USAGE'
+Profile a real MLX-backed Foundation Models playground run with Instruments.
+
+Environment:
+  MLX_PROFILE_MODEL_PATH       Model directory. Defaults to .models/Qwen3-0.6B-4bit.
+  MLX_PROFILE_MODEL_ID         Catalog/model identifier. Defaults to qwen3-0.6b-4bit.
+  MLX_PROFILE_EXAMPLE          Playground example id. Defaults to streaming-chat.
+  MLX_PROFILE_TEMPLATE         xctrace template. Defaults to Time Profiler.
+  MLX_PROFILE_TIME_LIMIT       xctrace time limit. Defaults to 20s.
+  MLX_PROFILE_OUTPUT_DIR       Output directory. Defaults to .build/reports/profiles.
+  MLX_PROFILE_MIN_FREE_GIB     Refuse to start below this free-space floor. Defaults to 8.
+  CONFIGURATION                Swift build configuration. Defaults to release.
+
+Examples:
+  scripts/profile-real-model.sh
+  MLX_PROFILE_TEMPLATE='Metal System Trace' scripts/profile-real-model.sh
+  MLX_PROFILE_TEMPLATE='File Activity' MLX_PROFILE_TIME_LIMIT=15s scripts/profile-real-model.sh
+USAGE
+}
+
+if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+  usage
+  exit 0
+fi
+
+if ! command -v swift >/dev/null 2>&1; then
+  echo "swift is required" >&2
+  exit 1
+fi
+
+if ! TEMPLATES="$(xcrun xctrace list templates)"; then
+  echo "xcrun xctrace is required" >&2
+  exit 1
+fi
+
+if [[ ! -d "$MODEL_PATH" ]]; then
+  echo "Model path does not exist: $MODEL_PATH" >&2
+  echo "Download smoke models with: MLX_ASSUME_YES=1 MLX_MODEL_FILTER=smoke make download-test-models" >&2
+  exit 1
+fi
+
+if ! grep -Fxq "$TEMPLATE" <<<"$TEMPLATES"; then
+  echo "xctrace template is not installed: $TEMPLATE" >&2
+  echo "Installed templates:" >&2
+  printf '%s\n' "$TEMPLATES" >&2
+  exit 1
+fi
+
+free_gib() {
+  df -g "$ROOT_DIR" | awk 'NR == 2 { print $4 }'
+}
+
+AVAILABLE_GIB="$(free_gib)"
+if [[ "$AVAILABLE_GIB" =~ ^[0-9]+$ ]] && ((AVAILABLE_GIB < MIN_FREE_GIB)); then
+  echo "Refusing to profile with only ${AVAILABLE_GIB} GiB free; need ${MIN_FREE_GIB} GiB." >&2
+  exit 1
+fi
+
+mkdir -p "$OUTPUT_DIR"
+
+RUN_ID="$(date +%Y%m%d-%H%M%S)"
+SAFE_TEMPLATE="$(printf '%s' "$TEMPLATE" | tr '[:upper:] ' '[:lower:]-' | tr -cd '[:alnum:]-')"
+TRACE_PATH="$OUTPUT_DIR/${MODEL_ID}-${EXAMPLE_ID}-${SAFE_TEMPLATE}-${RUN_ID}.trace"
+STDOUT_PATH="$OUTPUT_DIR/${MODEL_ID}-${EXAMPLE_ID}-${SAFE_TEMPLATE}-${RUN_ID}.stdout"
+TOC_PATH="$OUTPUT_DIR/${MODEL_ID}-${EXAMPLE_ID}-${SAFE_TEMPLATE}-${RUN_ID}-toc.xml"
+
+echo "Building $PRODUCT_NAME ($BUILD_CONFIGURATION)..."
+swift build --configuration "$BUILD_CONFIGURATION" --product "$PRODUCT_NAME"
+
+BINARY_PATH="$ROOT_DIR/.build/$BUILD_CONFIGURATION/$PRODUCT_NAME"
+if [[ ! -x "$BINARY_PATH" ]]; then
+  echo "Built product is not executable: $BINARY_PATH" >&2
+  exit 1
+fi
+
+echo "Recording $TEMPLATE for $TIME_LIMIT"
+echo "Trace:  $TRACE_PATH"
+echo "Stdout: $STDOUT_PATH"
+
+xcrun xctrace record \
+  --template "$TEMPLATE" \
+  --time-limit "$TIME_LIMIT" \
+  --output "$TRACE_PATH" \
+  --target-stdout "$STDOUT_PATH" \
+  --no-prompt \
+  --launch -- "$BINARY_PATH" \
+  --model-path "$MODEL_PATH" \
+  --model-id "$MODEL_ID" \
+  --example "$EXAMPLE_ID"
+
+if xcrun xctrace export --input "$TRACE_PATH" --toc --output "$TOC_PATH" >/dev/null 2>&1; then
+  echo "Trace TOC: $TOC_PATH"
+else
+  rm -f "$TOC_PATH"
+  echo "Trace TOC export skipped; open the trace in Instruments for details."
+fi
+
+echo "Generated output:"
+sed -n '1,120p' "$STDOUT_PATH"
+
+echo
+du -sh "$TRACE_PATH" "$STDOUT_PATH" 2>/dev/null || true

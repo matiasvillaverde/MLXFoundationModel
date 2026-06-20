@@ -53,6 +53,9 @@ test-main-architectures: ## Run opt-in real-model tests for representative main 
 test-relevant-models: ## Run opt-in real-model tests for relevant/latest representative models
 	@MLX_REAL_MODEL_SCOPE=relevant bash scripts/test-real-models-by-id.sh
 
+profile-real-model: ## Profile the release playground with Instruments/xctrace
+	@bash scripts/profile-real-model.sh
+
 test-acceptance: test-real-models ## Alias for opt-in real-model acceptance
 
 download-test-models: ## Download test models into ignored .models/
