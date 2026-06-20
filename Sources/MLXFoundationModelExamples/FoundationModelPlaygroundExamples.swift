@@ -197,4 +197,11 @@ public struct FoundationModelPlaygroundExample: Hashable, Sendable {
         self.sampling = sampling
         self.limits = limits
     }
+
+    public func resolvedStyle(modelDefault: MLXPromptStyle) -> MLXPromptStyle {
+        guard style == .chatML else {
+            return style
+        }
+        return modelDefault == .plain ? .chatML : modelDefault
+    }
 }

@@ -6,6 +6,7 @@ SWIFT_TEST_FLAGS = --configuration $(CONFIGURATION) --parallel
 SWIFT_TEST_SERIAL_FLAGS = --configuration $(CONFIGURATION) --no-parallel
 FAST_TEST_FILTER ?= MLXFoundationModelTests
 REAL_MODEL_TEST_FILTER ?= MLXRealModel
+PROVIDER_TEST_FILTER ?= MLXSessionCompatibilityTests|MLXSessionProviderContractTests|MLXSessionProviderReasoningContractTests|MLXSessionProviderLongCatContractTests|MLXFoundationModelsStreamEventSinkTests|MLXExecutorStreamingTests|MLXExecutorPrewarmTests|FMRequiredToolGrammarBuilderTests|FMToolRequiredArgsTests
 MLX_REAL_MODEL_SCOPE ?= smoke
 
 GREEN = \033[0;32m
@@ -30,6 +31,12 @@ test: build ## Run unit tests
 	@echo "$(BLUE)Testing MLXFoundationModel...$(NC)"
 	@swift test $(SWIFT_TEST_FLAGS) --filter '$(FAST_TEST_FILTER)'
 	@echo "$(GREEN)Tests passed$(NC)"
+
+test-provider: ## Run Foundation Models provider tests with the Apple API adapter enabled
+	@echo "$(BLUE)Testing Foundation Models provider adapter...$(NC)"
+	@swift test $(SWIFT_TEST_FLAGS) -Xswiftc -DFOUNDATION_MODELS_PROVIDER_API \
+		--filter '$(PROVIDER_TEST_FILTER)'
+	@echo "$(GREEN)Provider tests passed$(NC)"
 
 test-real-models: ## Run opt-in real-model smoke tests against downloaded weights
 	@echo "$(YELLOW)Running real-model tests with scope $(MLX_REAL_MODEL_SCOPE)...$(NC)"
@@ -85,6 +92,8 @@ lint-fix: ## Auto-fix SwiftLint issues
 	fi
 
 quality: lint build test ## Run lint, build, and tests
+
+quality-provider: lint build test test-provider ## Run lint, tests, and provider adapter tests
 
 clean: ## Clean build artifacts
 	@swift package clean

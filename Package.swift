@@ -63,7 +63,10 @@ let package = Package(
         ),
         .target(
             name: "MLXFoundationModel",
-            dependencies: ["MLXLocalModels"]
+            dependencies: [
+                "MLXLocalModels",
+                .product(name: "MLX", package: "mlx-swift")
+            ]
         ),
         .target(
             name: "MLXFoundationModelExamples",

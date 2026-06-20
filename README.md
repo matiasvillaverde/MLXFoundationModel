@@ -28,12 +28,9 @@ import Foundation
 import FoundationModels
 import MLXFoundationModel
 
-let model = MLXLanguageModel(
-    model: MLXModel(
-        id: "mlx-community/Qwen3-4B-4bit",
-        location: URL(fileURLWithPath: "/path/to/downloaded/model"),
-        promptStyle: .chatML
-    )
+let model = try MLXLanguageModel(
+    id: "mlx-community/Qwen3-4B-4bit",
+    location: URL(fileURLWithPath: "/path/to/downloaded/model")
 )
 
 let session = LanguageModelSession(model: model)
@@ -45,6 +42,12 @@ Build the provider path:
 
 ```sh
 swift build -Xswiftc -DFOUNDATION_MODELS_PROVIDER_API
+```
+
+Run the provider contract tests:
+
+```sh
+make test-provider
 ```
 
 ## Playground
@@ -94,6 +97,7 @@ tokens prompt=31 generated=1 total=32
 make lint
 make build
 make test
+make test-provider
 ```
 
 Real-model tests are opt-in and run serially because MLX uses the GPU:

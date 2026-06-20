@@ -6,28 +6,145 @@ CATALOG_PATH="${MLX_MODEL_CATALOG_PATH:-$ROOT_DIR/Tests/MLXRealModelTests/Resour
 MODEL_DIR="${MLX_TEST_MODELS_DIR:-$ROOT_DIR/.models}"
 FILTER="${MLX_MODEL_FILTER:-}"
 ASSUME_YES="${MLX_ASSUME_YES:-0}"
-
-if ! command -v git >/dev/null 2>&1; then
-  echo "git is required"
-  exit 1
-fi
-
-if ! command -v git-lfs >/dev/null 2>&1; then
-  echo "git-lfs is required. Install with: brew install git-lfs"
-  exit 1
-fi
+DOWNLOADER="${MLX_MODEL_DOWNLOADER:-auto}"
+HF_MAX_WORKERS="${MLX_HF_MAX_WORKERS:-4}"
+ALLOW_OVERSIZED_MODELS="${MLX_ALLOW_OVERSIZED_MODELS:-0}"
 
 if ! command -v python3 >/dev/null 2>&1; then
   echo "python3 is required"
   exit 1
 fi
 
+case "$DOWNLOADER" in
+auto)
+  if ! command -v hf >/dev/null 2>&1 &&
+    { ! command -v git >/dev/null 2>&1 || ! command -v git-lfs >/dev/null 2>&1; }; then
+    echo "Either hf or git plus git-lfs is required."
+    echo "Install hf with: brew install huggingface-cli"
+    echo "Install git-lfs with: brew install git-lfs"
+    exit 1
+  fi
+  ;;
+hf)
+  if ! command -v hf >/dev/null 2>&1; then
+    echo "hf is required. Install with: brew install huggingface-cli"
+    exit 1
+  fi
+  ;;
+git | git-lfs)
+  if ! command -v git >/dev/null 2>&1 || ! command -v git-lfs >/dev/null 2>&1; then
+    echo "git and git-lfs are required. Install git-lfs with: brew install git-lfs"
+    exit 1
+  fi
+  ;;
+*)
+  echo "Unknown MLX_MODEL_DOWNLOADER '$DOWNLOADER'. Use auto, hf, or git."
+  exit 1
+  ;;
+esac
+
+download_with_hf() {
+  local repository="$1"
+  local target="$2"
+
+  command -v hf >/dev/null 2>&1 || return 127
+  mkdir -p "$target"
+  hf download "$repository" --local-dir "$target" --max-workers "$HF_MAX_WORKERS"
+}
+
+download_with_git_lfs() {
+  local repository="$1"
+  local target="$2"
+  local tmp_target="$target.tmp"
+
+  command -v git >/dev/null 2>&1 || return 127
+  command -v git-lfs >/dev/null 2>&1 || return 127
+  git lfs install >/dev/null
+
+  rm -rf "$tmp_target"
+  if git clone --depth 1 "https://huggingface.co/$repository" "$tmp_target"; then
+    rm -rf "$tmp_target/.git"
+    rm -rf "$target"
+    mv "$tmp_target" "$target"
+    return 0
+  fi
+  rm -rf "$tmp_target"
+  return 1
+}
+
+is_complete_model_download() {
+  local target="$1"
+
+  [[ -f "$target/config.json" ]] &&
+    [[ -f "$target/tokenizer.json" || -f "$target/tokenizer.model" ]] &&
+    find "$target" -maxdepth 1 \( -name '*.safetensors' -o -name 'model.safetensors.index.json' \) \
+      -type f -print -quit | grep -q .
+}
+
+download_model() {
+  local repository="$1"
+  local target="$2"
+
+  case "$DOWNLOADER" in
+  auto)
+    if command -v hf >/dev/null 2>&1; then
+      download_with_hf "$repository" "$target"
+      return $?
+    fi
+    download_with_git_lfs "$repository" "$target"
+    ;;
+  hf)
+    download_with_hf "$repository" "$target"
+    ;;
+  git | git-lfs)
+    download_with_git_lfs "$repository" "$target"
+    ;;
+  *)
+    echo "Unknown MLX_MODEL_DOWNLOADER '$DOWNLOADER'. Use auto, hf, or git."
+    return 2
+    ;;
+  esac
+}
+
+host_memory_gb() {
+  python3 <<'PY'
+import os
+import platform
+import subprocess
+
+bytes_value = 0
+if platform.system() == "Darwin":
+    try:
+        bytes_value = int(subprocess.check_output(["sysctl", "-n", "hw.memsize"], text=True).strip())
+    except (OSError, subprocess.SubprocessError, ValueError):
+        bytes_value = 0
+elif os.path.exists("/proc/meminfo"):
+    with open("/proc/meminfo", "r", encoding="utf-8") as file:
+        for line in file:
+            if line.startswith("MemTotal:"):
+                bytes_value = int(line.split()[1]) * 1024
+                break
+
+print(max(1, bytes_value // (1024 ** 3)))
+PY
+}
+
+available_disk_gb() {
+  local path="$1"
+  mkdir -p "$path"
+  df -Pk "$path" | awk 'NR == 2 { print int($4 / 1024 / 1024) }'
+}
+
 mkdir -p "$MODEL_DIR"
-git lfs install >/dev/null
+HOST_MEMORY_GB="${MLX_HOST_MEMORY_GB:-$(host_memory_gb)}"
+AVAILABLE_DISK_GB="$(available_disk_gb "$MODEL_DIR")"
 
 echo "MLXFoundationModel test model downloader"
 echo "Catalog: $CATALOG_PATH"
 echo "Target:  $MODEL_DIR"
+echo "Downloader: $DOWNLOADER"
+echo "Host RAM: ${HOST_MEMORY_GB} GiB"
+echo "Free disk: ${AVAILABLE_DISK_GB} GiB"
 if [[ -n "$FILTER" ]]; then
   echo "Filter:  $FILTER"
 fi
@@ -55,6 +172,8 @@ for model in models:
         repository,
         model["relativePath"],
         ",".join(model.get("tags", [])),
+        str(model.get("minimumMemoryGB", "")),
+        str(model.get("minimumDiskGB", "")),
     ]
     haystack = " ".join(fields).lower()
     if filter_value and filter_value not in haystack:
@@ -82,32 +201,46 @@ FAILED=0
 COUNT=0
 for MODEL in "${MODELS[@]}"; do
   COUNT=$((COUNT + 1))
-  IFS=$'\t' read -r ID DISPLAY_NAME ARCHITECTURE REPOSITORY RELATIVE_PATH TAGS <<<"$MODEL"
+  IFS=$'\t' read -r ID DISPLAY_NAME ARCHITECTURE REPOSITORY RELATIVE_PATH TAGS \
+    MINIMUM_MEMORY_GB MINIMUM_DISK_GB <<<"$MODEL"
   TARGET="$MODEL_DIR/$RELATIVE_PATH"
+  AVAILABLE_DISK_GB="$(available_disk_gb "$MODEL_DIR")"
 
   echo
   echo "[$COUNT/${#MODELS[@]}] $DISPLAY_NAME"
   echo "Architecture: $ARCHITECTURE"
   echo "Repository:   $REPOSITORY"
   echo "Target:       $TARGET"
+  if [[ -n "$MINIMUM_MEMORY_GB" ]]; then
+    echo "Minimum RAM:  ${MINIMUM_MEMORY_GB} GiB"
+  fi
+  if [[ -n "$MINIMUM_DISK_GB" ]]; then
+    echo "Minimum disk: ${MINIMUM_DISK_GB} GiB"
+  fi
 
-  if [[ -f "$TARGET/config.json" ]] &&
-    [[ -f "$TARGET/tokenizer.json" || -f "$TARGET/tokenizer.model" ]] &&
-    find "$TARGET" -maxdepth 1 \( -name '*.safetensors' -o -name 'model.safetensors.index.json' \) \
-      -type f -print -quit | grep -q .; then
+  if [[ "$ALLOW_OVERSIZED_MODELS" != "1" ]] &&
+    [[ -n "$MINIMUM_MEMORY_GB" ]] &&
+    ((MINIMUM_MEMORY_GB > HOST_MEMORY_GB)); then
+    echo "Skipping $ID: requires ${MINIMUM_MEMORY_GB} GiB RAM, host has ${HOST_MEMORY_GB} GiB."
+    echo "Set MLX_ALLOW_OVERSIZED_MODELS=1 to download anyway."
+    continue
+  fi
+  if [[ "$ALLOW_OVERSIZED_MODELS" != "1" ]] &&
+    [[ -n "$MINIMUM_DISK_GB" ]] &&
+    ((MINIMUM_DISK_GB > AVAILABLE_DISK_GB)); then
+    echo "Skipping $ID: requires ${MINIMUM_DISK_GB} GiB free disk, host has ${AVAILABLE_DISK_GB} GiB."
+    echo "Set MLX_ALLOW_OVERSIZED_MODELS=1 to download anyway."
+    continue
+  fi
+
+  if is_complete_model_download "$TARGET"; then
     echo "Already downloaded."
     continue
   fi
 
-  TMP_TARGET="$TARGET.tmp"
-  rm -rf "$TMP_TARGET"
-  if git clone --depth 1 "https://huggingface.co/$REPOSITORY" "$TMP_TARGET"; then
-    rm -rf "$TMP_TARGET/.git"
-    rm -rf "$TARGET"
-    mv "$TMP_TARGET" "$TARGET"
+  if download_model "$REPOSITORY" "$TARGET" && is_complete_model_download "$TARGET"; then
     echo "Downloaded $ID."
   else
-    rm -rf "$TMP_TARGET"
     echo "Failed to download $ID."
     FAILED=1
   fi

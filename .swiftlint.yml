@@ -25,10 +25,97 @@ strict: true
 included:
   - Sources/MLXFoundationModel
   - Sources/MLXLocalModels/MLXSession.swift
+  - Sources/MLXLocalModels/MLXSession+ContinuousBatching.swift
   - Sources/MLXLocalModels/MLXSession+GenerationStreaming.swift
+  - Sources/MLXLocalModels/MLXSession+GenerationPreparation.swift
   - Sources/MLXLocalModels/MLXSession+IteratorFactory.swift
   - Sources/MLXLocalModels/MLXSession+PromptCacheStorage.swift
   - Sources/MLXLocalModels/MLXSessionFactory.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchCoordinator.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchCoordinator+PagedKV.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchCoordinator+Rows.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchCoordinatorError.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchDecodingStrategy.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchDecodeStep.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchDecodeStepError.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchExecutorConfig.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchExecutorResult.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchFinishedRow.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchFinishReason.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchGenerationBatch.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchAssembler.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchGenerationRequest.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchGenerationRow.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchGenerationScheduler.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchGenerationScheduler+StreamStepping.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchSchedulerError.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchGenerationStepResult.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchLogitRow.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchLogitRows.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchLogitRows+Rows.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchLogitRows+Sampling.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchLogitRowsError.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchPagedKVLease.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchPrefixCache.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchPrefixCacheGroupKey.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchPrefixCacheMerger.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchPromptCacheStorage.swift
+  - Sources/MLXLocalModels/MLXPromptCacheEntryStore.swift
+  - Sources/MLXLocalModels/Group.swift
+  - Sources/MLXLocalModels/GroupKey.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchCacheSignature.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchModelPrefillRunner.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchPrefill.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchPrefillBatcher.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchPrefillError.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchPrefillExecutorResult.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchPrefillQueueExecutor.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchPrefillRequest.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchPrefillRequestQueue.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchPrefillResult.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchPrefillRunning.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchQueueExecutor.swift
+  - Sources/MLXLocalModels/QueuedGroup.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchQueuedPrefillRequest.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchQueuedRequest.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchRequestID.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchRequestQueue.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchRequestQueueError.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchRequestQueueSnapshot.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchRunLoop.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchRunLoopConfiguration.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchRunLoopError.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchRunLoopResult.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchPreparedRequest.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchSampledTokens.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchSessionEngine.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchRowState.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchStreamCompletion.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchStreamDriver.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchStreamDriverError.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchStreamRow.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchStreamSink.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchStreamStep.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchStreamStepping.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchStreamStepSummary.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchStreamTokenDisposition.swift
+  - Sources/MLXLocalModels/MLXContinuousBatchTokenHandler.swift
+  - Sources/MLXLocalModels/MLXStreamTextEmitter.swift
+  - Sources/MLXLocalModels/MLXPagedKVBlockTable.swift
+  - Sources/MLXLocalModels/MLXPagedKVBlockTable+Allocation.swift
+  - Sources/MLXLocalModels/MLXPagedKVBlockTable+Leases.swift
+  - Sources/MLXLocalModels/MLXPagedKVBlockTable+Storage.swift
+  - Sources/MLXLocalModels/MLXPagedKVBlockTable+Support.swift
+  - Sources/MLXLocalModels/MLXPagedKVBlockID.swift
+  - Sources/MLXLocalModels/MLXPagedKVBlockRecord.swift
+  - Sources/MLXLocalModels/MLXPagedKVBlockTableError.swift
+  - Sources/MLXLocalModels/MLXGenerationExecutionPlan.swift
+  - Sources/MLXLocalModels/MLXGenerationExecutionPlanReason.swift
+  - Sources/MLXLocalModels/MLXGenerationExecutionPlanner.swift
+  - Sources/MLXLocalModels/MLXGenerationExecutionStrategy.swift
+  - Sources/MLXLocalModels/MLXGenerationRuntimeCapabilities.swift
+  - Sources/MLXLocalModels/MLXPreparedGenerationBatchingError.swift
+  - Sources/MLXLocalModels/MLXPreparedGeneration.swift
   - Sources/MLXLocalModels/MLXSpeculativeDecodingConfiguration.swift
   - Sources/MLXLocalModels/MetricsData+ChunkMetrics.swift
   - Tests

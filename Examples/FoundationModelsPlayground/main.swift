@@ -90,9 +90,10 @@ struct DirectMLXPlayground {
     func run() async throws {
         let session = MLXSessionFactory.create()
         do {
+            let modelPromptStyle = Self.modelPromptStyle(for: configuration)
             try await preload(session)
             for example in configuration.selectedExamples {
-                try await run(example, session: session)
+                try await run(example, session: session, modelPromptStyle: modelPromptStyle)
             }
             await session.unload()
         } catch {
@@ -116,10 +117,14 @@ struct DirectMLXPlayground {
 
     private func run(
         _ example: FoundationModelPlaygroundExample,
-        session: any MLXGeneratingSession
+        session: any MLXGeneratingSession,
+        modelPromptStyle: MLXPromptStyle
     ) async throws {
         print("\n=== \(example.title) ===")
-        let rendered = MLXPromptRenderer.render(example.request, style: example.style)
+        let rendered = MLXPromptRenderer.render(
+            example.request,
+            style: example.resolvedStyle(modelDefault: modelPromptStyle)
+        )
         let input = LLMInput(
             context: rendered.prompt,
             promptMetadata: PromptRenderMetadata(rendererID: rendered.rendererID),
@@ -147,6 +152,13 @@ struct DirectMLXPlayground {
         let promptTokens = usage.promptTokens.map(String.init) ?? "unknown"
         return "tokens prompt=\(promptTokens) generated=\(usage.generatedTokens) total=\(usage.totalTokens)"
     }
+
+    private static func modelPromptStyle(for configuration: PlaygroundConfiguration) -> MLXPromptStyle {
+        (try? MLXModelProfile.load(
+            from: configuration.modelURL,
+            id: configuration.modelID
+        ).promptStyle) ?? .chatML
+    }
 }
 
 #if FOUNDATION_MODELS_PROVIDER_API && canImport(FoundationModels)
@@ -166,7 +178,7 @@ struct FoundationModelsSessionPlayground {
             model: MLXModel(
                 id: configuration.modelID,
                 location: configuration.modelURL,
-                promptStyle: .chatML,
+                promptStyle: Self.modelPromptStyle(for: configuration),
                 capabilities: MLXModelCapabilities(toolCalling: true, structuredOutput: true)
             ),
             compute: .small,
@@ -258,6 +270,13 @@ struct FoundationModelsSessionPlayground {
         tokens input=\(usage.input.totalTokenCount) cached=\(usage.input.cachedTokenCount) \
         output=\(usage.output.totalTokenCount)
         """
+    }
+
+    private static func modelPromptStyle(for configuration: PlaygroundConfiguration) -> MLXPromptStyle {
+        (try? MLXModelProfile.load(
+            from: configuration.modelURL,
+            id: configuration.modelID
+        ).promptStyle) ?? .chatML
     }
 }
 
