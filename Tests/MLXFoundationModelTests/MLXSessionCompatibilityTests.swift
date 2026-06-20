@@ -12,6 +12,12 @@ struct MLXSessionCompatibilityTests {
         let summary: String
     }
 
+    @available(macOS 27.0, iOS 27.0, visionOS 27.0, *)
+    @Generable
+    struct WeatherArguments {
+        let city: String
+    }
+
     @Test("MLXLanguageModel type-checks with Apple session overloads")
     func mlxLanguageModelTypeChecksWithAppleSessionOverloads() async throws {
         guard #available(macOS 27.0, iOS 27.0, visionOS 27.0, *) else {
@@ -79,7 +85,8 @@ struct MLXSessionCompatibilityTests {
         let input = try FoundationModelsRequestBuilder.build(from: request, model: Self.compatibilityModel)
         let grammar = try #require(input.sampling.advanced.grammar)
 
-        #expect(grammar.kind == .jsonSchema)
+        #expect(FoundationModelsSchemaSupport.stringChoices(from: schema) == ["apple", "pear", "banana"])
+        #expect(grammar.kind == .choices)
         #expect(grammar.grammar.contains("apple"))
         #expect(grammar.grammar.contains("pear"))
         #expect(grammar.grammar.contains("banana"))
@@ -138,6 +145,27 @@ struct MLXSessionCompatibilityTests {
         #expect(grammar.kind == .jsonSchema)
         #expect(grammar.grammar.contains(#""tool_name""#))
         #expect(grammar.grammar.contains("weather"))
+    }
+
+    @Test("request builder constrains required Qwen tool calls with native XML grammar")
+    func requestBuilderConstrainsRequiredQwenToolCallsWithNativeXMLGrammar() throws {
+        guard #available(macOS 27.0, iOS 27.0, visionOS 27.0, *) else {
+            return
+        }
+
+        let input = try FoundationModelsRequestBuilder.build(
+            from: Self.requiredToolRequest(),
+            model: Self.compatibilityModel(style: .qwenXML)
+        )
+        let grammar = try #require(input.sampling.advanced.grammar)
+
+        #expect(input.context.contains("<tool_call><function=weather>"))
+        #expect(!input.context.contains("Available tools:"))
+        #expect(grammar.kind == .ebnf)
+        #expect(grammar.grammar.contains(#""<tool_call><function=weather>""#))
+        #expect(grammar.grammar.contains(#""city""#))
+        #expect(!grammar.grammar.contains(#""tool_name""#))
+        try NativeToolGrammarMaskTestSupport.expectRejectsJSONStart(grammar)
     }
 
     @Test("request builder carries sampling seeds")
@@ -218,7 +246,23 @@ struct MLXSessionCompatibilityTests {
         Transcript.ToolDefinition(
             name: "weather",
             description: "Read local weather for a city",
-            parameters: CompatibilityAnswer.generationSchema
+            parameters: WeatherArguments.generationSchema
+        )
+    }
+
+    @available(macOS 27.0, iOS 27.0, visionOS 27.0, *)
+    private static func requiredToolRequest() -> LanguageModelExecutorGenerationRequest {
+        LanguageModelExecutorGenerationRequest(
+            id: UUID(),
+            transcript: transcript(prompt: "Call the weather tool for Berlin."),
+            enabledTools: [weatherTool],
+            generationOptions: GenerationOptions(
+                samplingMode: .greedy,
+                maximumResponseTokens: 24,
+                toolCallingMode: .required
+            ),
+            contextOptions: ContextOptions(),
+            metadata: [:]
         )
     }
 

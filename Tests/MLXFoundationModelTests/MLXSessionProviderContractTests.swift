@@ -63,8 +63,8 @@ struct MLXSessionProviderContractTests {
         }
     }
 
-    @Test("request builder carries image attachments for vision-capable models")
-    func requestBuilderCarriesImageAttachmentsForVisionCapableModels() throws {
+    @Test("request builder rejects image attachments until VLM execution exists")
+    func requestBuilderRejectsImageAttachmentsUntilVLMExecutionExists() throws {
         guard #available(macOS 27.0, iOS 27.0, visionOS 27.0, *) else {
             return
         }
@@ -76,10 +76,9 @@ struct MLXSessionProviderContractTests {
             vision: true
         ))
 
-        let input = try FoundationModelsRequestBuilder.build(from: request, model: model)
-
-        #expect(input.context.contains("[Image: reference]"))
-        #expect(input.images.count == 1)
+        try Self.expectUnsupportedCapability(.vision) {
+            _ = try FoundationModelsRequestBuilder.build(from: request, model: model)
+        }
     }
 
     @Test("request builder rejects schemas when guided generation is unavailable")
@@ -141,6 +140,31 @@ struct MLXSessionProviderContractTests {
         let input = try FoundationModelsRequestBuilder.build(from: request, model: model)
 
         #expect(input.context.contains("Use deep internal reasoning before answering."))
+        #expect(input.context.contains("<|im_start|>assistant\n<think>\n"))
+        #expect(input.sampling.advanced.reasoningBudget?.maximumTokens == 2_048)
+        #expect(input.sampling.advanced.reasoningBudget?.endMarker == "</think>")
+    }
+
+    @Test("request builder maps Harmony reasoning hints to channel end marker")
+    func requestBuilderMapsHarmonyReasoningHintsToChannelEndMarker() throws {
+        guard #available(macOS 27.0, iOS 27.0, visionOS 27.0, *) else {
+            return
+        }
+
+        let request = Self.request(
+            transcript: Self.transcript(prompt: "Answer after thinking."),
+            contextOptions: ContextOptions(reasoningLevel: .light)
+        )
+        let model = Self.contractModel(
+            capabilities: .init(toolCalling: true, structuredOutput: true, reasoning: true),
+            style: .harmony
+        )
+
+        let input = try FoundationModelsRequestBuilder.build(from: request, model: model)
+
+        #expect(input.sampling.advanced.reasoningBudget?.maximumTokens == 128)
+        #expect(input.sampling.advanced.reasoningBudget?.endMarker == "<|end|>")
+        #expect(input.context.hasSuffix("<|start|>assistant<|channel|>analysis<|message|>"))
     }
 
     @Test("request builder rejects reasoning hints when reasoning is unavailable")

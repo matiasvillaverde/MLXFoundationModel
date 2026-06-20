@@ -67,4 +67,29 @@ struct MLXPromptRendererTests {
         #expect(rendered.prompt.contains("Return only JSON that conforms to this schema."))
         #expect(rendered.prompt.contains(#""required":["city"]"#))
     }
+
+    @Test("cache fingerprint tracks renderer compatibility instead of prompt text")
+    func cacheFingerprintTracksRendererCompatibility() {
+        let first = MLXPromptRenderer.render(
+            MLXBridgeRequest(messages: [
+                MLXBridgeMessage(role: .user, content: "First prompt")
+            ]),
+            style: .chatML
+        )
+        let second = MLXPromptRenderer.render(
+            MLXBridgeRequest(messages: [
+                MLXBridgeMessage(role: .user, content: "Second prompt")
+            ]),
+            style: .chatML
+        )
+        let plain = MLXPromptRenderer.render(
+            MLXBridgeRequest(messages: [
+                MLXBridgeMessage(role: .user, content: "First prompt")
+            ]),
+            style: .plain
+        )
+
+        #expect(first.cacheFingerprint == second.cacheFingerprint)
+        #expect(first.cacheFingerprint != plain.cacheFingerprint)
+    }
 }

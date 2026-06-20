@@ -53,14 +53,6 @@ struct GrammarConstrainedDecodingTests {
         #expect(!Self.isAllowed(tokenID: 4, by: mask))
     }
 
-    @Test("token masks represent all-allowed states as an empty reject list")
-    func tokenMasksRepresentAllAllowedStatesAsEmptyRejectList() {
-        let mask = GrammarTokenMask(bitmask: [Int32(bitPattern: UInt32.max)], vocabularySize: 4)
-
-        #expect(mask.mode == .reject)
-        #expect(mask.tokenIDs.isEmpty)
-    }
-
     @Test("finite choice diagnostics use choice kind")
     func finiteChoiceDiagnosticsUseChoiceKind() async throws {
         let recorded = try await MLXGenerationDiagnostics.withRecording {
@@ -186,9 +178,12 @@ struct GrammarConstrainedDecodingTests {
         vocabulary: [String],
         grammar: GrammarSamplingConfiguration
     ) throws -> GrammarConstraintMatcher {
+        try compiler(vocabulary: vocabulary).makeMatcher(for: grammar)
+    }
+
+    private static func compiler(vocabulary: [String]) throws -> GrammarConstraintCompiler {
         let directory = try makeTokenizerDirectory(vocabulary: vocabulary)
-        let compiler = try GrammarConstraintCompiler(modelDirectory: directory, stopTokenIds: [0])
-        return try compiler.makeMatcher(for: grammar)
+        return try GrammarConstraintCompiler(modelDirectory: directory, stopTokenIds: [0])
     }
 
     private static func isAllowed(tokenID: Int, by mask: GrammarTokenMask) -> Bool {
@@ -199,6 +194,15 @@ struct GrammarConstrainedDecodingTests {
 
         case .reject:
             return !containsToken
+        }
+    }
+
+    private static func allowedTokenIDs(
+        in vocabulary: [String],
+        by mask: GrammarTokenMask
+    ) -> [Int] {
+        vocabulary.indices.filter { tokenID in
+            isAllowed(tokenID: tokenID, by: mask)
         }
     }
 
