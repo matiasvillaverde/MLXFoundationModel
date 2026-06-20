@@ -16,21 +16,54 @@ extension LLMModel {
     internal func prepare(_ input: LMInput, cache: [KVCache], windowSize: Int?) throws
         -> PrepareResult {
         let prefillStepSize = windowSize ?? GenerationConstants.defaultPrefillStepSize
+        let controller = MLXGenerationDiagnostics.currentAdaptivePrefillController
         var y = input.text
 
         // prepare the prompt in chunks if larger than the prefill size
-        while y.tokens.size > prefillStepSize {
-            MLXGenerationDiagnostics.recordPrefillChunk(
-                chunkSize: prefillStepSize,
-                remainingTokenCount: y.tokens.size,
-                prefillStepSize: prefillStepSize
+        while true {
+            let remainingTokenCount = y.tokens.size
+            let chunkSize = adaptiveChunkSize(
+                remainingTokenCount: remainingTokenCount,
+                prefillStepSize: prefillStepSize,
+                controller: controller
             )
-            let input = y[.newAxis, ..<prefillStepSize]
+            guard remainingTokenCount > chunkSize else {
+                break
+            }
+            let memoryBeforeBytes = Int64(Memory.activeMemory)
+            let input = y[.newAxis, ..<chunkSize]
             _ = self(input, cache: cache.isEmpty ? nil : cache, state: nil)
             eval(cache)
-            y = y[prefillStepSize...]
+            let memoryAfterBytes = Int64(Memory.activeMemory)
+            controller?.recordChunk(
+                tokenCount: chunkSize,
+                memoryBeforeBytes: memoryBeforeBytes,
+                memoryAfterBytes: memoryAfterBytes
+            )
+            MLXGenerationDiagnostics.recordPrefillChunk(
+                chunkSize: chunkSize,
+                remainingTokenCount: remainingTokenCount,
+                prefillStepSize: prefillStepSize,
+                memoryBeforeBytes: memoryBeforeBytes,
+                memoryAfterBytes: memoryAfterBytes
+            )
+            y = y[chunkSize...]
         }
 
         return .tokens(y)
+    }
+
+    private func adaptiveChunkSize(
+        remainingTokenCount: Int,
+        prefillStepSize: Int,
+        controller: MLXAdaptivePrefillChunkController?
+    ) -> Int {
+        let requested = min(max(1, prefillStepSize), max(1, remainingTokenCount))
+        guard let controller else {
+            return requested
+        }
+        let decision = controller.decision(remainingTokenCount: remainingTokenCount)
+        MLXGenerationDiagnostics.recordAdaptivePrefillChunk(decision.snapshot)
+        return min(max(1, decision.selectedChunkSize), requested)
     }
 }

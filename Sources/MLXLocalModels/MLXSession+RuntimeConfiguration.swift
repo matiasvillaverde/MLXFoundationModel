@@ -6,16 +6,21 @@ extension MLXSession {
         let signature: PromptCacheSignature
     }
 
-    private static let persistedPromptCacheMetadataKey = "patagonia.prompt_cache.envelope.v1"
-
     internal func applyRuntimeConfiguration() async throws {
-        runtimePreferences = configuration?.runtime ?? .default
-        persistentPromptCacheURL = configuration.map(Self.makePersistentPromptCacheURL(for:))
+        try await configureRuntimePreferences()
         speculativeDecoding = try await makeSpeculativeDecodingConfigurationIfNeeded()
+        if let configuration {
+            memoryProfile = try? MLXModelMemoryProfile.load(modelDirectory: configuration.location)
+        } else {
+            memoryProfile = nil
+        }
 
         guard let modelContainer else {
             return
         }
+
+        await refineMemoryProfileWithLiveCacheLayout(modelContainer)
+        await configureContinuousBatchEngine(for: modelContainer)
 
         if runtimePreferences.promptCachePolicy == .off {
             await modelContainer.clearPromptCache()
@@ -23,7 +28,51 @@ extension MLXSession {
         }
 
         if runtimePreferences.promptCachePolicy == .persistent {
+            try MLXPersistentPromptCacheBudgetEnforcer.enforceAll(
+                limitBytes: runtimePreferences.persistentPromptCacheTotalByteLimit,
+                protectedSnapshotURL: persistentPromptCacheURL
+            )
             try await restorePersistentPromptCacheIfNeeded()
+        }
+    }
+
+    internal func preflightRuntimeForModelLoad() async throws {
+        try await configureRuntimePreferences()
+        guard let configuration else {
+            return
+        }
+        try MLXRuntimeMemoryGuard.preflightModelLoad(
+            configuration: runtimePreferences.memoryGuard,
+            modelDirectory: configuration.location
+        )
+    }
+
+    private func configureRuntimePreferences() async throws {
+        runtimePreferences = configuration?.runtime ?? .default
+        let executionPlan = try MLXGenerationExecutionPlanner.plan(
+            preferences: runtimePreferences,
+            capabilities: runtimeCapabilities
+        )
+        generationExecutionPlan = executionPlan
+        MLXGenerationDiagnostics.recordExecutionPlan(executionPlan)
+        if executionPlan.downgradedToScalar {
+            logger.warning(
+                "Continuous batching is not active in the scalar MLX engine; using serial admission"
+            )
+        }
+        await generationAdmission.updateConfiguration(executionPlan.effectiveScheduling)
+        MLXPersistentPromptCacheBlockStore.configureHotCache(
+            limitBytes: runtimePreferences.persistentPromptCacheHotByteLimit
+        )
+        persistentPromptCacheURL = configuration.map(MLXPersistentPromptCacheStore.url(for:))
+    }
+
+    private func refineMemoryProfileWithLiveCacheLayout(_ modelContainer: ModelContainer) async {
+        guard let profile = memoryProfile else {
+            return
+        }
+        memoryProfile = await modelContainer.perform { context in
+            profile.refinedWithLiveCacheLayout(context.model.newCache(parameters: nil))
         }
     }
 
@@ -50,7 +99,7 @@ extension MLXSession {
         )
         let envelopeData = try JSONEncoder().encode(envelope)
         let metadata = [
-            Self.persistedPromptCacheMetadataKey: envelopeData.base64EncodedString()
+            MLXPersistentPromptCacheStore.metadataKey: envelopeData.base64EncodedString()
         ]
 
         try FileManager.default.createDirectory(
@@ -59,6 +108,10 @@ extension MLXSession {
             attributes: nil
         )
         try savePromptCache(url: url, cache: entry.cache, metadata: metadata)
+        try MLXPersistentPromptCacheBudgetEnforcer.enforceAll(
+            limitBytes: runtimePreferences.persistentPromptCacheTotalByteLimit,
+            protectedSnapshotURL: url
+        )
     }
 
     internal func restorePersistentPromptCacheIfNeeded() async throws {
@@ -75,13 +128,13 @@ extension MLXSession {
         let envelope: PersistedPromptCacheEnvelope
         do {
             let payload = try loadPromptCache(url: url)
-            cache = payload.0
-            guard let encodedEnvelope = payload.1?[Self.persistedPromptCacheMetadataKey],
+            guard let encodedEnvelope = payload.1?[MLXPersistentPromptCacheStore.metadataKey],
                 let envelopeData = Data(base64Encoded: encodedEnvelope)
             else {
                 throw LLMError.invalidConfiguration("Persistent prompt cache metadata missing")
             }
             envelope = try JSONDecoder().decode(PersistedPromptCacheEnvelope.self, from: envelopeData)
+            cache = payload.0
         } catch {
             logger.warning("Skipping corrupt persistent prompt cache at \(url.path): \(error.localizedDescription)")
             try? FileManager.default.removeItem(at: url)
@@ -121,21 +174,4 @@ extension MLXSession {
         )
     }
 
-    nonisolated private static func makePersistentPromptCacheURL(
-        for configuration: ProviderConfiguration
-    ) -> URL {
-        let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first ??
-            FileManager.default.temporaryDirectory
-        let fingerprintSeed = [
-            configuration.modelName,
-            configuration.location.standardizedFileURL.path,
-            String(configuration.compute.contextSize)
-        ].joined(separator: "|")
-        let filename = "\(PromptCacheIdentity.stableFingerprint(for: fingerprintSeed)).safetensors"
-
-        return root
-            .appendingPathComponent("PatagoniaAppStore", isDirectory: true)
-            .appendingPathComponent("PromptCache", isDirectory: true)
-            .appendingPathComponent(filename)
-    }
 }

@@ -43,7 +43,12 @@ internal class Qwen35MoEModel: Qwen35Model {
                 continue
             }
             var key = key
-            if key.hasPrefix("model.language_model") {
+            if key.hasPrefix("model.language_model.mtp.") {
+                key = "language_model.mtp."
+                    + key.dropFirst("model.language_model.mtp.".count)
+            } else if key.hasPrefix("model.mtp.") {
+                key = "language_model.mtp." + key.dropFirst("model.mtp.".count)
+            } else if key.hasPrefix("model.language_model") {
                 key = key.replacingOccurrences(
                     of: "model.language_model", with: "language_model.model")
             } else if !key.hasPrefix("language_model.") {

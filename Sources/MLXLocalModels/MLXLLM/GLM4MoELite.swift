@@ -33,8 +33,11 @@ class MultiLinear: Module, Quantizable {
         super.init()
     }
 
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
-        return x.matmul(weight.swappedAxes(-1, -2))
+    func callAsFunction(_ x: MLXArray, transpose: Bool = true) -> MLXArray {
+        if transpose {
+            return x.matmul(weight.swappedAxes(-1, -2))
+        }
+        return x.matmul(weight)
     }
 
     // MARK: - Quantizable conformance
@@ -105,7 +108,7 @@ class QuantizedMultiLinear: Module, Quantized {
         self.freeze()
     }
 
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
+    func callAsFunction(_ x: MLXArray, transpose: Bool = true) -> MLXArray {
         // Use quantizedMM for efficient quantized matrix multiplication
         // The weight is in shape [numHeads, outputDims, inputDims(packed)]
         return quantizedMM(
@@ -113,11 +116,208 @@ class QuantizedMultiLinear: Module, Quantized {
             weight,
             scales: scales,
             biases: biases,
-            transpose: true,
+            transpose: transpose,
             groupSize: groupSize,
             bits: bits,
             mode: mode
         )
+    }
+}
+
+// MARK: - GLM DSA Indexer Schedule
+
+enum GLMMoEDSAIndexerKind: String, Codable, Sendable {
+    case full
+    case shared
+
+    init(token: String) throws {
+        switch token.lowercased() {
+        case "f", "full":
+            self = .full
+        case "s", "shared":
+            self = .shared
+        default:
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: [],
+                debugDescription: "Unsupported GLM DSA indexer type '\(token)'"
+            ))
+        }
+    }
+}
+
+enum GLMMoEDSAIndexTopKPattern: Equatable, Sendable, Codable {
+    case string(String)
+    case entries([String])
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let value = try? container.decode(String.self) {
+            self = .string(value)
+            return
+        }
+        self = .entries(try container.decode([String].self))
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let value):
+            try container.encode(value)
+        case .entries(let values):
+            try container.encode(values)
+        }
+    }
+
+    var tokens: [String] {
+        switch self {
+        case .string(let value):
+            value.map(String.init)
+        case .entries(let values):
+            values
+        }
+    }
+}
+
+struct GLMMoEDSAIndexerSchedule: Equatable, Sendable {
+    let kinds: [GLMMoEDSAIndexerKind]
+
+    init(
+        layerCount: Int,
+        explicitTypes: [String]?,
+        pattern: GLMMoEDSAIndexTopKPattern?,
+        frequency: Int,
+        skipOffset: Int
+    ) throws {
+        let parsed: [GLMMoEDSAIndexerKind]
+        if let explicitTypes {
+            parsed = try Self.parse(explicitTypes)
+        } else if let pattern {
+            parsed = try Self.parse(pattern.tokens)
+        } else {
+            parsed = Self.derived(layerCount: layerCount, frequency: frequency, skipOffset: skipOffset)
+        }
+        try Self.validate(parsed, layerCount: layerCount)
+        self.kinds = parsed
+    }
+
+    private static func parse(_ values: [String]) throws -> [GLMMoEDSAIndexerKind] {
+        try values.map { try GLMMoEDSAIndexerKind(token: $0) }
+    }
+
+    private static func derived(
+        layerCount: Int,
+        frequency: Int,
+        skipOffset: Int
+    ) -> [GLMMoEDSAIndexerKind] {
+        let safeFrequency = max(frequency, 1)
+        return (0 ..< layerCount).map { layerIndex in
+            max(layerIndex - skipOffset + 1, 0) % safeFrequency == 0 ? .full : .shared
+        }
+    }
+
+    private static func validate(
+        _ kinds: [GLMMoEDSAIndexerKind],
+        layerCount: Int
+    ) throws {
+        guard kinds.count == layerCount else {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: [],
+                debugDescription: "`indexer_types` must have one entry per hidden layer"
+            ))
+        }
+        guard kinds.first == .full else {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: [],
+                debugDescription: "The first GLM DSA layer must be a full indexer layer"
+            ))
+        }
+    }
+}
+
+// MARK: - DSA Indexer
+
+class GLM4MoEDSAIndexer: Module {
+    let nHeads: Int
+    let headDim: Int
+    let indexTopK: Int
+    let softmaxScale: Float
+
+    @ModuleInfo(key: "wq_b") var wqB: Linear
+    @ModuleInfo(key: "wk") var wk: Linear
+    @ModuleInfo(key: "k_norm") var kNorm: LayerNorm
+    @ModuleInfo(key: "weights_proj") var weightsProj: Linear
+
+    let rope: RoPELayer
+
+    init(_ config: GLM4MoELiteConfiguration) {
+        guard let indexNHeads = config.indexNHeads,
+            let indexHeadDim = config.indexHeadDim,
+            let indexTopK = config.indexTopK,
+            let qLoraRank = config.qLoraRank
+        else {
+            fatalError("GLM DSA indexer requires index_n_heads, index_head_dim, index_topk and q_lora_rank")
+        }
+
+        self.nHeads = indexNHeads
+        self.headDim = indexHeadDim
+        self.indexTopK = indexTopK
+        self.softmaxScale = pow(Float(indexHeadDim), -0.5)
+
+        _wqB.wrappedValue = Linear(qLoraRank, indexNHeads * indexHeadDim, bias: false)
+        _wk.wrappedValue = Linear(config.hiddenSize, indexHeadDim, bias: false)
+        _kNorm.wrappedValue = LayerNorm(dimensions: indexHeadDim)
+        _weightsProj.wrappedValue = Linear(config.hiddenSize, indexNHeads, bias: false)
+
+        self.rope = initializeRope(
+            dims: config.qkRopeHeadDim,
+            base: config.ropeTheta,
+            traditional: config.ropeTraditional,
+            scalingConfig: config.ropeScaling,
+            maxPositionEmbeddings: config.maxPositionEmbeddings
+        )
+    }
+
+    func callAsFunction(
+        _ x: MLXArray,
+        qr: MLXArray,
+        mask: MLXArray?,
+        cache: KVCache?
+    ) -> MLXArray? {
+        let (batchSize, sequenceLength, _) = (x.dim(0), x.dim(1), x.dim(2))
+        var q = wqB(qr)
+        q = q.reshaped(batchSize, sequenceLength, nHeads, headDim).transposed(0, 2, 1, 3)
+
+        var k = wk(x)
+        k = kNorm(k)
+        k = k.reshaped(batchSize, 1, sequenceLength, headDim)
+
+        if let cache {
+            q = rope(q, offset: cache.offset)
+            k = rope(k, offset: cache.offset)
+            let emptyValues = MLXArray.zeros([batchSize, 1, sequenceLength, 0], dtype: k.dtype)
+            k = cache.update(keys: k, values: emptyValues).0
+        } else {
+            q = rope(q, offset: 0)
+            k = rope(k, offset: 0)
+        }
+
+        guard k.dim(2) > indexTopK else {
+            return nil
+        }
+
+        var scores = q.matmul(k.swappedAxes(-1, -2))
+        scores = maximum(scores, MLXArray(0, dtype: scores.dtype))
+
+        var weights = weightsProj(x)
+        weights = weights * (1 / Float(nHeads).squareRoot()) * softmaxScale
+        weights = weights.transposed(0, 2, 1)[.ellipsis, .newAxis]
+        scores = (scores * weights).sum(axis: 1, keepDims: true)
+
+        if let mask {
+            scores = MLX.where(mask, scores, attentionMaskFillValue(dtype: scores.dtype))
+        }
+
+        return argPartition(scores, kth: -indexTopK, axis: -1)[.ellipsis, (-indexTopK)...]
     }
 }
 
@@ -147,8 +347,10 @@ class GLM4MoELiteAttention: Module {
     @ModuleInfo(key: "kv_a_layernorm") var kvALayerNorm: RMSNorm
     @ModuleInfo(key: "embed_q") var embedQ: Module  // Can be MultiLinear or QuantizedMultiLinear
     @ModuleInfo(key: "unembed_out") var unembedOut: Module  // Can be MultiLinear or QuantizedMultiLinear
+    @ModuleInfo(key: "indexer") var indexer: GLM4MoEDSAIndexer?
+    let dsaIndexerKind: GLMMoEDSAIndexerKind?
 
-    init(_ config: GLM4MoELiteConfiguration) {
+    init(_ config: GLM4MoELiteConfiguration, layerIdx: Int) {
         self.config = config
         self.hiddenSize = config.hiddenSize
         self.numHeads = config.attentionHeads
@@ -216,14 +418,23 @@ class GLM4MoELiteAttention: Module {
             scalingConfig: ropeScaling,
             maxPositionEmbeddings: maxPositionEmbeddings
         )
+
+        self.dsaIndexerKind = config.dsaIndexerKind(for: layerIdx)
+        if dsaIndexerKind == .full {
+            _indexer.wrappedValue = GLM4MoEDSAIndexer(config)
+        }
     }
 
     /// Helper to call a MultiLinear or QuantizedMultiLinear module
-    private func callMultiLinear(_ module: Module, _ x: MLXArray) -> MLXArray {
+    private func callMultiLinear(
+        _ module: Module,
+        _ x: MLXArray,
+        transpose: Bool = true
+    ) -> MLXArray {
         if let multiLinear = module as? MultiLinear {
-            return multiLinear(x)
+            return multiLinear(x, transpose: transpose)
         } else if let quantized = module as? QuantizedMultiLinear {
-            return quantized(x)
+            return quantized(x, transpose: transpose)
         } else {
             fatalError("Module must be MultiLinear or QuantizedMultiLinear")
         }
@@ -231,6 +442,26 @@ class GLM4MoELiteAttention: Module {
 
     func callAsFunction(
         _ x: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode, cache: KVCache?
+    ) -> MLXArray {
+        callAsFunction(x, mask: mask, cache: cache, previousTopKIndices: nil).output
+    }
+
+    func callAsFunction(
+        _ x: MLXArray,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode,
+        cache: KVCache?,
+        previousTopKIndices: MLXArray?
+    ) -> (output: MLXArray, topKIndices: MLXArray?) {
+        guard dsaIndexerKind != nil else {
+            return (standardAttention(x, mask: mask, cache: cache), nil)
+        }
+        return dsaAttention(x, mask: mask, cache: cache, previousTopKIndices: previousTopKIndices)
+    }
+
+    private func standardAttention(
+        _ x: MLXArray,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode,
+        cache: KVCache?
     ) -> MLXArray {
         let (B, L, _) = (x.dim(0), x.dim(1), x.dim(2))
 
@@ -288,6 +519,126 @@ class GLM4MoELiteAttention: Module {
 
         output = output.transposed(0, 2, 1, 3).reshaped(B, L, -1)
         return oProj(output)
+    }
+
+    private func dsaAttention(
+        _ x: MLXArray,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode,
+        cache: KVCache?,
+        previousTopKIndices: MLXArray?
+    ) -> (output: MLXArray, topKIndices: MLXArray?) {
+        let (batchSize, sequenceLength, _) = (x.dim(0), x.dim(1), x.dim(2))
+        let cacheList = cache as? CacheList
+        let attentionCache = cacheList?[0] ?? cache
+        let indexerCache = cacheList.flatMap { $0.layoutCaches.count > 1 ? $0[1] : nil }
+
+        let qr = qALayerNorm!(qAProj!(x))
+        var q = qBProj!(qr)
+        q = q.reshaped(batchSize, sequenceLength, numHeads, qHeadDim)
+            .transposed(0, 2, 1, 3)
+        let splitQ = split(q, indices: [qkNopeHeadDim], axis: -1)
+        var qNope = splitQ[0]
+        var qPe = splitQ[1]
+
+        var compressedKv = kvAProjWithMqa(x)
+        let splitCompressedKv = split(compressedKv, indices: [kvLoraRank], axis: -1)
+        compressedKv = splitCompressedKv[0]
+        var kPe = splitCompressedKv[1]
+        kPe = kPe.reshaped(batchSize, sequenceLength, 1, qkRopeHeadDim)
+            .transposed(0, 2, 1, 3)
+        var kvLatent = kvALayerNorm(compressedKv)
+
+        qPe = applyRotaryPosition(rope, to: qPe, cache: attentionCache)
+        kPe = applyRotaryPosition(rope, to: kPe, cache: attentionCache)
+        kvLatent = expandedDimensions(kvLatent, axis: 1)
+
+        if let attentionCache {
+            (kvLatent, kPe) = attentionCache.update(keys: kvLatent, values: kPe)
+        }
+
+        let inputMask = Self.arrayMask(from: mask)
+        let shouldReuseTopK = indexer == nil || isIndexCacheSharedLayer(cacheList)
+        var topKIndices: MLXArray?
+        if let indexer, !shouldReuseTopK {
+            topKIndices = indexer(x, qr: qr, mask: inputMask, cache: indexerCache)
+        } else {
+            topKIndices = previousTopKIndices
+        }
+
+        var activeMask = inputMask
+        if let topKIndices {
+            if sequenceLength == 1 {
+                let gatherIndex = topKIndices[.ellipsis, 0, 0..., .newAxis]
+                let latentIndex = broadcast(
+                    gatherIndex,
+                    to: Array(gatherIndex.shape.dropLast()) + [kvLatent.dim(-1)]
+                )
+                kvLatent = takeAlong(kvLatent, latentIndex, axis: 2)
+
+                let rotaryIndex = broadcast(
+                    gatherIndex,
+                    to: Array(gatherIndex.shape.dropLast()) + [kPe.dim(-1)]
+                )
+                kPe = takeAlong(kPe, rotaryIndex, axis: 2)
+                if let inputMask {
+                    activeMask = takeAlong(inputMask, topKIndices, axis: -1)
+                }
+            } else {
+                var sparseShape = topKIndices.shape
+                sparseShape[sparseShape.count - 1] = kvLatent.dim(2)
+                var sparseMask = MLXArray.zeros(sparseShape, dtype: .bool)
+                sparseMask = putAlong(sparseMask, topKIndices, values: MLXArray(true), axis: -1)
+                if let inputMask {
+                    sparseMask = sparseMask & inputMask
+                }
+                activeMask = sparseMask
+            }
+        }
+
+        var peScores = (qPe * scale).matmul(kPe.swappedAxes(-1, -2))
+        if let activeMask {
+            peScores = MLX.where(activeMask, peScores, attentionMaskFillValue(dtype: peScores.dtype))
+        }
+
+        let keys: MLXArray
+        let values: MLXArray
+        if sequenceLength == 1 {
+            qNope = callMultiLinear(embedQ, qNope)
+            keys = kvLatent
+            values = kvLatent
+        } else {
+            keys = callMultiLinear(embedQ, kvLatent, transpose: false)
+            values = callMultiLinear(unembedOut, kvLatent)
+        }
+
+        var output = MLXFast.scaledDotProductAttention(
+            queries: qNope,
+            keys: keys,
+            values: values,
+            scale: scale,
+            mask: .array(peScores)
+        )
+        if sequenceLength == 1 {
+            output = callMultiLinear(unembedOut, output)
+        }
+
+        output = output.transposed(0, 2, 1, 3).reshaped(batchSize, sequenceLength, -1)
+        return (oProj(output), topKIndices)
+    }
+
+    private static func arrayMask(from mask: MLXFast.ScaledDotProductAttentionMaskMode) -> MLXArray? {
+        switch mask {
+        case .array(let array):
+            return array
+        case .arrays(let arrays):
+            return arrays.first
+        case .causal, .none:
+            return nil
+        }
+    }
+
+    private func isIndexCacheSharedLayer(_ cacheList: CacheList?) -> Bool {
+        config.modelType == "deepseek_v32" && cacheList?.layoutCaches.count == 1
     }
 }
 
@@ -423,7 +774,7 @@ class GLM4MoELiteDecoderLayer: Module {
     @ModuleInfo(key: "post_attention_layernorm") var postAttentionLayerNorm: RMSNorm
 
     init(_ config: GLM4MoELiteConfiguration, layerIdx: Int) {
-        _attention.wrappedValue = GLM4MoELiteAttention(config)
+        _attention.wrappedValue = GLM4MoELiteAttention(config, layerIdx: layerIdx)
 
         if config.nRoutedExperts != nil,
             layerIdx >= config.firstKDenseReplace,
@@ -443,10 +794,25 @@ class GLM4MoELiteDecoderLayer: Module {
     func callAsFunction(
         _ x: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode, cache: KVCache?
     ) -> MLXArray {
-        let r = attention(inputLayerNorm(x), mask: mask, cache: cache)
+        callAsFunction(x, mask: mask, cache: cache, previousTopKIndices: nil).output
+    }
+
+    func callAsFunction(
+        _ x: MLXArray,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode,
+        cache: KVCache?,
+        previousTopKIndices: MLXArray?
+    ) -> (output: MLXArray, topKIndices: MLXArray?) {
+        let attentionResult = attention(
+            inputLayerNorm(x),
+            mask: mask,
+            cache: cache,
+            previousTopKIndices: previousTopKIndices
+        )
+        let r = attentionResult.output
         let h = x + r
         let r2 = mlp(postAttentionLayerNorm(h))
-        return h + r2
+        return (h + r2, attentionResult.topKIndices)
     }
 }
 
@@ -455,9 +821,11 @@ internal class GLM4MoELiteModelInner: Module {
 
     let layers: [GLM4MoELiteDecoderLayer]
     let norm: RMSNorm
+    let config: GLM4MoELiteConfiguration
 
     init(_ config: GLM4MoELiteConfiguration) {
         precondition(config.vocabularySize > 0)
+        self.config = config
 
         _embedTokens.wrappedValue = Embedding(
             embeddingCount: config.vocabularySize, dimensions: config.hiddenSize)
@@ -472,13 +840,35 @@ internal class GLM4MoELiteModelInner: Module {
     func callAsFunction(_ inputs: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
         var h = embedTokens(inputs)
 
-        let mask = createAttentionMask(h: h, cache: cache?.first)
+        let mask = createAttentionMask(
+            h: h,
+            cache: Self.attentionMaskCache(from: cache),
+            returnArray: config.usesDSA
+        )
 
+        var previousTopKIndices: MLXArray?
         for (i, layer) in layers.enumerated() {
-            h = layer(h, mask: mask, cache: cache?[i])
+            let result = layer(
+                h,
+                mask: mask,
+                cache: cache?[i],
+                previousTopKIndices: previousTopKIndices
+            )
+            h = result.output
+            previousTopKIndices = result.topKIndices
         }
 
         return norm(h)
+    }
+
+    private static func attentionMaskCache(from cache: [KVCache]?) -> [KVCache]? {
+        guard let first = cache?.first else {
+            return cache
+        }
+        if let cacheList = first as? CacheList {
+            return [cacheList[0]]
+        }
+        return cache
     }
 }
 
@@ -505,8 +895,49 @@ internal class GLM4MoELiteModel: Module, LLMModel, KVCacheDimensionProvider {
         return lmHead(out)
     }
 
+    internal func newCache(parameters: GenerateParameters?) -> [KVCache] {
+        guard configuration.usesDSA else {
+            return defaultCache(parameters: parameters)
+        }
+        return configuration.dsaIndexerKinds.map { kind in
+            switch kind {
+            case .full:
+                return CacheList(
+                    Self.makeBaseCache(parameters: parameters),
+                    Self.makeBaseCache(parameters: parameters)
+                )
+            case .shared:
+                return CacheList(Self.makeBaseCache(parameters: parameters))
+            }
+        }
+    }
+
+    private func defaultCache(parameters: GenerateParameters?) -> [KVCache] {
+        (0 ..< configuration.hiddenLayers).map { _ in
+            Self.makeBaseCache(parameters: parameters)
+        }
+    }
+
+    private static func makeBaseCache(parameters: GenerateParameters?) -> KVCache {
+        if let maxKVSize = parameters?.maxKVSize {
+            return RotatingKVCache(
+                maxSize: maxKVSize,
+                keep: GenerationConstants.rotatingCacheKeepTokens
+            )
+        }
+        return KVCacheSimple()
+    }
+
     internal func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
-        var sanitized = weights
+        var sanitized = MLXQuantizedWeightSanitizer.sanitize(
+            weights,
+            strategy: .automatic(),
+            sidecarPolicy: .dropActivationScale
+        ).weights
+
+        if configuration.tieWordEmbeddings {
+            sanitized["lm_head.weight"] = nil
+        }
 
         for l in 0 ..< configuration.hiddenLayers {
             let prefix = "model.layers.\(l)"
@@ -620,12 +1051,32 @@ internal struct GLM4MoELiteConfiguration: Codable, Sendable {
     var rmsNormEps: Float
     var ropeTheta: Float
     var ropeScaling: [String: StringOrNumber]?
+    var ropeParameters: [String: StringOrNumber]?
     var ropeTraditional: Bool
     var attentionBias: Bool
     var attentionDropout: Float
     var partialRotaryFactor: Float
     var tieWordEmbeddings: Bool
     var numNextnPredictLayers: Int
+    var indexHeadDim: Int?
+    var indexNHeads: Int?
+    var indexTopK: Int?
+    var indexerTypes: [String]?
+    var indexTopKPattern: GLMMoEDSAIndexTopKPattern?
+    var indexTopKFreq: Int
+    var indexSkipTopKOffset: Int
+    var dsaIndexerKinds: [GLMMoEDSAIndexerKind]
+
+    var usesDSA: Bool {
+        !dsaIndexerKinds.isEmpty
+    }
+
+    func dsaIndexerKind(for layerIndex: Int) -> GLMMoEDSAIndexerKind? {
+        guard dsaIndexerKinds.indices.contains(layerIndex) else {
+            return nil
+        }
+        return dsaIndexerKinds[layerIndex]
+    }
 
     enum CodingKeys: String, CodingKey {
         case modelType = "model_type"
@@ -656,12 +1107,20 @@ internal struct GLM4MoELiteConfiguration: Codable, Sendable {
         case rmsNormEps = "rms_norm_eps"
         case ropeTheta = "rope_theta"
         case ropeScaling = "rope_scaling"
+        case ropeParameters = "rope_parameters"
         case ropeTraditional = "rope_traditional"
         case attentionBias = "attention_bias"
         case attentionDropout = "attention_dropout"
         case partialRotaryFactor = "partial_rotary_factor"
         case tieWordEmbeddings = "tie_word_embeddings"
         case numNextnPredictLayers = "num_nextn_predict_layers"
+        case indexHeadDim = "index_head_dim"
+        case indexNHeads = "index_n_heads"
+        case indexTopK = "index_topk"
+        case indexerTypes = "indexer_types"
+        case indexTopKPattern = "index_topk_pattern"
+        case indexTopKFreq = "index_topk_freq"
+        case indexSkipTopKOffset = "index_skip_topk_offset"
     }
 
     internal init(from decoder: Decoder) throws {
@@ -696,20 +1155,64 @@ internal struct GLM4MoELiteConfiguration: Codable, Sendable {
         self.firstKDenseReplace = try container.decode(Int.self, forKey: .firstKDenseReplace)
         self.maxPositionEmbeddings = try container.decode(Int.self, forKey: .maxPositionEmbeddings)
         self.rmsNormEps = try container.decode(Float.self, forKey: .rmsNormEps)
-        self.ropeTheta = try container.decode(Float.self, forKey: .ropeTheta)
+        self.ropeParameters = try container.decodeIfPresent(
+            [String: StringOrNumber].self,
+            forKey: .ropeParameters
+        )
+        if let ropeTheta = try container.decodeIfPresent(Float.self, forKey: .ropeTheta) {
+            self.ropeTheta = ropeTheta
+        } else if let ropeTheta = ropeParameters?["rope_theta"]?.asFloat() {
+            self.ropeTheta = ropeTheta
+        } else {
+            self.ropeTheta = 10_000
+        }
         self.ropeScaling = try container.decodeIfPresent(
-            [String: StringOrNumber].self, forKey: .ropeScaling)
+            [String: StringOrNumber].self, forKey: .ropeScaling) ?? ropeParameters
         self.ropeTraditional =
             try container.decodeIfPresent(Bool.self, forKey: .ropeTraditional) ?? true
         self.attentionBias = try container.decode(Bool.self, forKey: .attentionBias)
         self.attentionDropout =
             try container.decodeIfPresent(Float.self, forKey: .attentionDropout) ?? 0.0
-        self.partialRotaryFactor = try container.decode(Float.self, forKey: .partialRotaryFactor)
+        self.partialRotaryFactor =
+            try container.decodeIfPresent(Float.self, forKey: .partialRotaryFactor) ?? 1.0
         self.tieWordEmbeddings =
             try container.decodeIfPresent(Bool.self, forKey: .tieWordEmbeddings)
             ?? false
         self.numNextnPredictLayers =
             try container.decodeIfPresent(Int.self, forKey: .numNextnPredictLayers) ?? 1
+        self.indexHeadDim = try container.decodeIfPresent(Int.self, forKey: .indexHeadDim)
+        self.indexNHeads = try container.decodeIfPresent(Int.self, forKey: .indexNHeads)
+        self.indexTopK = try container.decodeIfPresent(Int.self, forKey: .indexTopK)
+        self.indexerTypes = try container.decodeIfPresent([String].self, forKey: .indexerTypes)
+        self.indexTopKPattern = try container.decodeIfPresent(
+            GLMMoEDSAIndexTopKPattern.self,
+            forKey: .indexTopKPattern
+        )
+        self.indexTopKFreq = try container.decodeIfPresent(Int.self, forKey: .indexTopKFreq) ?? 1
+        self.indexSkipTopKOffset =
+            try container.decodeIfPresent(Int.self, forKey: .indexSkipTopKOffset) ?? 2
+
+        if modelType == "glm_moe_dsa" || indexTopK != nil || indexerTypes != nil || indexTopKPattern != nil {
+            guard let indexTopK, indexTopK > 0,
+                let indexNHeads, indexNHeads > 0,
+                let indexHeadDim, indexHeadDim > 0
+            else {
+                throw DecodingError.dataCorrupted(.init(
+                    codingPath: [CodingKeys.indexTopK],
+                    debugDescription: "GLM DSA requires positive index_topk, index_n_heads and index_head_dim"
+                ))
+            }
+            let schedule = try GLMMoEDSAIndexerSchedule(
+                layerCount: hiddenLayers,
+                explicitTypes: indexerTypes,
+                pattern: indexTopKPattern,
+                frequency: indexTopKFreq,
+                skipOffset: indexSkipTopKOffset
+            )
+            self.dsaIndexerKinds = schedule.kinds
+        } else {
+            self.dsaIndexerKinds = []
+        }
     }
 }
 

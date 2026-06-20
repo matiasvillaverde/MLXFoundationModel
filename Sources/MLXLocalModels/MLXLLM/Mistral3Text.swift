@@ -325,23 +325,11 @@ internal class Mistral3TextModel: Module, LLMModel, KVCacheDimensionProvider {
             sanitizedWeights["lm_head.weight"] = nil
         }
 
-        // Handle weight_scale_inv for quantized weights
-        var newWeights: [String: MLXArray] = [:]
-        for (key, value) in sanitizedWeights {
-            if key.contains("weight_scale_inv") {
-                let scaleInv = value
-                let weightKey = key.replacingOccurrences(of: "_scale_inv", with: "")
-                if let weight = sanitizedWeights[weightKey] {
-                    newWeights[weightKey] = weight * scaleInv
-                }
-            } else if key.contains("activation_scale") {
-                continue
-            } else if newWeights[key] == nil {
-                newWeights[key] = value
-            }
-        }
-
-        return newWeights.isEmpty ? sanitizedWeights : newWeights
+        return MLXQuantizedWeightSanitizer.sanitize(
+            sanitizedWeights,
+            strategy: .automatic(),
+            sidecarPolicy: .dropActivationScale
+        ).weights
     }
 
     /// Create appropriate caches for each layer type.

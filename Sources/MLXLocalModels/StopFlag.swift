@@ -40,7 +40,7 @@ internal final class StopFlag: @unchecked Sendable {
     private var _value: Bool = false
 
     internal init() {
-        lock.name = "com.think.mlxsession.stopflag"
+        lock.name = "org.mlxfoundationmodel.stopflag"
     }
 
     /// Atomically reads the current value of the stop flag

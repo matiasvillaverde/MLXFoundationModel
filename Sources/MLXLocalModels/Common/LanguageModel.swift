@@ -167,6 +167,32 @@ internal struct LMOutput {
     }
 }
 
+internal struct NativeMTPMainOutput {
+    internal let logits: MLXArray
+    internal let hiddenStates: MLXArray
+    internal let state: LMOutput.State?
+
+    internal init(
+        logits: MLXArray,
+        hiddenStates: MLXArray,
+        state: LMOutput.State? = nil
+    ) {
+        self.logits = logits
+        self.hiddenStates = hiddenStates
+        self.state = state
+    }
+}
+
+internal struct NativeMTPDraftOutput {
+    internal let logits: MLXArray
+    internal let hiddenStates: MLXArray
+
+    internal init(logits: MLXArray, hiddenStates: MLXArray) {
+        self.logits = logits
+        self.hiddenStates = hiddenStates
+    }
+}
+
 /// The result of the call to ``LanguageModel/prepare(_:cache:windowSize:)``
 internal enum PrepareResult {
     /// tokens to process by the ``TokenIterator``
@@ -209,6 +235,24 @@ internal protocol LanguageModel: Module {
 
     /// Optionally preprocess the weights with safetensors metadata.
     func sanitize(weights: [String: MLXArray], metadata: [String: String]) -> [String: MLXArray]
+}
+
+internal protocol NativeMTPModel: LanguageModel {
+    var supportsNativeMTP: Bool { get }
+
+    func makeMTPCache(parameters: GenerateParameters?) -> [KVCache]
+
+    func nativeMTPMainOutput(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?
+    ) -> NativeMTPMainOutput
+
+    func nativeMTPDraftOutput(
+        hiddenStates: MLXArray,
+        nextTokenIDs: MLXArray,
+        cache: [KVCache]?
+    ) -> NativeMTPDraftOutput?
 }
 
 extension LanguageModel {

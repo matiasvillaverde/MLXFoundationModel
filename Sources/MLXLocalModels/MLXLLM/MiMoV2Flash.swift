@@ -404,35 +404,11 @@ internal class MiMoV2FlashModel: Module, LLMModel, KVCacheDimensionProvider {
     }
 
     internal func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
-        func dequant(weight: MLXArray, scaleInv: MLXArray) -> MLXArray {
-            let dtype = weight.dtype
-            let bs = 128
-            let (m, n) = (weight.dim(0), weight.dim(1))
-            let padBottom = bs * scaleInv.dim(0) - m
-            let padSide = bs * scaleInv.dim(1) - n
-
-            var paddedWeight = padded(
-                weight, widths: [.init((0, padBottom)), .init((0, padSide))])
-            paddedWeight = paddedWeight.reshaped(
-                [(m + padBottom) / bs, bs, (n + padSide) / bs, bs])
-            let scaled = paddedWeight * scaleInv[0..., .newAxis, 0..., .newAxis]
-            return scaled.reshaped([m + padBottom, n + padSide])[0 ..< m, 0 ..< n]
-                .asType(dtype)
-        }
-
-        var newWeights: [String: MLXArray] = [:]
-        for (key, value) in weights {
-            if key.contains("weight_scale_inv") {
-                let weightKey = key.replacingOccurrences(of: "_scale_inv", with: "")
-                if let weight = weights[weightKey] {
-                    newWeights[weightKey] = dequant(weight: weight, scaleInv: value)
-                }
-            } else if newWeights[key] == nil {
-                newWeights[key] = value
-            }
-        }
-
-        var sanitizedWeights = newWeights.isEmpty ? weights : newWeights
+        var sanitizedWeights = MLXQuantizedWeightSanitizer.sanitize(
+            weights,
+            strategy: .block(),
+            sidecarPolicy: .dropActivationScale
+        ).weights
 
         for layerIndex in 0 ..< configuration.hiddenLayers {
             let prefix = "model.layers.\(layerIndex)"

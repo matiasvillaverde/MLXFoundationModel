@@ -60,6 +60,9 @@ internal struct GenerateParameters: Sendable {
     /// Step size for processing the prompt
     internal var prefillStepSize: Int
 
+    /// Alignment policy for partial prompt-cache reuse.
+    internal var promptCacheReuseAlignment: PromptCacheReuseAlignment
+
     /// Maximum tokens to generate
     internal var maxTokens: Int?
 
@@ -77,6 +80,12 @@ internal struct GenerateParameters: Sendable {
     /// Step to begin using a quantized KV cache when kvBits is non-nil (default: 0)
     internal var quantizedKVStart: Int = 0
 
+    /// Whether dynamic KV quantization should leave the last model layer in full precision.
+    internal var quantizedKVSkipLastLayer: Bool = false
+
+    /// Every Nth DeepSeek DSA layer computes indexer top-k indices. nil disables IndexCache.
+    internal var indexCacheFrequency: Int?
+
     /// sampling temperature
     internal var temperature: Float = 0.6
 
@@ -88,6 +97,36 @@ internal struct GenerateParameters: Sendable {
 
     /// Min-p sampling threshold relative to the highest-probability token.
     internal var minP: Float = 0.0
+
+    /// Locally typical sampling probability mass. A value of 1 disables the filter.
+    internal var typicalP: Float = 1.0
+
+    /// Top-n-sigma logit threshold. nil disables the filter.
+    internal var topNSigma: Float?
+
+    /// Exclude Top Choices probability. A value of 0 disables XTC filtering.
+    internal var xtcProbability: Float = 0.0
+
+    /// Exclude Top Choices probability threshold.
+    internal var xtcThreshold: Float = 0.1
+
+    /// Minimum number of above-threshold candidates XTC must keep.
+    internal var xtcMinKeep: Int = 1
+
+    /// Tokens that must never be removed by XTC filtering.
+    internal var xtcProtectedTokenIds: Set<Int>
+
+    /// Mirostat adaptive surprise sampler. nil disables Mirostat.
+    internal var mirostat: MirostatSamplingConfiguration?
+
+    /// DRY token-level repeat-sequence penalty. nil disables DRY.
+    internal var dry: DrySamplingConfiguration?
+
+    /// Tokenized DRY sequence breakers, each in chronological token order.
+    internal var drySequenceBreakerTokenIds: [[Int]]
+
+    /// Adaptive-p target-probability sampler. nil disables adaptive-p.
+    internal var adaptiveP: AdaptivePSamplingConfiguration?
 
     /// penalty factor for repeating tokens
     internal var repetitionPenalty: Float?
@@ -113,6 +152,15 @@ internal struct GenerateParameters: Sendable {
     /// Per-token additive logit bias.
     internal var logitBias: [Int: Float]
 
+    /// Maximum reasoning tokens before forcing the configured reasoning end marker.
+    internal var reasoningBudgetTokens: Int?
+
+    /// Token sequence that closes the model's active reasoning section.
+    internal var reasoningEndTokenIds: [Int]
+
+    /// Token ids loaded from model generation config that must never be sampled.
+    internal var suppressTokenIds: Set<Int>
+
     /// Token-level grammar constraint.
     internal var grammar: GrammarSamplingConfiguration?
 
@@ -122,10 +170,22 @@ internal struct GenerateParameters: Sendable {
         kvBits: Int? = nil,
         kvGroupSize: Int = GenerationConstants.defaultKVCacheGroupSize,
         quantizedKVStart: Int = 0,
+        quantizedKVSkipLastLayer: Bool = false,
+        indexCacheFrequency: Int? = nil,
         temperature: Float = 0.6,
         topP: Float = 1.0,
         topK: Int = 0,
         minP: Float = 0.0,
+        typicalP: Float? = nil,
+        topNSigma: Float? = nil,
+        xtcProbability: Float = 0.0,
+        xtcThreshold: Float = 0.1,
+        xtcMinKeep: Int = 1,
+        xtcProtectedTokenIds: Set<Int> = [],
+        mirostat: MirostatSamplingConfiguration? = nil,
+        dry: DrySamplingConfiguration? = nil,
+        drySequenceBreakerTokenIds: [[Int]] = [],
+        adaptiveP: AdaptivePSamplingConfiguration? = nil,
         repetitionPenalty: Float? = nil,
         repetitionContextSize: Int = GenerationConstants.defaultRepetitionContextSize,
         presencePenalty: Float? = nil,
@@ -135,17 +195,35 @@ internal struct GenerateParameters: Sendable {
         seed: Int? = nil,
         grammar: GrammarSamplingConfiguration? = nil,
         logitBias: [Int: Float] = [:],
-        prefillStepSize: Int = GenerationConstants.defaultPrefillStepSize
+        reasoningBudgetTokens: Int? = nil,
+        reasoningEndTokenIds: [Int] = [],
+        suppressTokenIds: Set<Int> = [],
+        prefillStepSize: Int = GenerationConstants.defaultPrefillStepSize,
+        promptCacheReuseAlignment: PromptCacheReuseAlignment = .exact
     ) {
         self.maxTokens = maxTokens
         self.maxKVSize = maxKVSize
         self.kvBits = kvBits
         self.kvGroupSize = kvGroupSize
         self.quantizedKVStart = quantizedKVStart
+        self.quantizedKVSkipLastLayer = quantizedKVSkipLastLayer
+        self.indexCacheFrequency = indexCacheFrequency
         self.temperature = temperature
         self.topP = topP
         self.topK = topK
         self.minP = minP
+        self.typicalP = typicalP.map(Self.normalizedProbability) ?? 1.0
+        self.topNSigma = Self.normalizedTopNSigma(topNSigma)
+        self.xtcProbability = Self.normalizedProbability(xtcProbability)
+        self.xtcThreshold = Self.normalizedXTCThreshold(xtcThreshold)
+        self.xtcMinKeep = max(1, xtcMinKeep)
+        self.xtcProtectedTokenIds = xtcProtectedTokenIds
+        self.mirostat = Self.normalizedMirostat(mirostat)
+        self.dry = Self.normalizedDry(dry)
+        self.drySequenceBreakerTokenIds = Self.normalizedSequenceBreakers(
+            drySequenceBreakerTokenIds
+        )
+        self.adaptiveP = Self.normalizedAdaptiveP(adaptiveP)
         self.repetitionPenalty = repetitionPenalty
         self.repetitionContextSize = repetitionContextSize
         self.presencePenalty = presencePenalty
@@ -155,22 +233,123 @@ internal struct GenerateParameters: Sendable {
         self.seed = seed
         self.grammar = grammar
         self.logitBias = logitBias
+        self.reasoningBudgetTokens = reasoningBudgetTokens.map { max(1, $0) }
+        self.reasoningEndTokenIds = Self.normalizedTokenIds(reasoningEndTokenIds)
+        self.suppressTokenIds = suppressTokenIds
         self.prefillStepSize = prefillStepSize
+        self.promptCacheReuseAlignment = promptCacheReuseAlignment
+    }
+
+    private static func normalizedProbability(_ probability: Float) -> Float {
+        min(max(probability, 0), 1)
+    }
+
+    private static func normalizedXTCThreshold(_ threshold: Float) -> Float {
+        min(max(threshold, 0), 0.5)
+    }
+
+    private static func normalizedTopNSigma(_ value: Float?) -> Float? {
+        guard let value, value > 0 else { return nil }
+        return value
+    }
+
+    private static func normalizedDry(
+        _ value: DrySamplingConfiguration?
+    ) -> DrySamplingConfiguration? {
+        guard let value,
+              value.multiplier != 0,
+              value.base >= 1,
+              value.allowedLength >= 0,
+              value.penaltyLastTokens != 0
+        else {
+            return nil
+        }
+        return value
+    }
+
+    private static func normalizedMirostat(
+        _ value: MirostatSamplingConfiguration?
+    ) -> MirostatSamplingConfiguration? {
+        guard let value, value.tau > 0, value.eta > 0, value.learningTokens > 1 else {
+            return nil
+        }
+        return value
+    }
+
+    private static func normalizedAdaptiveP(
+        _ value: AdaptivePSamplingConfiguration?
+    ) -> AdaptivePSamplingConfiguration? {
+        guard let value, value.target.isFinite, value.decay.isFinite, value.target >= 0 else {
+            return nil
+        }
+        return AdaptivePSamplingConfiguration(
+            target: min(value.target, 1),
+            decay: min(max(value.decay, 0), 0.99)
+        )
+    }
+
+    private static func normalizedSequenceBreakers(_ values: [[Int]]) -> [[Int]] {
+        values.compactMap { sequence in
+            let tokens = sequence.filter { $0 >= 0 }
+            return tokens.isEmpty ? nil : tokens
+        }
+    }
+
+    private static func normalizedTokenIds(_ values: [Int]) -> [Int] {
+        values.filter { $0 >= 0 }
+    }
+
+    internal var usesMirostatSampler: Bool {
+        mirostat != nil && temperature > 0
+    }
+
+    internal var usesAdaptivePSampler: Bool {
+        adaptiveP != nil && temperature > 0
     }
 
     internal func sampler() -> LogitSampler {
+        if let mirostat, usesMirostatSampler {
+            return MirostatSampler(configuration: mirostat, temperature: temperature, seed: seed)
+        }
+
+        if let adaptiveP, usesAdaptivePSampler {
+            return AdaptivePSampler(
+                configuration: adaptiveP,
+                temperature: temperature,
+                topP: topP,
+                topK: topK,
+                minP: minP,
+                typicalP: typicalP,
+                topNSigma: topNSigma,
+                xtcProbability: xtcProbability,
+                xtcThreshold: xtcThreshold,
+                xtcMinKeep: xtcMinKeep,
+                xtcProtectedTokenIds: xtcProtectedTokenIds,
+                seed: seed
+            )
+        }
+
         let usesTopP = topP > 0 && topP < 1
         let usesTopK = topK > 0
         let usesMinP = minP > 0
+        let usesTypicalP = typicalP > 0 && typicalP < 1
+        let usesTopNSigma = topNSigma != nil
+        let usesXTC = xtcProbability > 0
 
         if temperature == 0 {
             return ArgMaxSampler()
-        } else if usesTopP || usesTopK || usesMinP {
+        } else if usesTopP || usesTopK || usesMinP || usesTypicalP || usesTopNSigma || usesXTC {
             return TopPSampler(
                 temperature: temperature,
                 topP: topP,
                 topK: topK,
                 minP: minP,
+                typicalP: typicalP,
+                topNSigma: topNSigma,
+                xtcProbability: xtcProbability,
+                xtcThreshold: xtcThreshold,
+                xtcMinKeep: xtcMinKeep,
+                xtcProtectedTokenIds: xtcProtectedTokenIds,
                 seed: seed
             )
         } else {
@@ -213,7 +392,33 @@ internal struct GenerateParameters: Sendable {
             frequencyContext = nil
         }
 
+        let dryContext: DryPenaltyContext?
+        if let dry {
+            dryContext = DryPenaltyContext(
+                configuration: dry,
+                totalContextSize: max(maxKVSize ?? Int.max, 1),
+                sequenceBreakers: drySequenceBreakerTokenIds
+            )
+        } else {
+            dryContext = nil
+        }
+
         let logitBiasContext = logitBias.isEmpty ? nil : LogitBiasProcessor(logitBias: logitBias)
+        let suppressTokenContext = suppressTokenIds.isEmpty
+            ? nil
+            : SuppressTokensProcessor(tokenIds: suppressTokenIds)
+        let reasoningBudgetContext: ReasoningBudgetProcessor?
+        if let reasoningBudgetTokens,
+           reasoningBudgetTokens > 0,
+           !reasoningEndTokenIds.isEmpty
+        {
+            reasoningBudgetContext = ReasoningBudgetProcessor(
+                maximumReasoningTokens: reasoningBudgetTokens,
+                endTokenIds: reasoningEndTokenIds
+            )
+        } else {
+            reasoningBudgetContext = nil
+        }
         let grammarContext: GrammarConstrainedLogitProcessor?
         if let grammar {
             guard let grammarCompiler else {
@@ -226,17 +431,21 @@ internal struct GenerateParameters: Sendable {
             grammarContext = nil
         }
 
-        if repetitionContext == nil && presenceContext == nil && frequencyContext == nil &&
-            logitBiasContext == nil && grammarContext == nil
+        if repetitionContext == nil && presenceContext == nil && frequencyContext == nil
+            && dryContext == nil && logitBiasContext == nil && suppressTokenContext == nil
+            && reasoningBudgetContext == nil && grammarContext == nil
         {
             return nil
         }
 
         return PenaltyProcessor(
             logitBiasContext: logitBiasContext,
+            suppressTokenContext: suppressTokenContext,
+            reasoningBudgetContext: reasoningBudgetContext,
             repetitionContext: repetitionContext,
             presenceContext: presenceContext,
             frequencyContext: frequencyContext,
+            dryContext: dryContext,
             grammarContext: grammarContext
         )
     }
@@ -263,51 +472,73 @@ internal struct ArgMaxSampler: LogitSampler {
 /// - Single-threaded usage: Used within `generate` function which runs in ModelContainer context
 /// - Isolated random state: Each sampler has its own random state, no sharing
 /// - No escaping: Sampler is created and used within a single generation cycle
-internal struct TopPSampler: LogitSampler, @unchecked Sendable {
-    let temp: MLXArray
+private struct ProbabilityFilterPipeline: @unchecked Sendable {
     let topP: MLXArray?
     let topK: Int?
     let minP: MLXArray?
+    let typicalP: MLXArray?
+    let topNSigma: MLXArray?
+    let xtcProbability: MLXArray?
+    let xtcThreshold: MLXArray
+    let xtcMinKeep: Int
+    let xtcProtectedTokenIds: [Int]
+    let posInf: MLXArray
     let negInf: MLXArray
-    let randomState: MLXRandom.RandomState
 
-    internal init(
-        temperature: Float,
+    init(
         topP: Float = 1.0,
         topK: Int = 0,
         minP: Float = 0.0,
-        seed: Int? = nil
+        typicalP: Float = 1.0,
+        topNSigma: Float? = nil,
+        xtcProbability: Float = 0.0,
+        xtcThreshold: Float = 0.1,
+        xtcMinKeep: Int = 1,
+        xtcProtectedTokenIds: Set<Int> = []
     ) {
-        self.temp = MLXArray(temperature)
         self.topP = topP > 0 && topP < 1 ? MLXArray(topP) : nil
         self.topK = topK > 0 ? topK : nil
         self.minP = minP > 0 ? MLXArray(minP) : nil
+        self.typicalP = typicalP > 0 && typicalP < 1 ? MLXArray(typicalP) : nil
+        self.topNSigma = topNSigma.map { MLXArray(Float($0)) }
+        self.xtcProbability = xtcProbability > 0 ? MLXArray(xtcProbability) : nil
+        self.xtcThreshold = MLXArray(xtcThreshold)
+        self.xtcMinKeep = max(1, xtcMinKeep)
+        self.xtcProtectedTokenIds = xtcProtectedTokenIds
+            .filter { $0 >= 0 }
+            .sorted()
+        self.posInf = MLXArray(Float.infinity)
         self.negInf = MLXArray(-Float.infinity)
-        self.randomState = makeRandomState(seed: seed)
     }
 
-    internal func sample(logits: MLXArray) -> MLXArray {
-        var logits = logits
-        if logits.dtype == .bfloat16 {
-            logits = logits.asType(.float32)
+    var isActive: Bool {
+        topP != nil || topK != nil || minP != nil || typicalP != nil || topNSigma != nil
+            || xtcProbability != nil
+    }
+
+    func apply(to logprobs: MLXArray, logits: MLXArray) -> MLXArray {
+        var logprobs = logprobs
+
+        if let topNSigma {
+            logprobs = applyTopNSigma(logprobs, logits: logits, nSigma: topNSigma)
+        }
+        if let topP {
+            logprobs = applyTopP(logprobs, topP: topP)
+        }
+        if let typicalP {
+            logprobs = applyTypicalP(logprobs, typicalP: typicalP)
+        }
+        if let minP {
+            logprobs = applyMinP(logprobs, minP: minP)
+        }
+        if let xtcProbability {
+            logprobs = applyXTC(logprobs, probability: xtcProbability)
+        }
+        if let topK {
+            logprobs = applyTopK(logprobs, topK: topK)
         }
 
-        return withRandomState(randomState) {
-            var logprobs = logSoftmax(logits)
-
-            // Match Python mlx-lm filter order: top-p, min-p, then top-k.
-            if let topP {
-                logprobs = applyTopP(logprobs, topP: topP)
-            }
-            if let minP {
-                logprobs = applyMinP(logprobs, minP: minP)
-            }
-            if let topK {
-                logprobs = applyTopK(logprobs, topK: topK)
-            }
-
-            return categorical(logprobs * (1 / temp))
-        }
+        return logprobs
     }
 
     private func applyTopP(_ logprobs: MLXArray, topP: MLXArray) -> MLXArray {
@@ -327,12 +558,126 @@ internal struct TopPSampler: LogitSampler, @unchecked Sendable {
         return MLX.where(logprobs .>= threshold, logprobs, negInf)
     }
 
+    private func applyTypicalP(_ logprobs: MLXArray, typicalP: MLXArray) -> MLXArray {
+        let probs = exp(logprobs)
+        let entropy = -(probs * logprobs).sum(axis: -1, keepDims: true)
+        let shiftedScores = abs(-logprobs - entropy)
+        let sortedIndices = argSort(shiftedScores, axis: -1)
+        let sortedLogprobs = takeAlong(logprobs, sortedIndices, axis: -1)
+        let cumulativeProbs = cumsum(exp(sortedLogprobs), axis: -1)
+        let positions = MLXArray.arange(logprobs.dim(-1)).reshaped(1, -1)
+        let keepMask = MLX.logicalOr(cumulativeProbs .<= typicalP, positions .== 0)
+        let filtered = MLX.where(keepMask, sortedLogprobs, negInf)
+
+        return putAlong(logprobs, sortedIndices, values: filtered, axis: -1)
+    }
+
+    private func applyTopNSigma(
+        _ logprobs: MLXArray,
+        logits: MLXArray,
+        nSigma: MLXArray
+    ) -> MLXArray {
+        let threshold = logits.max(axis: -1, keepDims: true) -
+            nSigma * std(logits, axis: -1, keepDims: true)
+        return MLX.where(logits .>= threshold, logprobs, negInf)
+    }
+
+    private func applyXTC(_ logprobs: MLXArray, probability: MLXArray) -> MLXArray {
+        let vocabularySize = logprobs.dim(-1)
+        let probs = exp(logprobs)
+        let maskableProbs: MLXArray
+        if let protectedMask = protectedTokenMask(vocabularySize: vocabularySize) {
+            maskableProbs = MLX.where(protectedMask .> 0, MLXArray.zeros(like: probs), probs)
+        } else {
+            maskableProbs = probs
+        }
+
+        let candidates = MLX.where(maskableProbs .> xtcThreshold, maskableProbs, posInf)
+        let cutoff = xtcCutoff(candidates, vocabularySize: vocabularySize)
+        let tokenMask = maskableProbs .> cutoff
+        let batchSize = logprobs.dim(0)
+        let shouldApply = MLXRandom.uniform(low: Float(0), high: Float(1), [batchSize, 1]) .< probability
+        let filtered = MLX.where(tokenMask, negInf, logprobs)
+
+        return MLX.where(shouldApply, filtered, logprobs)
+    }
+
+    private func protectedTokenMask(vocabularySize: Int) -> MLXArray? {
+        let tokenIds = xtcProtectedTokenIds.filter { $0 < vocabularySize }
+        guard !tokenIds.isEmpty else { return nil }
+
+        let indices = MLXArray(tokenIds).asType(.int32)
+        let values = MLXArray.ones([tokenIds.count], type: Float32.self)
+        return MLXArray.zeros([vocabularySize], type: Float32.self)
+            .at[indices]
+            .add(values)
+            .reshaped(1, -1)
+    }
+
+    private func xtcCutoff(_ candidates: MLXArray, vocabularySize: Int) -> MLXArray {
+        if xtcMinKeep <= 1 {
+            return candidates.min(axis: -1, keepDims: true)
+        }
+
+        let keepIndex = min(xtcMinKeep - 1, vocabularySize - 1)
+        return sorted(candidates, axis: -1)[0..., keepIndex].reshaped(-1, 1)
+    }
+
     private func applyTopK(_ logprobs: MLXArray, topK: Int) -> MLXArray {
         let vocabularySize = logprobs.dim(-1)
         guard topK < vocabularySize else { return logprobs }
 
         let maskIndices = argPartition(-logprobs, kth: topK - 1, axis: -1)[0..., topK...]
         return putAlong(logprobs, maskIndices, values: negInf, axis: -1)
+    }
+}
+
+internal struct TopPSampler: LogitSampler, @unchecked Sendable {
+    let temp: MLXArray
+    private let filters: ProbabilityFilterPipeline
+    let randomState: MLXRandom.RandomState
+
+    internal init(
+        temperature: Float,
+        topP: Float = 1.0,
+        topK: Int = 0,
+        minP: Float = 0.0,
+        typicalP: Float = 1.0,
+        topNSigma: Float? = nil,
+        xtcProbability: Float = 0.0,
+        xtcThreshold: Float = 0.1,
+        xtcMinKeep: Int = 1,
+        xtcProtectedTokenIds: Set<Int> = [],
+        seed: Int? = nil
+    ) {
+        self.temp = MLXArray(temperature)
+        self.filters = ProbabilityFilterPipeline(
+            topP: topP,
+            topK: topK,
+            minP: minP,
+            typicalP: typicalP,
+            topNSigma: topNSigma,
+            xtcProbability: xtcProbability,
+            xtcThreshold: xtcThreshold,
+            xtcMinKeep: xtcMinKeep,
+            xtcProtectedTokenIds: xtcProtectedTokenIds
+        )
+        self.randomState = makeRandomState(seed: seed)
+    }
+
+    internal func sample(logits: MLXArray) -> MLXArray {
+        var logits = logits
+        if logits.dtype == .bfloat16 {
+            logits = logits.asType(.float32)
+        }
+
+        return withRandomState(randomState) {
+            var logprobs = logSoftmax(logits)
+
+            logprobs = filters.apply(to: logprobs, logits: logits)
+
+            return categorical(logprobs * (1 / temp))
+        }
     }
 }
 
@@ -363,6 +708,224 @@ internal struct CategoricalSampler: LogitSampler, @unchecked Sendable {
         return withRandomState(randomState) {
             categorical(logits * (1 / temp))
         }
+    }
+}
+
+/// Stateful adaptive-p sampler.
+///
+/// This mirrors llama.cpp's adaptive-p sampler: existing probability filters are applied first,
+/// then logits are transformed toward an adaptive target probability before sampling. Only the
+/// selected token's original probability is read back to update the EMA state.
+internal final class AdaptivePSampler: LogitSampler, @unchecked Sendable {
+    private static let distributionWidth: Float = 0.3
+    private static let peakLogitValue: Float = 5.0
+    private static let sharpness: Float = 10.0
+    private static let inverseWidth: Float = 1.0 / distributionWidth
+
+    private let target: Float
+    private let decay: Float
+    private let temp: MLXArray
+    private let filters: ProbabilityFilterPipeline
+    private let negInf = MLXArray(-Float.infinity)
+    private let randomState: MLXRandom.RandomState
+    private var weightedSum: Float
+    private var totalWeight: Float
+
+    internal init(
+        configuration: AdaptivePSamplingConfiguration,
+        temperature: Float,
+        topP: Float = 1.0,
+        topK: Int = 0,
+        minP: Float = 0.0,
+        typicalP: Float = 1.0,
+        topNSigma: Float? = nil,
+        xtcProbability: Float = 0.0,
+        xtcThreshold: Float = 0.1,
+        xtcMinKeep: Int = 1,
+        xtcProtectedTokenIds: Set<Int> = [],
+        seed: Int? = nil
+    ) {
+        self.target = min(max(configuration.target, 0), 1)
+        self.decay = min(max(configuration.decay, 0), 0.99)
+        self.temp = MLXArray(temperature)
+        self.filters = ProbabilityFilterPipeline(
+            topP: topP,
+            topK: topK,
+            minP: minP,
+            typicalP: typicalP,
+            topNSigma: topNSigma,
+            xtcProbability: xtcProbability,
+            xtcThreshold: xtcThreshold,
+            xtcMinKeep: xtcMinKeep,
+            xtcProtectedTokenIds: xtcProtectedTokenIds
+        )
+        self.randomState = makeRandomState(seed: seed)
+        self.weightedSum = self.target / (1.0 - self.decay)
+        self.totalWeight = 1.0 / (1.0 - self.decay)
+    }
+
+    internal func sample(logits: MLXArray) -> MLXArray {
+        var logits = logits
+        if logits.dtype == .bfloat16 {
+            logits = logits.asType(.float32)
+        }
+
+        return withRandomState(randomState) {
+            var logprobs = logSoftmax(logits)
+            logprobs = filters.apply(to: logprobs, logits: logits)
+            logprobs = logprobs * (1 / temp)
+            let originalProbs = exp(logSoftmax(logprobs))
+            let transformedLogits = adaptivePLogits(originalProbs: originalProbs, logprobs: logprobs)
+            let transformedLogprobs = logSoftmax(transformedLogits)
+            let sampled = categorical(transformedLogprobs)
+            updateState(sampledToken: sampled, originalProbs: originalProbs)
+            return sampled
+        }
+    }
+
+    private func adaptivePLogits(originalProbs: MLXArray, logprobs: MLXArray) -> MLXArray {
+        let adaptedTarget = max(
+            min(
+                totalWeight == 0 ? target : 2.0 * target - (weightedSum / totalWeight),
+                1.0
+            ),
+            0.0
+        )
+        let distance = abs((originalProbs - MLXArray(adaptedTarget)) * Self.inverseWidth)
+        let logits = MLXArray(Self.peakLogitValue) -
+            MLXArray(Self.sharpness) * distance * distance / (1.0 + distance)
+
+        return MLX.where(isFinite(logprobs), logits, negInf)
+    }
+
+    private func updateState(sampledToken: MLXArray, originalProbs: MLXArray) {
+        eval(sampledToken)
+        let tokenID = sampledToken.item(Int.self)
+        let selectedIndex = MLXArray([Int32(tokenID)]).reshaped(1, 1)
+        let selectedProbability = takeAlong(originalProbs, selectedIndex, axis: -1)
+        eval(selectedProbability)
+        let probability = selectedProbability.item(Float.self)
+        weightedSum = probability + decay * weightedSum
+        totalWeight = 1.0 + decay * totalWeight
+    }
+}
+
+/// Stateful Mirostat sampler with adaptive surprise feedback.
+///
+/// The filtering work stays in MLX arrays; only the selected token probability is read back to
+/// update the scalar feedback state for the next token.
+internal final class MirostatSampler: LogitSampler, @unchecked Sendable {
+    private static let log2 = Float(log(2.0))
+    private static let epsilon: Float = 1e-6
+
+    private let version: MirostatSamplingVersion
+    private let tau: Float
+    private let eta: Float
+    private let learningTokens: Int
+    private let temp: MLXArray
+    private let negInf = MLXArray(-Float.infinity)
+    private let randomState: MLXRandom.RandomState
+    private var mu: Float
+
+    internal init(
+        configuration: MirostatSamplingConfiguration,
+        temperature: Float,
+        seed: Int? = nil
+    ) {
+        self.version = configuration.version
+        self.tau = configuration.tau
+        self.eta = configuration.eta
+        self.learningTokens = max(2, Int(configuration.learningTokens))
+        self.temp = MLXArray(temperature)
+        self.randomState = makeRandomState(seed: seed)
+        self.mu = 2 * configuration.tau
+    }
+
+    internal func sample(logits: MLXArray) -> MLXArray {
+        var logits = logits
+        if logits.dtype == .bfloat16 {
+            logits = logits.asType(.float32)
+        }
+
+        return withRandomState(randomState) {
+            let logprobs = logSoftmax(logits * (1 / temp))
+            let filtered = switch version {
+            case .v1:
+                applyMirostatV1(logprobs)
+
+            case .v2:
+                applyMirostatV2(logprobs)
+            }
+            let truncatedLogprobs = logSoftmax(filtered)
+            let sampled = categorical(truncatedLogprobs)
+            updateState(sampledToken: sampled, logprobs: truncatedLogprobs)
+            return sampled
+        }
+    }
+
+    private func applyMirostatV1(_ logprobs: MLXArray) -> MLXArray {
+        let vocabularySize = logprobs.dim(-1)
+        let sortedIndices = argSort(-logprobs, axis: -1)
+        let sortedLogprobs = takeAlong(logprobs, sortedIndices, axis: -1)
+        let topK = mirostatV1TopK(sortedLogprobs: sortedLogprobs, vocabularySize: vocabularySize)
+        let positions = MLXArray.arange(vocabularySize).reshaped(1, -1)
+        let keepMask = positions .< topK
+        let filtered = MLX.where(keepMask, sortedLogprobs, negInf)
+        return putAlong(logprobs, sortedIndices, values: filtered, axis: -1)
+    }
+
+    private func applyMirostatV2(_ logprobs: MLXArray) -> MLXArray {
+        let vocabularySize = logprobs.dim(-1)
+        let sortedIndices = argSort(-logprobs, axis: -1)
+        let sortedLogprobs = takeAlong(logprobs, sortedIndices, axis: -1)
+        let surprise = -sortedLogprobs / Self.log2
+        let positions = MLXArray.arange(vocabularySize).reshaped(1, -1)
+        let keepMask = MLX.logicalOr(surprise .<= MLXArray(mu), positions .== 0)
+        let filtered = MLX.where(keepMask, sortedLogprobs, negInf)
+        return putAlong(logprobs, sortedIndices, values: filtered, axis: -1)
+    }
+
+    private func mirostatV1TopK(
+        sortedLogprobs: MLXArray,
+        vocabularySize: Int
+    ) -> Int {
+        let sampleCount = min(learningTokens, vocabularySize)
+        guard sampleCount > 1 else {
+            return 1
+        }
+
+        let probabilities = exp(sortedLogprobs[0..., ..<sampleCount]).asArray(Float.self)
+        var sumTIBI: Float = 0
+        var sumTISquared: Float = 0
+        for index in 0..<(sampleCount - 1) {
+            let tI = log(Float(index + 2) / Float(index + 1))
+            let current = max(probabilities[index], Self.epsilon)
+            let next = max(probabilities[index + 1], Self.epsilon)
+            let bI = log(current / next)
+            sumTIBI += tI * bI
+            sumTISquared += tI * tI
+        }
+
+        let sHat = max(sumTISquared > 0 ? sumTIBI / sumTISquared : 1, Self.epsilon)
+        let epsilonHat = max(sHat - 1, Self.epsilon)
+        let denominator = max(1 - pow(Float(vocabularySize), -epsilonHat), Self.epsilon)
+        let k = pow((epsilonHat * pow(2, mu)) / denominator, 1 / sHat)
+
+        guard k.isFinite else {
+            return 1
+        }
+        return min(max(Int(k.rounded()), 1), vocabularySize)
+    }
+
+    private func updateState(sampledToken: MLXArray, logprobs: MLXArray) {
+        eval(sampledToken)
+        let tokenID = sampledToken.item(Int.self)
+        let selectedIndex = MLXArray([Int32(tokenID)]).reshaped(1, 1)
+        let selectedLogprob = takeAlong(logprobs, selectedIndex, axis: -1)
+        eval(selectedLogprob)
+        let observedSurprise = -selectedLogprob.item(Float.self) / Self.log2
+        let error = observedSurprise - tau
+        mu = max(Self.epsilon, mu - eta * error)
     }
 }
 
@@ -522,6 +1085,247 @@ internal struct FrequencyPenaltyContext: LogitProcessor, @unchecked Sendable {
     }
 }
 
+/// Processor that applies DRY sequence-repetition penalties at token level.
+///
+/// The suffix search mirrors llama.cpp's DRY sampler: restart sequences limit the active
+/// context window, then a reverse Z-algorithm finds repeated suffixes in O(n).
+internal struct DryPenaltyContext: LogitProcessor, @unchecked Sendable {
+    private static let floatMaxLog: Float = 88.7228391
+
+    private let multiplier: Float
+    private let base: Float
+    private let allowedLength: Int
+    private let penaltyLastTokens: Int
+    private let totalContextSize: Int?
+    private let sequenceBreakersByHead: [Int: [[Int]]]
+    private let singleTokenBreakerIds: Set<Int>
+    private var lastTokens: [Int] = []
+
+    internal init(
+        configuration: DrySamplingConfiguration,
+        totalContextSize: Int,
+        sequenceBreakers: [[Int]]
+    ) {
+        self.multiplier = configuration.multiplier
+        self.base = configuration.base
+        self.allowedLength = max(0, Int(configuration.allowedLength))
+        self.penaltyLastTokens = Int(configuration.penaltyLastTokens)
+        self.totalContextSize = totalContextSize == Int.max ? nil : max(totalContextSize, 1)
+
+        var breakersByHead: [Int: [[Int]]] = [:]
+        var singleTokenBreakers: Set<Int> = []
+        for sequence in sequenceBreakers where !sequence.isEmpty {
+            let head = sequence[0]
+            let tail = Array(sequence.dropFirst())
+            breakersByHead[head, default: []].append(tail)
+            if tail.isEmpty {
+                singleTokenBreakers.insert(head)
+            }
+        }
+        self.sequenceBreakersByHead = breakersByHead
+        self.singleTokenBreakerIds = singleTokenBreakers
+    }
+
+    mutating internal func prompt(_ prompt: MLXArray) {
+        let tokens = prompt.reshaped(-1).asType(.int32).asArray(Int32.self).map(Int.init)
+        lastTokens = suffixWithinTrackingLimit(tokens)
+    }
+
+    mutating internal func process(logits: MLXArray) -> MLXArray {
+        guard multiplier != 0, base >= 1, penaltyLastTokens != 0 else {
+            return logits
+        }
+
+        let effectiveLastTokens = effectivePenaltyLastTokens()
+        let lastNRepeat = min(lastTokens.count, effectiveLastTokens)
+        guard lastNRepeat > allowedLength else {
+            return logits
+        }
+
+        let repetitionLimit = maximumRepetitionLimit(lastNRepeat: lastNRepeat)
+        guard repetitionLimit >= allowedLength else {
+            return logits
+        }
+
+        let repeatCounts = repeatedSuffixCounts(
+            lastNRepeat: lastNRepeat,
+            repetitionLimit: repetitionLimit
+        )
+        let penalties = dryPenaltyMap(
+            repeatCounts: repeatCounts,
+            lastNRepeat: lastNRepeat,
+            vocabularySize: logits.dim(-1)
+        )
+        guard !penalties.isEmpty else {
+            return logits
+        }
+
+        return logits + penaltyBias(from: penalties, vocabularySize: logits.dim(-1))
+    }
+
+    mutating internal func didSample(token: MLXArray) {
+        eval(token)
+        lastTokens.append(token.item(Int.self))
+        trimToTrackingLimit()
+    }
+
+    private func effectivePenaltyLastTokens() -> Int {
+        let contextLimit = totalContextSize ?? lastTokens.count
+        if penaltyLastTokens == -1 {
+            return contextLimit
+        }
+        return min(max(penaltyLastTokens, 0), contextLimit)
+    }
+
+    private func maximumRepetitionLimit(lastNRepeat: Int) -> Int {
+        var repetitionLimit = lastNRepeat
+
+        for indexFromEnd in 0 ..< lastNRepeat {
+            let token = recentToken(indexFromEnd)
+            guard let breakers = sequenceBreakersByHead[token] else {
+                continue
+            }
+
+            var longestMatch = -1
+            for tail in breakers {
+                let tailLength = tail.count
+                guard tailLength > longestMatch, tailLength <= indexFromEnd else {
+                    continue
+                }
+
+                var matches = true
+                for offset in 0 ..< tailLength
+                    where tail[offset] != recentToken(indexFromEnd - offset - 1) {
+                    matches = false
+                    break
+                }
+
+                if matches {
+                    longestMatch = tailLength
+                }
+            }
+
+            if longestMatch >= 0 {
+                repetitionLimit = indexFromEnd - longestMatch
+                break
+            }
+        }
+
+        return repetitionLimit
+    }
+
+    private func repeatedSuffixCounts(lastNRepeat: Int, repetitionLimit: Int) -> [Int] {
+        let lastIndex = lastNRepeat - 1
+        var repeatCounts = Array(repeating: 0, count: lastNRepeat)
+        var right = 0
+        var left = 0
+
+        for offset in 1 ..< lastNRepeat {
+            if offset > right {
+                var count = 0
+                while count + offset < lastNRepeat
+                    && recentToken(count) == recentToken(count + offset) {
+                    count += 1
+                }
+                repeatCounts[lastIndex - offset] = min(count, repetitionLimit)
+                if count > 0 {
+                    left = offset
+                    right = offset + count - 1
+                }
+            } else {
+                let pairIndex = offset - left
+                let rightPartLength = right - offset + 1
+                if repeatCounts[lastIndex - pairIndex] < rightPartLength {
+                    repeatCounts[lastIndex - offset] = min(
+                        repeatCounts[lastIndex - pairIndex],
+                        repetitionLimit
+                    )
+                } else {
+                    var index = right + 1
+                    while index < lastNRepeat
+                        && recentToken(index) == recentToken(index - offset) {
+                        index += 1
+                    }
+                    repeatCounts[lastIndex - offset] = min(index - offset, repetitionLimit)
+                    left = offset
+                    right = index - 1
+                }
+            }
+        }
+
+        return repeatCounts
+    }
+
+    private func dryPenaltyMap(
+        repeatCounts: [Int],
+        lastNRepeat: Int,
+        vocabularySize: Int
+    ) -> [Int: Float] {
+        var maxTokenRepeat: [Int: Int] = [:]
+        for index in 0 ..< max(0, lastNRepeat - 1) {
+            let repeatLength = repeatCounts[index]
+            guard repeatLength >= allowedLength else {
+                continue
+            }
+
+            let token = recentToken(lastNRepeat - 2 - index)
+            maxTokenRepeat[token] = max(maxTokenRepeat[token] ?? 0, repeatLength)
+        }
+
+        guard !maxTokenRepeat.isEmpty else {
+            return [:]
+        }
+
+        let maxExponent = base > 1.000001 ? Int(Self.floatMaxLog / log(base)) : 0
+        var penalties: [Int: Float] = [:]
+        for (token, repeatLength) in maxTokenRepeat
+            where token >= 0 && token < vocabularySize && !singleTokenBreakerIds.contains(token) {
+            var repeatExponent = repeatLength - allowedLength
+            if maxExponent > 0 {
+                repeatExponent = min(repeatExponent, maxExponent)
+            }
+            penalties[token] = -(multiplier * pow(base, Float(repeatExponent)))
+        }
+        return penalties
+    }
+
+    private func penaltyBias(from penalties: [Int: Float], vocabularySize: Int) -> MLXArray {
+        let sortedPenalties = penalties.sorted { $0.key < $1.key }
+        let indices = MLXArray(sortedPenalties.map(\.key)).asType(.int32)
+        let values = MLXArray(sortedPenalties.map(\.value))
+
+        return MLXArray.zeros([vocabularySize], type: Float32.self)
+            .at[indices]
+            .add(values)
+            .reshaped(1, -1)
+    }
+
+    private func recentToken(_ offsetFromEnd: Int) -> Int {
+        lastTokens[lastTokens.count - offsetFromEnd - 1]
+    }
+
+    private func suffixWithinTrackingLimit(_ tokens: [Int]) -> [Int] {
+        guard let trackingLimit = trackingLimit(), tokens.count > trackingLimit else {
+            return tokens
+        }
+        return Array(tokens.suffix(trackingLimit))
+    }
+
+    private mutating func trimToTrackingLimit() {
+        guard let trackingLimit = trackingLimit(), lastTokens.count > trackingLimit else {
+            return
+        }
+        lastTokens.removeFirst(lastTokens.count - trackingLimit)
+    }
+
+    private func trackingLimit() -> Int? {
+        if penaltyLastTokens == -1 {
+            return totalContextSize
+        }
+        return max(penaltyLastTokens, 0)
+    }
+}
+
 /// Processor that applies OpenAI-compatible additive logit bias by token id.
 internal struct LogitBiasProcessor: LogitProcessor, @unchecked Sendable {
     private let indices: MLXArray
@@ -546,42 +1350,256 @@ internal struct LogitBiasProcessor: LogitProcessor, @unchecked Sendable {
     mutating internal func didSample(token: MLXArray) {}
 }
 
+/// Processor that hard-masks model-configured suppressed token ids.
+internal struct SuppressTokensProcessor: LogitProcessor, @unchecked Sendable {
+    private let indices: MLXArray
+    private let negInf = MLXArray(-Float.infinity)
+
+    internal init(tokenIds: Set<Int>) {
+        self.indices = MLXArray(tokenIds.sorted()).asType(.uint32)
+    }
+
+    mutating internal func prompt(_ prompt: MLXArray) {}
+
+    mutating internal func process(logits: MLXArray) -> MLXArray {
+        guard indices.dim(0) > 0 else {
+            return logits
+        }
+        let vocabularySize = logits.dim(-1)
+        let bias = MLXArray.zeros([vocabularySize], type: Float32.self)
+            .at[indices]
+            .add(negInf)
+        return logits + bias.reshaped(1, -1)
+    }
+
+    mutating internal func didSample(token: MLXArray) {}
+}
+
+internal enum ReasoningBudgetSampleResult: Sendable, Equatable {
+    case counted(reasoningTokenCount: Int)
+    case budgetReached(reasoningTokenCount: Int, nextTokenID: Int)
+    case forcing(nextTokenID: Int)
+    case closed(forced: Bool)
+}
+
+internal struct ReasoningBudgetState: Sendable, Equatable {
+    private let maximumReasoningTokens: Int
+    private let endTokenIds: [Int]
+    private var recentTokenIds: [Int] = []
+    private var forceIndex: Int?
+
+    private(set) var reasoningTokenCount = 0
+    private(set) var isClosed = false
+
+    internal init(maximumReasoningTokens: Int, endTokenIds: [Int]) {
+        self.maximumReasoningTokens = max(1, maximumReasoningTokens)
+        self.endTokenIds = endTokenIds.filter { $0 >= 0 }
+    }
+
+    internal var nextForcedTokenID: Int? {
+        guard !isClosed, !endTokenIds.isEmpty else {
+            return nil
+        }
+        if let forceIndex {
+            return endTokenIds[forceIndex]
+        }
+        return reasoningTokenCount >= maximumReasoningTokens ? endTokenIds[0] : nil
+    }
+
+    internal mutating func didSample(_ tokenID: Int) -> ReasoningBudgetSampleResult {
+        guard !isClosed else {
+            return .closed(forced: false)
+        }
+        if let expectedTokenID = nextForcedTokenID {
+            return didSampleForced(tokenID, expectedTokenID: expectedTokenID)
+        }
+
+        reasoningTokenCount += 1
+        remember(tokenID)
+        if recentTokenIds == endTokenIds {
+            isClosed = true
+            return .closed(forced: false)
+        }
+        if reasoningTokenCount >= maximumReasoningTokens, let nextForcedTokenID {
+            return .budgetReached(
+                reasoningTokenCount: reasoningTokenCount,
+                nextTokenID: nextForcedTokenID
+            )
+        }
+        return .counted(reasoningTokenCount: reasoningTokenCount)
+    }
+
+    private mutating func didSampleForced(
+        _ tokenID: Int,
+        expectedTokenID: Int
+    ) -> ReasoningBudgetSampleResult {
+        let currentForceIndex = forceIndex ?? 0
+        guard tokenID == expectedTokenID else {
+            forceIndex = currentForceIndex
+            return .forcing(nextTokenID: expectedTokenID)
+        }
+
+        let nextForceIndex = currentForceIndex + 1
+        if nextForceIndex >= endTokenIds.count {
+            forceIndex = nil
+            isClosed = true
+            return .closed(forced: true)
+        }
+        forceIndex = nextForceIndex
+        return .forcing(nextTokenID: endTokenIds[nextForceIndex])
+    }
+
+    private mutating func remember(_ tokenID: Int) {
+        guard !endTokenIds.isEmpty else {
+            return
+        }
+        recentTokenIds.append(tokenID)
+        if recentTokenIds.count > endTokenIds.count {
+            recentTokenIds.removeFirst(recentTokenIds.count - endTokenIds.count)
+        }
+    }
+}
+
+/// Forces the model's reasoning-close marker once a token budget is reached.
+internal struct ReasoningBudgetProcessor: LogitProcessor, @unchecked Sendable {
+    private var state: ReasoningBudgetState
+    private let negInf = MLXArray(-Float.infinity)
+
+    internal init(maximumReasoningTokens: Int, endTokenIds: [Int]) {
+        self.state = ReasoningBudgetState(
+            maximumReasoningTokens: maximumReasoningTokens,
+            endTokenIds: endTokenIds
+        )
+    }
+
+    mutating internal func prompt(_ prompt: MLXArray) {}
+
+    mutating internal func process(logits: MLXArray) -> MLXArray {
+        guard let tokenID = state.nextForcedTokenID else {
+            return logits
+        }
+        guard tokenID < logits.dim(-1) else {
+            MLXGenerationDiagnostics.recordReasoningBudget(.init(
+                stage: .invalidEndToken,
+                reasoningTokenCount: state.reasoningTokenCount,
+                forcedTokenID: tokenID,
+                message: "Reasoning end token is outside the logits vocabulary"
+            ))
+            return logits
+        }
+
+        MLXGenerationDiagnostics.recordReasoningBudget(.init(
+            stage: .maskApplied,
+            reasoningTokenCount: state.reasoningTokenCount,
+            forcedTokenID: tokenID,
+            message: nil
+        ))
+        let indices = MLXArray([tokenID]).asType(.int32)
+        let masked = MLXArray.full(logits.shape, values: negInf, dtype: logits.dtype)
+        masked[0..., indices] = logits[0..., indices]
+        return masked
+    }
+
+    mutating internal func didSample(token: MLXArray) {
+        let tokenID = token.item(Int.self)
+        let result = state.didSample(tokenID)
+        guard let snapshot = snapshot(for: result, tokenID: tokenID) else {
+            return
+        }
+        MLXGenerationDiagnostics.recordReasoningBudget(snapshot)
+    }
+
+    private func snapshot(
+        for result: ReasoningBudgetSampleResult,
+        tokenID: Int
+    ) -> MLXReasoningBudgetSnapshot? {
+        switch result {
+        case .counted(let reasoningTokenCount):
+            return .init(
+                stage: .tokenCounted,
+                reasoningTokenCount: reasoningTokenCount,
+                forcedTokenID: nil,
+                message: nil
+            )
+
+        case .budgetReached(let reasoningTokenCount, let nextTokenID):
+            return .init(
+                stage: .budgetReached,
+                reasoningTokenCount: reasoningTokenCount,
+                forcedTokenID: nextTokenID,
+                message: nil
+            )
+
+        case .forcing(let nextTokenID):
+            return .init(
+                stage: .forcingEndMarker,
+                reasoningTokenCount: state.reasoningTokenCount,
+                forcedTokenID: nextTokenID,
+                message: nil
+            )
+
+        case .closed(let forced):
+            return .init(
+                stage: forced ? .forcedClosed : .naturallyClosed,
+                reasoningTokenCount: state.reasoningTokenCount,
+                forcedTokenID: tokenID,
+                message: nil
+            )
+        }
+    }
+}
+
 /// Composes active penalty processors in the same order as Python mlx-lm.
 internal struct PenaltyProcessor: LogitProcessor, @unchecked Sendable {
     var logitBiasContext: LogitBiasProcessor?
+    var suppressTokenContext: SuppressTokensProcessor?
+    var reasoningBudgetContext: ReasoningBudgetProcessor?
     var repetitionContext: RepetitionContext?
     var presenceContext: PresencePenaltyContext?
     var frequencyContext: FrequencyPenaltyContext?
+    var dryContext: DryPenaltyContext?
     var grammarContext: GrammarConstrainedLogitProcessor?
 
     internal init(
         logitBiasContext: LogitBiasProcessor?,
+        suppressTokenContext: SuppressTokensProcessor?,
+        reasoningBudgetContext: ReasoningBudgetProcessor?,
         repetitionContext: RepetitionContext?,
         presenceContext: PresencePenaltyContext?,
         frequencyContext: FrequencyPenaltyContext?,
+        dryContext: DryPenaltyContext?,
         grammarContext: GrammarConstrainedLogitProcessor?
     ) {
         self.logitBiasContext = logitBiasContext
+        self.suppressTokenContext = suppressTokenContext
+        self.reasoningBudgetContext = reasoningBudgetContext
         self.repetitionContext = repetitionContext
         self.presenceContext = presenceContext
         self.frequencyContext = frequencyContext
+        self.dryContext = dryContext
         self.grammarContext = grammarContext
     }
 
     mutating internal func prompt(_ prompt: MLXArray) {
         logitBiasContext?.prompt(prompt)
+        suppressTokenContext?.prompt(prompt)
+        reasoningBudgetContext?.prompt(prompt)
         repetitionContext?.prompt(prompt)
         presenceContext?.prompt(prompt)
         frequencyContext?.prompt(prompt)
+        dryContext?.prompt(prompt)
         grammarContext?.prompt(prompt)
     }
 
     mutating internal func process(logits: MLXArray) -> MLXArray {
         var logits = logits
         logits = logitBiasContext?.process(logits: logits) ?? logits
+        logits = suppressTokenContext?.process(logits: logits) ?? logits
+        logits = reasoningBudgetContext?.process(logits: logits) ?? logits
         logits = repetitionContext?.process(logits: logits) ?? logits
         logits = presenceContext?.process(logits: logits) ?? logits
         logits = frequencyContext?.process(logits: logits) ?? logits
+        logits = dryContext?.process(logits: logits) ?? logits
         logits = grammarContext?.process(logits: logits) ?? logits
 
         return logits
@@ -589,9 +1607,12 @@ internal struct PenaltyProcessor: LogitProcessor, @unchecked Sendable {
 
     mutating internal func didSample(token: MLXArray) {
         logitBiasContext?.didSample(token: token)
+        suppressTokenContext?.didSample(token: token)
+        reasoningBudgetContext?.didSample(token: token)
         repetitionContext?.didSample(token: token)
         presenceContext?.didSample(token: token)
         frequencyContext?.didSample(token: token)
+        dryContext?.didSample(token: token)
         grammarContext?.didSample(token: token)
     }
 }
@@ -635,6 +1656,7 @@ internal struct TokenIterator: Sequence, IteratorProtocol {
     let kvBits: Int?
     let kvGroupSize: Int
     let quantizedKVStart: Int
+    let quantizedKVSkipLastLayer: Bool
 
     /// Initialize a `TokenIterator` with the given tokens. Note: this has been
     /// replaced with ``init(input:model:cache:parameters:)``.
@@ -660,6 +1682,7 @@ internal struct TokenIterator: Sequence, IteratorProtocol {
         self.kvBits = parameters.kvBits
         self.kvGroupSize = parameters.kvGroupSize
         self.quantizedKVStart = parameters.quantizedKVStart
+        self.quantizedKVSkipLastLayer = parameters.quantizedKVSkipLastLayer
 
         try prepare(input: .init(text: y), windowSize: parameters.prefillStepSize)
     }
@@ -693,6 +1716,7 @@ internal struct TokenIterator: Sequence, IteratorProtocol {
         self.kvBits = parameters.kvBits
         self.kvGroupSize = parameters.kvGroupSize
         self.quantizedKVStart = parameters.quantizedKVStart
+        self.quantizedKVSkipLastLayer = parameters.quantizedKVSkipLastLayer
 
         try prepare(
             input: input,
@@ -729,6 +1753,7 @@ internal struct TokenIterator: Sequence, IteratorProtocol {
         self.kvBits = nil
         self.kvGroupSize = GenerationConstants.defaultKVCacheGroupSize
         self.quantizedKVStart = 0
+        self.quantizedKVSkipLastLayer = false
 
         try prepare(input: input, windowSize: prefillStepSize)
     }
@@ -782,7 +1807,8 @@ internal struct TokenIterator: Sequence, IteratorProtocol {
             cache: &cache,
             kvBits: kvBits,
             kvGroupSize: kvGroupSize,
-            quantizedKVStart: quantizedKVStart
+            quantizedKVStart: quantizedKVStart,
+            skipLastLayer: quantizedKVSkipLastLayer
         )
         MLXGenerationDiagnostics.recordCacheSnapshot(label: "step", cache: cache)
 
@@ -864,7 +1890,8 @@ internal struct SpeculativeTokenIterator: Sequence, IteratorProtocol {
                 cache: &cache,
                 kvBits: parameters.kvBits,
                 kvGroupSize: parameters.kvGroupSize,
-                quantizedKVStart: parameters.quantizedKVStart
+                quantizedKVStart: parameters.quantizedKVStart,
+                skipLastLayer: parameters.quantizedKVSkipLastLayer
             )
         }
 
@@ -1041,15 +2068,276 @@ internal struct SpeculativeTokenIterator: Sequence, IteratorProtocol {
     }
 }
 
+internal struct NativeMTPTokenIterator: Sequence, IteratorProtocol {
+    private var y: LMInput.Text
+    private let model: any NativeMTPModel
+    private var state: LMOutput.State?
+    private var cache: [KVCache]
+    private let quantizeKVCache: (inout [KVCache]) -> Void
+    private let parameters: GenerateParameters
+
+    private var processor: LogitProcessor?
+    private let sampler: LogitSampler
+
+    private var pendingTokens: [Int] = []
+    private var pendingIndex = 0
+
+    internal private(set) var tokenCount = 0
+    internal let maxTokens: Int?
+    internal let numDraftTokens: Int
+    internal var cacheForPromptReuse: PromptCacheReusableState {
+        PromptCacheReusableState(cache: cache)
+    }
+
+    internal init(
+        input: LMInput,
+        model: any NativeMTPModel,
+        cache: [KVCache]? = nil,
+        parameters: GenerateParameters,
+        numDraftTokens: Int,
+        processorPrompt: LMInput.Text? = nil,
+        grammarCompiler: GrammarConstraintCompiler? = nil
+    ) throws {
+        self.y = input.text
+        self.model = model
+        self.cache = cache ?? model.newCache(parameters: parameters)
+        self.parameters = parameters
+        guard canTrimPromptCache(self.cache) else {
+            throw KVCacheError(message: "Native MTP decoding requires trimmable KV caches.")
+        }
+
+        self.processor = try parameters.processor(grammarCompiler: grammarCompiler)
+        self.sampler = parameters.sampler()
+        self.maxTokens = parameters.maxTokens
+        self.numDraftTokens = Swift.max(0, numDraftTokens)
+        self.quantizeKVCache = { cache in
+            maybeQuantizeKVCache(
+                cache: &cache,
+                kvBits: parameters.kvBits,
+                kvGroupSize: parameters.kvGroupSize,
+                quantizedKVStart: parameters.quantizedKVStart,
+                skipLastLayer: parameters.quantizedKVSkipLastLayer
+            )
+        }
+
+        try prepare(
+            input: input,
+            processorPrompt: processorPrompt,
+            windowSize: parameters.prefillStepSize
+        )
+    }
+
+    internal mutating func next() -> Int? {
+        if let maxTokens, tokenCount >= maxTokens {
+            return nil
+        }
+        if let pendingToken = nextPendingToken() {
+            return pendingToken
+        }
+
+        pendingTokens.removeAll(keepingCapacity: true)
+        pendingIndex = 0
+        nativeMTPRound()
+
+        return nextPendingToken()
+    }
+
+    private mutating func prepare(
+        input: LMInput,
+        processorPrompt: LMInput.Text?,
+        windowSize: Int?
+    ) throws {
+        processor?.prompt((processorPrompt ?? input.text).tokens)
+
+        switch try model.prepare(input, cache: cache, windowSize: windowSize) {
+        case .tokens(let tokens):
+            y = tokens
+
+        case .logits(let result):
+            let token = sampleNextToken(logits: result.logits, processor: &processor)
+            processor?.didSample(token: token)
+            y = .init(tokens: token)
+            state = result.state
+            asyncEval(y.tokens)
+        }
+        MLXGenerationDiagnostics.recordCacheSnapshot(label: "nativeMTPPrepared", cache: cache)
+    }
+
+    private mutating func nativeMTPRound() {
+        let remainingTokens = maxTokens.map { $0 - tokenCount } ?? (numDraftTokens + 1)
+        guard remainingTokens > 0 else {
+            return
+        }
+
+        let mainOutput = model.nativeMTPMainOutput(
+            y[text: .newAxis],
+            cache: cache.isEmpty ? nil : cache,
+            state: state
+        )
+        state = mainOutput.state
+        let firstToken = sampleNextToken(logits: mainOutput.logits, processor: &processor)
+
+        let draftCount = Swift.min(Swift.max(remainingTokens - 1, 0), numDraftTokens)
+        guard draftCount > 0 else {
+            acceptMainOnly(firstToken)
+            return
+        }
+
+        let draftTokens = generateDraftTokens(
+            count: draftCount,
+            firstToken: firstToken,
+            mainHiddenStates: mainOutput.hiddenStates
+        )
+        guard !draftTokens.isEmpty else {
+            acceptMainOnly(firstToken)
+            return
+        }
+
+        let mainTokens = verifyDraftTokens(firstToken: firstToken, draftTokens: draftTokens)
+        acceptVerifiedTokens(firstToken: firstToken, mainTokens: mainTokens, draftTokens: draftTokens)
+    }
+
+    private mutating func generateDraftTokens(
+        count: Int,
+        firstToken: MLXArray,
+        mainHiddenStates: MLXArray
+    ) -> [MLXArray] {
+        var draftProcessor = processor
+        draftProcessor?.didSample(token: firstToken)
+
+        var draftTokens: [MLXArray] = []
+        draftTokens.reserveCapacity(count)
+        let lastHiddenStateIndex = mainHiddenStates.dim(1) - 1
+        var hiddenStates = mainHiddenStates[0..., lastHiddenStateIndex ..< lastHiddenStateIndex + 1, 0...]
+        var nextToken = firstToken
+        let mtpCache = model.makeMTPCache(parameters: parameters)
+
+        for _ in 0 ..< count {
+            guard let draftOutput = model.nativeMTPDraftOutput(
+                hiddenStates: hiddenStates,
+                nextTokenIDs: nextToken.reshaped([1, 1]),
+                cache: mtpCache.isEmpty ? nil : mtpCache
+            ) else {
+                break
+            }
+            let token = sampleNextToken(logits: draftOutput.logits, processor: &draftProcessor)
+            draftProcessor?.didSample(token: token)
+            asyncEval(token)
+            draftTokens.append(token)
+            nextToken = token
+            hiddenStates = draftOutput.hiddenStates
+        }
+
+        MLXGenerationDiagnostics.recordCacheSnapshot(label: "nativeMTPDraftStep", cache: mtpCache)
+        return draftTokens
+    }
+
+    private mutating func verifyDraftTokens(
+        firstToken: MLXArray,
+        draftTokens: [MLXArray]
+    ) -> MLXArray {
+        let verifyTokens = [firstToken] + draftTokens
+        let verifyInput = LMInput.Text(tokens: concatenated(verifyTokens))
+        let result = model(
+            verifyInput[text: .newAxis],
+            cache: cache.isEmpty ? nil : cache,
+            state: state
+        )
+        state = result.state
+        MLXGenerationDiagnostics.recordCacheSnapshot(label: "nativeMTPMainStep", cache: cache)
+
+        guard var verifyProcessor = processor else {
+            let logits = result.logits[0..., 0..., 0...].squeezed(axis: 0)
+            return sampler.sample(logits: logits)
+        }
+
+        verifyProcessor.didSample(token: firstToken)
+        let sampled = (0 ..< draftTokens.count + 1).map { index in
+            var logits = result.logits[0..., index, 0...]
+            logits = verifyProcessor.process(logits: logits)
+            let token = sampler.sample(logits: logits)
+            verifyProcessor.didSample(token: token)
+            return token
+        }
+        return concatenated(sampled)
+    }
+
+    private mutating func acceptVerifiedTokens(
+        firstToken: MLXArray,
+        mainTokens: MLXArray,
+        draftTokens: [MLXArray]
+    ) {
+        eval(firstToken, mainTokens, draftTokens)
+        let firstTokenID = firstToken.item(Int.self)
+        let mainTokenIDs = mainTokens.asArray(Int.self)
+        let draftTokenIDs = concatenated(draftTokens).asArray(Int.self)
+        var acceptedCount = 0
+
+        processor?.didSample(token: firstToken)
+        pendingTokens.append(firstTokenID)
+
+        for index in 0 ..< draftTokens.count {
+            guard mainTokenIDs[index] == draftTokenIDs[index] else {
+                break
+            }
+
+            processor?.didSample(token: draftTokens[index])
+            pendingTokens.append(mainTokenIDs[index])
+            acceptedCount += 1
+        }
+
+        let finalToken = mainTokens[acceptedCount ... acceptedCount]
+        processor?.didSample(token: finalToken)
+        pendingTokens.append(mainTokenIDs[acceptedCount])
+
+        trimPromptCache(cache, numTokens: draftTokens.count - acceptedCount)
+        quantizeKVCache(&cache)
+        y = .init(tokens: finalToken)
+    }
+
+    private mutating func acceptMainOnly(_ firstToken: MLXArray) {
+        eval(firstToken)
+        processor?.didSample(token: firstToken)
+        pendingTokens.append(firstToken.item(Int.self))
+        quantizeKVCache(&cache)
+        y = .init(tokens: firstToken)
+    }
+
+    private mutating func nextPendingToken() -> Int? {
+        guard pendingIndex < pendingTokens.count else {
+            return nil
+        }
+
+        let token = pendingTokens[pendingIndex]
+        pendingIndex += 1
+        tokenCount += 1
+        return token
+    }
+
+    private func sampleNextToken(logits: MLXArray, processor: inout LogitProcessor?) -> MLXArray {
+        let logits = logits[0..., -1, 0...]
+        return sampleToken(logits: logits, processor: &processor)
+    }
+
+    private func sampleToken(logits: MLXArray, processor: inout LogitProcessor?) -> MLXArray {
+        var logits = logits
+        logits = processor?.process(logits: logits) ?? logits
+        return sampler.sample(logits: logits)
+    }
+}
+
 internal enum TokenGenerationIterator: Sequence, IteratorProtocol {
     case standard(TokenIterator)
     case speculative(SpeculativeTokenIterator)
+    case nativeMTP(NativeMTPTokenIterator)
 
     internal var cacheForPromptReuse: PromptCacheReusableState {
         switch self {
         case .standard(let iterator):
             PromptCacheReusableState(cache: iterator.cache)
         case .speculative(let iterator):
+            iterator.cacheForPromptReuse
+        case .nativeMTP(let iterator):
             iterator.cacheForPromptReuse
         }
     }
@@ -1064,6 +2352,11 @@ internal enum TokenGenerationIterator: Sequence, IteratorProtocol {
         case .speculative(var iterator):
             let token = iterator.next()
             self = .speculative(iterator)
+            return token
+
+        case .nativeMTP(var iterator):
+            let token = iterator.next()
+            self = .nativeMTP(iterator)
             return token
         }
     }

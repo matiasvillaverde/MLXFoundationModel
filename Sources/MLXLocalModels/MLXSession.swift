@@ -16,52 +16,47 @@ internal actor MLXSession: LLMSession {
     var configuration: ProviderConfiguration?
     var modelContainer: ModelContainer?
     var speculativeDecoding: MLXSpeculativeDecodingConfiguration?
+    var runtimeCapabilities: MLXGenerationRuntimeCapabilities
     var runtimePreferences: ModelRuntimePreferences = .default
+    var generationExecutionPlan: MLXGenerationExecutionPlan?
+    var continuousBatchEngine: MLXContinuousBatchSessionEngine?
     var persistentPromptCacheURL: URL?
-    private var isGenerating = false
+    var memoryProfile: MLXModelMemoryProfile?
+    var activeGenerationCount = 0
+    var isGenerating: Bool { activeGenerationCount > 0 }
+    var pendingUnloadAfterGeneration = false
     let stopFlag = StopFlag()
-    private let clock = ContinuousClock() // Metrics tracking
+    let generationAdmission = MLXGenerationAdmissionController()
+    let clock = ContinuousClock() // Metrics tracking
 
     internal init(
         configuration: ProviderConfiguration? = nil,
         modelContainer: ModelContainer? = nil,
-        speculativeDecoding: MLXSpeculativeDecodingConfiguration? = nil
+        speculativeDecoding: MLXSpeculativeDecodingConfiguration? = nil,
+        runtimeCapabilities: MLXGenerationRuntimeCapabilities = .scalar
     ) {
         self.configuration = configuration
         self.modelContainer = modelContainer
         self.speculativeDecoding = speculativeDecoding
+        self.runtimeCapabilities = runtimeCapabilities
     }
 
     /// Stream text generation based on the provided configuration
     internal func stream(_ input: LLMInput) -> AsyncThrowingStream<LLMStreamChunk, Error> {
         AsyncThrowingStream { continuation in
             let stopFlag = self.stopFlag
+            let cancellationState = MLXGenerationCancellationState()
             let generationTask = Task {
-                do {
-                    stopFlag.reset()
-                    try Task.checkCancellation()
-                    isGenerating = true
-                    defer { isGenerating = false }
-
-                    logger.debug("Starting stream generation")
-
-                    if modelContainer == nil {
-                        logger.info("Model not preloaded - loading on demand")
-                        try await loadModel()
-                    }
-
-                    try Task.checkCancellation()
-                    try await generateStream(input: input, continuation: continuation)
-                    continuation.finish()
-                } catch is CancellationError {
-                    continuation.finish()
-                } catch {
-                    logger.error("Stream generation failed: \(error.localizedDescription)")
-                    continuation.finish(throwing: error)
-                }
+                await self.runStreamTask(
+                    input: input,
+                    cancellationState: cancellationState,
+                    continuation: continuation
+                )
             }
             continuation.onTermination = { @Sendable _ in
-                stopFlag.set(true)
+                if cancellationState.shouldSignalStop() {
+                    stopFlag.set(true)
+                }
                 generationTask.cancel()
             }
         }
@@ -72,18 +67,6 @@ internal actor MLXSession: LLMSession {
         logger.info("Stop requested - setting stop flag")
         stopFlag.set(true)
     }
-
-    /// Unload a model from memory
-    internal func unload() async {
-        if modelContainer != nil {
-            logger.info("Unloading model from memory")
-            try? await persistPromptCacheIfNeeded()
-            modelContainer = nil
-        } else {
-            logger.debug("Unload called but no model was loaded")
-        }
-    }
-    // MARK: - Private Methods
 
     func streamModelLoad(
         continuation: AsyncThrowingStream<Progress, Error>.Continuation
@@ -100,6 +83,8 @@ internal actor MLXSession: LLMSession {
         progress.localizedDescription = "Loading MLX model"
         continuation.yield(progress)
 
+        try await preflightRuntimeForModelLoad()
+
         let modelConfig = ModelConfiguration(directory: configuration.location)
         modelContainer = try await LLMModelFactory.shared.loadContainer(
             configuration: modelConfig
@@ -113,7 +98,7 @@ internal actor MLXSession: LLMSession {
         }
     }
 
-    private func loadModel() async throws {
+    func loadModel() async throws {
         guard let configuration else {
             logger.error("Model not loaded: Configuration must be set via preload() before generation")
             throw LLMError.invalidConfiguration("Configuration not set. Call preload first.")
@@ -121,6 +106,8 @@ internal actor MLXSession: LLMSession {
 
         let loadStart = clock.now
         logger.info("Loading model from \(configuration.location.path)")
+
+        try await preflightRuntimeForModelLoad()
 
         let modelConfig = ModelConfiguration(directory: configuration.location)
         modelContainer = try await LLMModelFactory.shared.loadContainer(
@@ -135,7 +122,7 @@ internal actor MLXSession: LLMSession {
         }
     }
 
-    private func generateStream(
+    func generateStream(
         input: LLMInput,
         continuation: AsyncThrowingStream<LLMStreamChunk, Error>.Continuation
     ) async throws {
@@ -163,9 +150,11 @@ internal actor MLXSession: LLMSession {
         input: LLMInput,
         continuation: AsyncThrowingStream<LLMStreamChunk, Error>.Continuation
     ) async throws {
-        let generateParams = createGenerateParameters(
-            from: input.sampling,
-            limits: input.limits
+        let runtimePreferences = self.runtimePreferences
+        let generateParams = await createGenerateParameters(
+            from: input,
+            container: container,
+            runtimePreferences: runtimePreferences,
         )
         MLXGenerationDiagnostics.recordParameters(generateParams)
         let generationStartTime = clock.now
@@ -176,13 +165,14 @@ internal actor MLXSession: LLMSession {
         )
         #endif
 
-        let metricsData = try await generateTokens(
-            container: container,
+        let request = MLXGenerationRunRequest(
             input: input,
             parameters: generateParams,
+            runtimePreferences: runtimePreferences,
             generationStartTime: generationStartTime,
             continuation: continuation
         )
+        let metricsData = try await generateTokens(container: container, request: request)
 
         let metrics = metricsData.chunkMetrics(
             totalDuration: metricsData.generationStartTime.duration(to: clock.now),
@@ -222,21 +212,21 @@ internal actor MLXSession: LLMSession {
 
     private func generateTokens(
         container: ModelContainer,
-        input: LLMInput,
-        parameters: GenerateParameters,
-        generationStartTime: ContinuousClock.Instant,
-        continuation: AsyncThrowingStream<LLMStreamChunk, Error>.Continuation
+        request: MLXGenerationRunRequest
     ) async throws -> MetricsData {
         let speculativeDecoding = self.speculativeDecoding
         let promptCacheVariant = Self.promptCacheVariant(for: speculativeDecoding)
-        return try await container.performWithPromptCache { [clock] context, promptCacheEntries in
+        let profile = self.memoryProfile
+        return try await container.performWithPromptCache { context, promptCacheEntries in
             let genContext = GenerationContext(
                 modelContext: context,
-                input: input,
-                parameters: parameters,
-                generationStartTime: generationStartTime,
-                continuation: continuation,
-                clock: clock
+                input: request.input,
+                parameters: request.parameters,
+                generationStartTime: request.generationStartTime,
+                continuation: request.continuation,
+                clock: clock,
+                runtimePreferences: request.runtimePreferences,
+                memoryProfile: profile
             )
             return try self.executeGeneration(
                 genContext,
@@ -254,96 +244,70 @@ internal actor MLXSession: LLMSession {
         speculativeDecoding: MLXSpeculativeDecodingConfiguration?,
         promptCacheVariant: String?
     ) throws -> MetricsData {
-        let promptStartTime = genContext.clock.now
-
-        let fullInput = try genContext.modelContext.tokenize(input: genContext.input)
-        eval(fullInput.text.tokens)
-
-        let tokenizationEndTime = genContext.clock.now
-        let tokenizeDuration = promptStartTime.duration(to: tokenizationEndTime)
-        let promptTokenIds = fullInput.text.tokens.asArray(Int.self)
-
-        #if DEBUG
-        debugLogger.info("Tokenization complete: \(promptTokenIds.count) tokens, \(tokenizeDuration)")
-        #endif
-
-        if tokenizeDuration > .seconds(10) {
-            logger.warning("Slow tokenization: \(tokenizeDuration) for \(promptTokenIds.count) tokens")
+        let prepared = try prepareGeneration(
+            genContext: genContext,
+            promptCacheEntries: &promptCacheEntries,
+            speculativeDecoding: speculativeDecoding,
+            promptCacheVariant: promptCacheVariant
+        )
+        let promptCacheLease = prepared.cachePlan.lease
+        defer {
+            if let lease = promptCacheLease {
+                PromptCachePlanner.release(lease, in: &promptCacheEntries)
+            }
         }
 
-        let cachePlan = PromptCachePlanner.plan(
-            fullInput: fullInput,
-            tokenIds: promptTokenIds,
-            parameters: genContext.parameters,
-            cacheVariant: promptCacheVariant,
-            promptCacheIdentity: genContext.input.promptCacheIdentity,
-            existingEntries: promptCacheEntries,
-            reuseEnabled: genContext.input.limits.reusePromptCache,
-            requiresDraftCache: speculativeDecoding != nil
-        )
-        MLXGenerationDiagnostics.recordPromptCachePlan(
-            promptTokenCount: promptTokenIds.count,
-            reusedTokenCount: cachePlan.reusedTokenCount
-        )
-
-        let state = GenerationState()
-        let tokenContext = TokenContext(
-            state: state,
-            context: genContext.modelContext,
-            input: genContext.input,
-            continuation: genContext.continuation,
-            clock: genContext.clock
-        )
-        state.stopDetector = StopSequenceDetector(
-            sequences: genContext.input.sampling.stopSequences
-        )
-        state.detokenizer = NaiveStreamingDetokenizer(tokenizer: genContext.modelContext.tokenizer)
-
-        let iterator = try makeIterator(
-            genContext: genContext,
-            cachePlan: cachePlan,
-            fullInput: fullInput,
-            speculativeDecoding: speculativeDecoding
-        )
+        let iterator = try MLXGenerationDiagnostics.withAdaptivePrefillController(
+            prepared.adaptivePrefillController
+        ) {
+            try makeIterator(
+                genContext: prepared.genContext,
+                cachePlan: prepared.cachePlan,
+                fullInput: prepared.fullInput,
+                speculativeDecoding: speculativeDecoding
+            )
+        }
 
         let promptEndTime = genContext.clock.now
 
         let reusableState = iterator.cacheForPromptReuse
         updatePromptCacheEntries(
             &promptCacheEntries,
-            tokenIds: promptTokenIds,
+            tokenIds: prepared.promptTokenIDs,
             reusableState: reusableState,
-            genContext: genContext,
+            genContext: prepared.genContext,
             promptCacheVariant: promptCacheVariant
         )
 
         #if DEBUG
-        if cachePlan.reusedTokenCount > 0 {
+        if prepared.cachePlan.reusedTokenCount > 0 {
+            let reusedTokenCount = prepared.cachePlan.reusedTokenCount
+            let promptTokenCount = prepared.promptTokenIDs.count
             debugLogger.info("""
-                Prompt cache reused \(cachePlan.reusedTokenCount)/\(promptTokenIds.count) tokens
+                Prompt cache reused \(reusedTokenCount)/\(promptTokenCount) tokens
                 """)
         }
         #endif
 
         for token in iterator {
             if Task.isCancelled || stopFlag.get() {
-                state.stopReason = .userRequested
+                prepared.state.stopReason = .userRequested
                 break
             }
             if isTimedOut(genContext) {
-                state.stopReason = .timeout
+                prepared.state.stopReason = .timeout
                 break
             }
             if isStopToken(token, context: genContext.modelContext) {
-                state.stopReason = .endOfSequence
+                prepared.state.stopReason = .endOfSequence
                 break
             }
-            if processToken(token: token, tokenContext: tokenContext) == .stop {
+            if processToken(token: token, tokenContext: prepared.tokenContext) == .stop {
                 break
             }
         }
 
-        flushPendingText(tokenContext: tokenContext)
+        flushPendingText(tokenContext: prepared.tokenContext)
         Stream().synchronize()
 
         let kvCacheBytes = Int64(PromptCachePlanner.cacheByteCount(reusableState.cache))
@@ -351,32 +315,17 @@ internal actor MLXSession: LLMSession {
 
         return MetricsData(
             generationStartTime: genContext.generationStartTime,
-            promptStartTime: promptStartTime,
+            promptStartTime: prepared.promptStartTime,
             promptEndTime: promptEndTime,
-            firstTokenTime: state.firstTokenTime,
-            promptTokenCount: promptTokenIds.count,
-            generatedTokenCount: state.generatedTokenCount,
+            firstTokenTime: prepared.state.firstTokenTime,
+            promptTokenCount: prepared.promptTokenIDs.count,
+            generatedTokenCount: prepared.state.generatedTokenCount,
             kvCacheBytes: kvCacheBytes,
             kvCacheEntries: kvCacheEntries,
-            promptCacheReusedTokenCount: cachePlan.reusedTokenCount,
-            stopReason: state.stopReason,
-            parameters: genContext.parameters
+            promptCacheReusedTokenCount: prepared.cachePlan.reusedTokenCount,
+            stopReason: prepared.state.stopReason,
+            parameters: prepared.genContext.parameters
         )
     }
-
-    nonisolated private static func promptCacheVariant(
-        for speculativeDecoding: MLXSpeculativeDecodingConfiguration?
-    ) -> String? {
-        speculativeDecoding.map { "speculative:\($0.draftContext.configuration.name)" }
-    }
-
-    nonisolated private func isTimedOut(_ genContext: GenerationContext) -> Bool {
-        guard let maxTime: Duration = genContext.input.limits.maxTime else {
-            return false
-        }
-        return genContext.generationStartTime.duration(to: genContext.clock.now) >= maxTime
-    }
-
-    // MARK: - Metrics Helpers
 }
 // swiftlint:enable type_body_length

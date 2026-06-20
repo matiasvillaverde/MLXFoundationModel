@@ -313,7 +313,11 @@ internal class GLM4MoEModel: Module, LLMModel, KVCacheDimensionProvider {
     }
 
     internal func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
-        var sanitized = weights
+        var sanitized = MLXQuantizedWeightSanitizer.sanitize(
+            weights,
+            strategy: .automatic(),
+            sidecarPolicy: .dropActivationScale
+        ).weights
 
         if configuration.tieWordEmbeddings {
             sanitized["lm_head.weight"] = nil

@@ -99,11 +99,25 @@ internal func loadWeights(
             for (key, value) in w {
                 weights[key] = value
             }
+            metadata.merge(
+                MLXSafetensorsTensorMetadata.encodedDTypeMetadata(at: url)
+            ) { current, _ in current }
             metadata.merge(fileMetadata) { current, _ in current }
             fileCount += 1
         }
     }
     logger.debug("Loaded \(fileCount) safetensor files with \(weights.count) total weights")
+
+    let packedScaleResult = MLXQuantizedWeightSanitizer.sanitizePackedScalePairs(
+        weights,
+        metadata: metadata
+    )
+    if packedScaleResult.report.packedScaleCount > 0 {
+        logger.info(
+            "Dequantized \(packedScaleResult.report.packedScaleCount) FP8 packed scale pairs"
+        )
+    }
+    weights = packedScaleResult.weights
 
     // per-model cleanup
     weights = model.sanitize(weights: weights, metadata: metadata)

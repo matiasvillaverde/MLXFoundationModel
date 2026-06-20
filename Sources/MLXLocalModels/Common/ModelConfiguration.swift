@@ -39,12 +39,16 @@ internal struct ModelConfiguration: Sendable {
     /// Additional token ids loaded from model config or generation_config.json.
     internal var eosTokenIds: Set<Int>
 
+    /// Token ids that must be suppressed during sampling.
+    internal var suppressTokenIds: Set<Int>
+
     internal init(
         id: String, revision: String = "main",
         tokenizerId: String? = nil, overrideTokenizer: String? = nil,
         defaultPrompt: String = "hello",
         extraEOSTokens: Set<String> = [],
         eosTokenIds: Set<Int> = [],
+        suppressTokenIds: Set<Int> = [],
         preparePrompt: (@Sendable (String) -> String)? = nil
     ) {
         self.id = .id(id, revision: revision)
@@ -53,6 +57,7 @@ internal struct ModelConfiguration: Sendable {
         self.defaultPrompt = defaultPrompt
         self.extraEOSTokens = extraEOSTokens
         self.eosTokenIds = eosTokenIds
+        self.suppressTokenIds = suppressTokenIds
     }
 
     internal init(
@@ -60,7 +65,8 @@ internal struct ModelConfiguration: Sendable {
         tokenizerId: String? = nil, overrideTokenizer: String? = nil,
         defaultPrompt: String = "hello",
         extraEOSTokens: Set<String> = ["<end_of_turn>"],
-        eosTokenIds: Set<Int> = []
+        eosTokenIds: Set<Int> = [],
+        suppressTokenIds: Set<Int> = []
     ) {
         self.id = .directory(directory)
         self.tokenizerId = tokenizerId
@@ -68,6 +74,7 @@ internal struct ModelConfiguration: Sendable {
         self.defaultPrompt = defaultPrompt
         self.extraEOSTokens = extraEOSTokens
         self.eosTokenIds = eosTokenIds
+        self.suppressTokenIds = suppressTokenIds
     }
 
     internal func modelDirectory(hub: HubApi = HubApi()) -> URL {

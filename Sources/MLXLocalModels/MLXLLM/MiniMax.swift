@@ -223,35 +223,11 @@ internal class MiniMaxModel: Module, LLMModel, KVCacheDimensionProvider {
             sanitizedWeights["lm_head.weight"] = nil
         }
 
-        func dequant(weight: MLXArray, scaleInv: MLXArray) -> MLXArray {
-            let dtype = weight.dtype
-            let bs = 128
-            let (m, n) = (weight.dim(0), weight.dim(1))
-            let padBottom = (bs - m % bs) % bs
-            let padSide = (bs - n % bs) % bs
-
-            var padded = padded(
-                weight, widths: [.init((0, padBottom)), .init((0, padSide))])
-            padded = padded.reshaped(
-                [(m + padBottom) / bs, bs, (n + padSide) / bs, bs])
-            let scaled = padded * scaleInv[0..., .newAxis, 0..., .newAxis]
-            return scaled.reshaped([m + padBottom, n + padSide])[0 ..< m, 0 ..< n]
-                .asType(dtype)
-        }
-
-        var newWeights: [String: MLXArray] = [:]
-        for (key, value) in sanitizedWeights {
-            if key.contains("weight_scale_inv") {
-                let weightKey = key.replacingOccurrences(of: "_scale_inv", with: "")
-                if let weight = sanitizedWeights[weightKey] {
-                    newWeights[weightKey] = dequant(weight: weight, scaleInv: value)
-                }
-            } else if newWeights[key] == nil {
-                newWeights[key] = value
-            }
-        }
-
-        sanitizedWeights = newWeights.isEmpty ? sanitizedWeights : newWeights
+        sanitizedWeights = MLXQuantizedWeightSanitizer.sanitize(
+            sanitizedWeights,
+            strategy: .block(),
+            sidecarPolicy: .dropActivationScale
+        ).weights
 
         if sanitizedWeights["model.layers.0.block_sparse_moe.experts.0.w1.weight"] == nil {
             return sanitizedWeights

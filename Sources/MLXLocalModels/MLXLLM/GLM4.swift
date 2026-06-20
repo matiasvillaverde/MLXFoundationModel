@@ -186,7 +186,11 @@ internal class GLM4Model: Module, LLMModel, KVCacheDimensionProvider {
     }
 
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
-        var weights = weights
+        var weights = MLXQuantizedWeightSanitizer.sanitize(
+            weights,
+            strategy: .automatic(),
+            sidecarPolicy: .dropActivationScale
+        ).weights
 
         if configuration.tieWordEmbeddings {
             weights["lm_head.weight"] = nil

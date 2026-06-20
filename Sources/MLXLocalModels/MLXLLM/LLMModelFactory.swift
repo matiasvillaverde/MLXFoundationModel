@@ -66,6 +66,7 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
             "openelm": create(OpenElmConfiguration.self, OpenELMModel.init),
             "internlm2": create(InternLM2Configuration.self, InternLM2Model.init),
             "deepseek_v3": create(DeepseekV3Configuration.self, DeepseekV3Model.init),
+            "deepseek_v32": create(DeepseekV32Configuration.self, DeepseekV32Model.init),
             "granite": create(GraniteConfiguration.self, GraniteModel.init),
             "granitemoehybrid": create(
                 GraniteMoeHybridConfiguration.self,
@@ -77,6 +78,7 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
             "glm4": create(GLM4Configuration.self, GLM4Model.init),
             "glm4_moe": create(GLM4MoEConfiguration.self, GLM4MoEModel.init),
             "glm4_moe_lite": create(GLM4MoELiteConfiguration.self, GLM4MoELiteModel.init),
+            "glm_moe_dsa": create(GLM4MoELiteConfiguration.self, GLM4MoELiteModel.init),
             "acereason": create(Qwen2Configuration.self, Qwen2Model.init),
             "falcon_h1": create(FalconH1Configuration.self, FalconH1Model.init),
             "bitnet": create(BitnetConfiguration.self, BitnetModel.init),
@@ -476,10 +478,12 @@ internal final class LLMModelFactory: ModelFactory {
         progressHandler(progress)
 
         var resolvedConfiguration = configuration
-        resolvedConfiguration.eosTokenIds = loadEOSTokenIds(
+        let generationTokenConfig = loadGenerationTokenConfig(
             baseConfig: baseConfig,
             modelDirectory: modelDirectory
         )
+        resolvedConfiguration.eosTokenIds = generationTokenConfig.eosTokenIds
+        resolvedConfiguration.suppressTokenIds = generationTokenConfig.suppressTokenIds
 
         async let tokenizerTask = loadTokenizer(configuration: configuration, hub: hub)
 
@@ -530,23 +534,25 @@ internal final class LLMModelFactory: ModelFactory {
         )
     }
 
-    private func loadEOSTokenIds(
+    private func loadGenerationTokenConfig(
         baseConfig: BaseConfiguration,
         modelDirectory: URL
-    ) -> Set<Int> {
+    ) -> (eosTokenIds: Set<Int>, suppressTokenIds: Set<Int>) {
         let generationConfigURL = modelDirectory.appending(component: "generation_config.json")
         guard
             let data = try? Data(contentsOf: generationConfigURL),
             let generationConfig = try? JSONDecoder.json5().decode(
                 GenerationConfigFile.self,
                 from: data
-            ),
-            let generationEOSTokenIds = generationConfig.eosTokenIds?.values
+            )
         else {
-            return Set(baseConfig.eosTokenIds?.values ?? [])
+            return (Set(baseConfig.eosTokenIds?.values ?? []), [])
         }
 
-        return Set(generationEOSTokenIds)
+        return (
+            Set(generationConfig.eosTokenIds?.values ?? baseConfig.eosTokenIds?.values ?? []),
+            Set(generationConfig.suppressTokenIds?.values ?? [])
+        )
     }
 }
 

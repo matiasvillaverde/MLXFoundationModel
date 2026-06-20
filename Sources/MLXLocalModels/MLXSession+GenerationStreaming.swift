@@ -40,44 +40,30 @@ extension MLXSession {
         _ text: String,
         tokenContext: TokenContext
     ) -> GenerateDisposition {
-        guard !text.isEmpty else {
-            return .more
-        }
-        guard var stopDetector = tokenContext.state.stopDetector else {
-            yieldText(text, tokenContext: tokenContext)
-            return .more
-        }
-
-        let result = stopDetector.append(text)
-        tokenContext.state.stopDetector = stopDetector
-
-        switch result {
-        case .more(let safeText):
-            yieldText(safeText, tokenContext: tokenContext)
-            return .more
-
-        case .stop(let safeText):
-            yieldText(safeText, tokenContext: tokenContext)
-            tokenContext.state.stopReason = .stopSequence
-            return .stop
-        }
+        MLXStreamTextEmitter.append(
+            text,
+            context: textEmissionContext(tokenContext)
+        )
     }
 
     nonisolated func flushPendingText(tokenContext: TokenContext) {
-        guard var stopDetector = tokenContext.state.stopDetector else {
-            return
-        }
-        let pendingText = stopDetector.flush()
-        tokenContext.state.stopDetector = stopDetector
-        yieldText(pendingText, tokenContext: tokenContext)
+        MLXStreamTextEmitter.flush(context: textEmissionContext(tokenContext))
     }
 
     nonisolated func yieldText(_ text: String, tokenContext: TokenContext) {
-        guard !text.isEmpty else {
-            return
-        }
-        tokenContext.state.generatedText += text
-        tokenContext.continuation.yield(LLMStreamChunk(text: text, event: .text))
+        MLXStreamTextEmitter.yield(
+            text,
+            context: textEmissionContext(tokenContext)
+        )
+    }
+
+    nonisolated private func textEmissionContext(
+        _ tokenContext: TokenContext
+    ) -> MLXStreamTextEmitter.Context {
+        MLXStreamTextEmitter.Context(
+            continuation: tokenContext.continuation,
+            state: tokenContext.state
+        )
     }
 
     nonisolated func isStopToken(_ token: Int, context: ModelContext) -> Bool {

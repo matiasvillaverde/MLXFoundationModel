@@ -90,6 +90,13 @@ internal final class GrammarConstraintCompiler: @unchecked Sendable {
                     error
                 )
 
+            case .structuralTag:
+                cxg_compiler_compile_structural_tag(
+                    handle,
+                    configuration.grammar,
+                    error
+                )
+
             case .regex:
                 cxg_compiler_compile_regex(handle, configuration.grammar, error)
             }
@@ -211,6 +218,47 @@ internal final class GrammarConstraintMatcher: @unchecked Sendable {
         return mask
     }
 
+    internal static func nextMasksBatched(
+        for matchers: [GrammarConstraintMatcher]
+    ) throws -> [GrammarTokenMask] {
+        guard let first = matchers.first else {
+            return []
+        }
+        try validateBatch(matchers, expected: first)
+
+        var bitmasks = Array(
+            repeating: Int32(-1),
+            count: first.bitmaskSize * matchers.count
+        )
+        let handles: [OpaquePointer?] = matchers.map(\.handle)
+        _ = try handles.withUnsafeBufferPointer { handlePointer in
+            try bitmasks.withUnsafeMutableBufferPointer { bitmaskPointer in
+                try withBridgeError { error in
+                    cxg_matcher_batch_fill_next_token_bitmask(
+                        handlePointer.baseAddress,
+                        Int32(matchers.count),
+                        bitmaskPointer.baseAddress,
+                        Int32(matchers.count),
+                        Int32(first.bitmaskSize),
+                        error
+                    )
+                }
+            }
+        }
+
+        var masks: [GrammarTokenMask] = []
+        masks.reserveCapacity(matchers.count)
+        for (index, matcher) in matchers.enumerated() {
+            let lowerBound = index * first.bitmaskSize
+            let upperBound = lowerBound + first.bitmaskSize
+            let rowBitmask = Array(bitmasks[lowerBound ..< upperBound])
+            let mask = matcher.cachedMask(for: rowBitmask)
+            matcher.recordBatchMaskApplied(mask)
+            masks.append(mask)
+        }
+        return masks
+    }
+
     internal func accept(token: Int32) throws {
         do {
             let accepted: Bool = try withBridgeError { error in
@@ -269,6 +317,58 @@ internal final class GrammarConstraintMatcher: @unchecked Sendable {
     internal var isTerminated: Bool {
         cxg_matcher_is_terminated(handle)
     }
+
+    private static func validateBatch(
+        _ matchers: [GrammarConstraintMatcher],
+        expected: GrammarConstraintMatcher
+    ) throws {
+        for matcher in matchers {
+            guard !matcher.isTerminated else {
+                throw GrammarConstraintError.bridge(
+                    "Cannot batch grammar masks with a terminated matcher"
+                )
+            }
+            guard !matcher.isCompleted else {
+                throw GrammarConstraintError.bridge(
+                    "Cannot batch grammar masks with a completed matcher"
+                )
+            }
+            guard matcher.vocabularySize == expected.vocabularySize &&
+                matcher.bitmaskSize == expected.bitmaskSize
+            else {
+                throw GrammarConstraintError.bridge(
+                    "Cannot batch grammar masks with different vocabularies"
+                )
+            }
+        }
+    }
+
+    private func cachedMask(for bitmask: [Int32]) -> GrammarTokenMask {
+        let key = bitmask.withUnsafeBufferPointer { pointer in
+            Data(buffer: pointer)
+        }
+        if let cached = cachedMasks[key] {
+            return cached
+        }
+        let mask = GrammarTokenMask(bitmask: bitmask, vocabularySize: vocabularySize, cacheKey: key)
+        cachedMasks[key] = mask
+        return mask
+    }
+
+    private func recordBatchMaskApplied(_ mask: GrammarTokenMask) {
+        MLXGenerationDiagnostics.recordGrammarConstraint(.init(
+            stage: .batchMaskApplied,
+            kind: kind,
+            mode: mask.mode,
+            tokenCount: mask.tokenIDs.count,
+            tokenID: nil,
+            vocabularySize: vocabularySize,
+            bitmaskSize: bitmaskSize,
+            isCompleted: isCompleted,
+            isTerminated: isTerminated,
+            message: nil
+        ))
+    }
 }
 
 internal struct GrammarTokenMask: Sendable {
@@ -313,10 +413,24 @@ internal struct GrammarTokenMask: Sendable {
         vocabularySize: Int,
         capacity: Int
     ) -> [Int32] {
-        var result: [Int32] = []
-        result.reserveCapacity(capacity)
-        for tokenID in 0 ..< vocabularySize where isAccepted(tokenID: tokenID, bitmask: bitmask) == shouldMatchAccepted {
-            result.append(Int32(tokenID))
+        guard capacity > 0, vocabularySize > 0 else {
+            return []
+        }
+        var result = Array(repeating: Int32(0), count: capacity)
+        let written = bitmask.withUnsafeBufferPointer { pointer in
+            result.withUnsafeMutableBufferPointer { output in
+                cxg_bitmask_fill_token_ids(
+                    pointer.baseAddress,
+                    Int32(bitmask.count),
+                    Int32(vocabularySize),
+                    shouldMatchAccepted,
+                    output.baseAddress,
+                    Int32(output.count)
+                )
+            }
+        }
+        if written < result.count {
+            result.removeSubrange(Int(written) ..< result.count)
         }
         return result
     }
@@ -325,21 +439,13 @@ internal struct GrammarTokenMask: Sendable {
         guard vocabularySize > 0 else {
             return 0
         }
-        var remainingTokens = vocabularySize
-        var accepted = 0
-        for word in bitmask where remainingTokens > 0 {
-            let validBitCount = min(remainingTokens, 32)
-            let validBitsMask = validBitCount == 32 ? UInt32.max : (UInt32(1) << UInt32(validBitCount)) - 1
-            accepted += Int((UInt32(bitPattern: word) & validBitsMask).nonzeroBitCount)
-            remainingTokens -= validBitCount
+        return bitmask.withUnsafeBufferPointer { pointer in
+            Int(cxg_bitmask_count_accepted(
+                pointer.baseAddress,
+                Int32(bitmask.count),
+                Int32(vocabularySize)
+            ))
         }
-        return accepted
-    }
-
-    private static func isAccepted(tokenID: Int, bitmask: [Int32]) -> Bool {
-        let word = UInt32(bitPattern: bitmask[tokenID / 32])
-        let bit = UInt32(tokenID % 32)
-        return ((word >> bit) & 1) == 1
     }
 }
 
@@ -359,6 +465,97 @@ internal struct GrammarConstrainedLogitProcessor: LogitProcessor, @unchecked Sen
 
     internal init(matcher: GrammarConstraintMatcher) {
         self.matcher = matcher
+    }
+
+    internal static func processBatched(
+        logits: MLXArray,
+        processors: inout [GrammarConstrainedLogitProcessor?]
+    ) -> MLXArray {
+        guard !processors.isEmpty else {
+            return logits
+        }
+        precondition(logits.ndim == 2, "Batched grammar logits must be [batch, vocabulary]")
+        precondition(
+            logits.dim(0) == processors.count,
+            "Batched grammar processor count must match logits row count"
+        )
+
+        var masked = logits
+        var activeRows: [(index: Int, matcher: GrammarConstraintMatcher)] = []
+        activeRows.reserveCapacity(processors.count)
+
+        for index in processors.indices {
+            guard var processor = processors[index] else {
+                continue
+            }
+            switch processor.batchedMaskReadiness() {
+            case .active:
+                activeRows.append((index, processor.matcher))
+
+            case .completed:
+                masked = Self.replacingRow(index, in: masked) { row in
+                    processor.processCompletedGrammar(logits: row)
+                }
+
+            case .failed:
+                masked = Self.replacingRow(index, in: masked) { row in
+                    processor.processFailedClosed(logits: row)
+                }
+
+            case .skipped:
+                break
+            }
+            processors[index] = processor
+        }
+
+        guard !activeRows.isEmpty else {
+            return masked
+        }
+
+        let tokenMasks: [GrammarTokenMask]
+        do {
+            tokenMasks = try GrammarConstraintMatcher.nextMasksBatched(
+                for: activeRows.map(\.matcher)
+            )
+        } catch {
+            return failClosedBatchedRows(
+                error: error,
+                rows: activeRows.map(\.index),
+                logits: masked,
+                processors: &processors
+            )
+        }
+
+        for (activeRow, tokenMask) in zip(activeRows, tokenMasks) {
+            guard var processor = processors[activeRow.index] else {
+                continue
+            }
+            masked = Self.replacingRow(activeRow.index, in: masked) { row in
+                processor.process(tokenMask: tokenMask, logits: row)
+            }
+            processors[activeRow.index] = processor
+        }
+        return masked
+    }
+
+    internal static func processBatched(
+        logits: MLXArray,
+        processorRows: inout MLXGenerationBatchRowTable<GrammarConstrainedLogitProcessor?>
+    ) -> MLXArray {
+        precondition(logits.ndim == 2, "Batched grammar logits must be [batch, vocabulary]")
+        precondition(
+            logits.dim(0) == processorRows.count,
+            "Batched grammar processor row count must match logits row count"
+        )
+
+        var processors = processorRows.orderedPayloads
+        let masked = processBatched(logits: logits, processors: &processors)
+        do {
+            try processorRows.replaceOrderedPayloads(processors)
+        } catch {
+            preconditionFailure("Batched grammar processor row table update failed: \(error)")
+        }
+        return masked
     }
 
     mutating internal func prompt(_ prompt: MLXArray) {}
@@ -414,7 +611,7 @@ internal struct GrammarConstrainedLogitProcessor: LogitProcessor, @unchecked Sen
                 isTerminated: matcher.isTerminated,
                 message: error.localizedDescription
             ))
-            return MLXArray.full(logits.shape, values: negInf, dtype: logits.dtype)
+            return processFailedClosed(logits: logits)
         } catch {
             let grammarError = GrammarConstraintError.bridge(error.localizedDescription)
             failure = grammarError
@@ -430,8 +627,69 @@ internal struct GrammarConstrainedLogitProcessor: LogitProcessor, @unchecked Sen
                 isTerminated: matcher.isTerminated,
                 message: grammarError.localizedDescription
             ))
-            return MLXArray.full(logits.shape, values: negInf, dtype: logits.dtype)
+            return processFailedClosed(logits: logits)
         }
+        return process(tokenMask: tokenMask, logits: logits)
+    }
+
+    private enum BatchedMaskReadiness {
+        case active
+        case completed
+        case failed
+        case skipped
+    }
+
+    private mutating func batchedMaskReadiness() -> BatchedMaskReadiness {
+        guard !matcher.isTerminated else {
+            MLXGenerationDiagnostics.recordGrammarConstraint(.init(
+                stage: .maskSkipped,
+                kind: matcher.kind,
+                mode: nil,
+                tokenCount: nil,
+                tokenID: nil,
+                vocabularySize: matcher.vocabularySize,
+                bitmaskSize: matcher.bitmaskSize,
+                isCompleted: matcher.isCompleted,
+                isTerminated: matcher.isTerminated,
+                message: "Grammar matcher is terminated"
+            ))
+            return .skipped
+        }
+        guard !matcher.isCompleted else {
+            return .completed
+        }
+        guard failure == nil else {
+            return .failed
+        }
+        return .active
+    }
+
+    private static func failClosedBatchedRows(
+        error: Error,
+        rows: [Int],
+        logits: MLXArray,
+        processors: inout [GrammarConstrainedLogitProcessor?]
+    ) -> MLXArray {
+        let grammarError = (error as? GrammarConstraintError) ?? .bridge(error.localizedDescription)
+        var masked = logits
+        for row in rows {
+            guard var processor = processors[row] else {
+                continue
+            }
+            processor.failure = grammarError
+            processor.recordProcessorFailedClosed(grammarError)
+            masked = replacingRow(row, in: masked) { rowLogits in
+                processor.processFailedClosed(logits: rowLogits)
+            }
+            processors[row] = processor
+        }
+        return masked
+    }
+
+    private mutating func process(
+        tokenMask: GrammarTokenMask?,
+        logits: MLXArray
+    ) -> MLXArray {
         guard let tokenMask else {
             return logits
         }
@@ -451,6 +709,37 @@ internal struct GrammarConstrainedLogitProcessor: LogitProcessor, @unchecked Sen
             masked[0..., preparedMask.indices] = negInf
             return masked
         }
+    }
+
+    private func processFailedClosed(logits: MLXArray) -> MLXArray {
+        MLXArray.full(logits.shape, values: negInf, dtype: logits.dtype)
+    }
+
+    private func recordProcessorFailedClosed(_ error: GrammarConstraintError) {
+        MLXGenerationDiagnostics.recordGrammarConstraint(.init(
+            stage: .processorFailedClosed,
+            kind: matcher.kind,
+            mode: nil,
+            tokenCount: nil,
+            tokenID: nil,
+            vocabularySize: matcher.vocabularySize,
+            bitmaskSize: matcher.bitmaskSize,
+            isCompleted: matcher.isCompleted,
+            isTerminated: matcher.isTerminated,
+            message: error.localizedDescription
+        ))
+    }
+
+    private static func replacingRow(
+        _ rowIndex: Int,
+        in logits: MLXArray,
+        with transform: (MLXArray) -> MLXArray
+    ) -> MLXArray {
+        let rowRange = rowIndex ..< rowIndex + 1
+        let row = logits[rowRange, 0...]
+        let result = logits
+        result[rowRange, 0...] = transform(row)
+        return result
     }
 
     private mutating func processEmptyMask(_ tokenMask: GrammarTokenMask, logits: MLXArray) -> MLXArray {

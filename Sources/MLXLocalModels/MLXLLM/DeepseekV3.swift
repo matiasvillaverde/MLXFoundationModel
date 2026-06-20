@@ -507,31 +507,11 @@ internal class DeepseekV3Model: Module, LLMModel, KVCacheDimensionProvider, LoRA
     }
 
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
-        var newWeights = weights
-
-        func dequant(weight: MLXArray, scaleInv: MLXArray) -> MLXArray {
-            let bs = 128
-            let (m, n) = (weight.shape[0], weight.shape[1])
-            let padBottom = (bs - m % bs) % bs
-            let padSide = (bs - n % bs) % bs
-
-            var padded = padded(weight, widths: [.init((0, padBottom)), .init((0, padSide))])
-            padded = padded.reshaped([(m + padBottom) / bs, bs, (n + padSide) / bs, bs])
-            let scaled = padded * scaleInv[0..., .newAxis, 0..., .newAxis]
-            return scaled.reshaped([m + padBottom, n + padSide])[0 ..< m, 0 ..< n]
-        }
-
-        for (key, value) in weights {
-            if key.contains("weight_scale_inv") {
-                let weightKey = key.replacingOccurrences(of: "_scale_inv", with: "")
-                if let weight = weights[weightKey] {
-                    let dequantized = dequant(weight: weight, scaleInv: value)
-                    newWeights[weightKey] = dequantized
-                }
-            } else if newWeights[key] == nil {
-                newWeights[key] = value
-            }
-        }
+        var newWeights = MLXQuantizedWeightSanitizer.sanitize(
+            weights,
+            strategy: .block(),
+            sidecarPolicy: .dropActivationScale
+        ).weights
 
         for layerIndex in 0 ..< args.numHiddenLayers {
             let prefix = "model.layers.\(layerIndex)"

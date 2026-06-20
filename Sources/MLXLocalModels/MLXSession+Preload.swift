@@ -36,6 +36,9 @@ extension MLXSession {
         continuation: AsyncThrowingStream<Progress, Error>.Continuation
     ) async {
         do {
+            guard !isGenerating else {
+                throw LLMError.invalidConfiguration("Cannot preload or switch models during active generation")
+            }
             let canReuseLoadedModel = canReuseLoadedModel(for: configuration)
             self.configuration = configuration
             if canReuseLoadedModel {
@@ -49,7 +52,9 @@ extension MLXSession {
             if modelContainer != nil {
                 logger.info("Switching MLX model to \(configuration.location.path)")
                 try? await persistPromptCacheIfNeeded()
+                await closeContinuousBatchEngine()
                 modelContainer = nil
+                memoryProfile = nil
             }
             stopFlag.reset()
             try Task.checkCancellation()
