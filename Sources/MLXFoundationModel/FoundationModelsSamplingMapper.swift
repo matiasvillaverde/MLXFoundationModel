@@ -12,16 +12,22 @@ enum FoundationModelsSamplingMapper {
     }
 
     static func sampling(
-        from options: GenerationOptions,
-        schema: GenerationSchema?,
+        from request: LanguageModelExecutorGenerationRequest,
         toolDefinitions: [Transcript.ToolDefinition],
+        promptStyle: MLXPromptStyle,
         fallback: SamplingParameters
     ) -> SamplingParameters {
-        let sampling = baseSampling(from: options, fallback: fallback)
+        let sampling = baseSampling(
+            from: request.generationOptions,
+            contextOptions: request.contextOptions,
+            promptStyle: promptStyle,
+            fallback: fallback
+        )
         guard let grammar = grammarConfiguration(
-            schema: schema,
+            schema: request.schema,
             toolDefinitions: toolDefinitions,
-            options: options
+            promptStyle: promptStyle,
+            options: request.generationOptions
         ) else {
             return sampling
         }
@@ -72,6 +78,29 @@ enum FoundationModelsSamplingMapper {
             xtc: sampling.advanced.xtc,
             dry: sampling.advanced.dry,
             adaptiveP: sampling.advanced.adaptiveP,
+            reasoningBudget: sampling.advanced.reasoningBudget,
+            logitBias: sampling.advanced.logitBias
+        )
+    }
+
+    private static func advancedParameters(
+        from sampling: SamplingParameters,
+        contextOptions: ContextOptions,
+        promptStyle: MLXPromptStyle
+    ) -> AdvancedSamplingParameters {
+        AdvancedSamplingParameters(
+            minP: sampling.advanced.minP,
+            typicalP: sampling.advanced.typicalP,
+            topNSigma: sampling.advanced.topNSigma,
+            grammar: sampling.advanced.grammar,
+            mirostat: sampling.advanced.mirostat,
+            xtc: sampling.advanced.xtc,
+            dry: sampling.advanced.dry,
+            adaptiveP: sampling.advanced.adaptiveP,
+            reasoningBudget: reasoningBudget(
+                for: contextOptions.reasoningLevel,
+                promptStyle: promptStyle
+            ),
             logitBias: sampling.advanced.logitBias
         )
     }
@@ -79,21 +108,29 @@ enum FoundationModelsSamplingMapper {
     private static func grammarConfiguration(
         schema: GenerationSchema?,
         toolDefinitions: [Transcript.ToolDefinition],
+        promptStyle: MLXPromptStyle,
         options: GenerationOptions
     ) -> GrammarSamplingConfiguration? {
         if let schema {
+            let choices = FoundationModelsSchemaSupport.stringChoices(from: schema)
+            if !choices.isEmpty {
+                return .choices(choices)
+            }
             return .jsonSchema(FoundationModelsSchemaSupport.jsonSchemaString(from: schema))
         }
         guard requiresToolCall(options), !toolDefinitions.isEmpty else {
             return nil
         }
-        return .jsonSchema(
-            FoundationModelsToolSchemaBuilder.requiredToolCallSchema(from: toolDefinitions)
+        return FMRequiredToolGrammarBuilder.grammar(
+            from: toolDefinitions,
+            promptStyle: promptStyle
         )
     }
 
     private static func baseSampling(
         from options: GenerationOptions,
+        contextOptions: ContextOptions,
+        promptStyle: MLXPromptStyle,
         fallback: SamplingParameters
     ) -> SamplingParameters {
         let values = baseSamplingValues(from: options, fallback: fallback)
@@ -107,8 +144,65 @@ enum FoundationModelsSamplingMapper {
             repetitionPenaltyRange: fallback.repetitionPenaltyRange,
             seed: values.seed,
             stopSequences: fallback.stopSequences,
-            advanced: fallback.advanced
+            advanced: advancedParameters(
+                from: fallback,
+                contextOptions: contextOptions,
+                promptStyle: promptStyle
+            )
         )
+    }
+
+    private static func reasoningBudget(
+        for level: ContextOptions.ReasoningLevel?,
+        promptStyle: MLXPromptStyle
+    ) -> ReasoningBudgetConfiguration? {
+        guard let level else {
+            return nil
+        }
+        return ReasoningBudgetConfiguration(
+            maximumTokens: reasoningBudgetTokenCount(for: level),
+            endMarker: reasoningEndMarker(for: promptStyle)
+        )
+    }
+
+    private static func reasoningBudgetTokenCount(
+        for level: ContextOptions.ReasoningLevel
+    ) -> Int {
+        switch level {
+        case .light:
+            return 128
+
+        case .moderate:
+            return 512
+
+        case .deep:
+            return 2_048
+
+        case .custom(let value):
+            return Int(String(describing: value)) ?? 512
+
+        @unknown default:
+            return 512
+        }
+    }
+
+    private static func reasoningEndMarker(for promptStyle: MLXPromptStyle) -> String {
+        switch promptStyle {
+        case .gemma:
+            return "<channel|>"
+
+        case .harmony:
+            return "<|end|>"
+
+        case .minimaxM3:
+            return "</mm:think>"
+
+        case .longCat:
+            return "</longcat_think>"
+
+        default:
+            return "</think>"
+        }
     }
 
     private static func baseSamplingValues(

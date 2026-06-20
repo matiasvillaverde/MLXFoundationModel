@@ -41,6 +41,12 @@ CXGGrammarMatcher *cxg_compiler_compile_ebnf(
     char **error_message
 );
 
+CXGGrammarMatcher *cxg_compiler_compile_structural_tag(
+    CXGGrammarCompiler *compiler,
+    const char *structural_tag_json,
+    char **error_message
+);
+
 CXGGrammarMatcher *cxg_compiler_compile_regex(
     CXGGrammarCompiler *compiler,
     const char *regex,
@@ -60,6 +66,15 @@ bool cxg_matcher_fill_next_token_bitmask(
     char **error_message
 );
 
+bool cxg_matcher_batch_fill_next_token_bitmask(
+    CXGGrammarMatcher *const *matchers,
+    int32_t matcher_count,
+    int32_t *bitmask,
+    int32_t batch_count,
+    int32_t bitmask_count,
+    char **error_message
+);
+
 bool cxg_matcher_accept_token(
     CXGGrammarMatcher *matcher,
     int32_t token_id,
@@ -69,6 +84,21 @@ bool cxg_matcher_accept_token(
 bool cxg_matcher_is_completed(const CXGGrammarMatcher *matcher);
 
 bool cxg_matcher_is_terminated(const CXGGrammarMatcher *matcher);
+
+int32_t cxg_bitmask_count_accepted(
+    const int32_t *bitmask,
+    int32_t bitmask_count,
+    int32_t vocab_size
+);
+
+int32_t cxg_bitmask_fill_token_ids(
+    const int32_t *bitmask,
+    int32_t bitmask_count,
+    int32_t vocab_size,
+    bool accepted_state,
+    int32_t *output,
+    int32_t output_count
+);
 
 void cxg_free_string(char *string);
 

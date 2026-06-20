@@ -21,9 +21,48 @@ public struct MLXLanguageModel: Equatable, Hashable, Sendable {
     ) {
         self.model = model
         self.compute = compute
-        self.runtime = runtime
+        let optimization = model.profile?.optimizationProfile
+        self.runtime = runtime.applyingProfileOptimizationDefaults(
+            promptCacheReuseAlignment: optimization?.promptCacheReuseAlignment,
+            indexCacheFrequency: optimization?.defaultIndexCacheFrequency
+        )
         self.sampling = sampling
         self.maximumResponseTokens = maximumResponseTokens
+    }
+
+    public init(
+        id: String,
+        location: URL,
+        compute: ComputeConfiguration = .large,
+        runtime: ModelRuntimePreferences = .default,
+        sampling: SamplingParameters = .default,
+        maximumResponseTokens: Int = 2_048
+    ) throws {
+        try self.init(
+            model: MLXModel.profiled(id: id, location: location),
+            compute: compute,
+            runtime: runtime,
+            sampling: sampling,
+            maximumResponseTokens: maximumResponseTokens
+        )
+    }
+
+    public static func profiled(
+        id: String,
+        location: URL,
+        compute: ComputeConfiguration = .large,
+        runtime: ModelRuntimePreferences = .default,
+        sampling: SamplingParameters = .default,
+        maximumResponseTokens: Int = 2_048
+    ) throws -> Self {
+        try Self(
+            id: id,
+            location: location,
+            compute: compute,
+            runtime: runtime,
+            sampling: sampling,
+            maximumResponseTokens: maximumResponseTokens
+        )
     }
 
     public var providerConfiguration: ProviderConfiguration {
@@ -34,5 +73,13 @@ public struct MLXLanguageModel: Equatable, Hashable, Sendable {
             compute: compute,
             runtime: runtime
         )
+    }
+
+    public var profile: MLXModelProfile? {
+        model.profile
+    }
+
+    internal var supportsVisionExecution: Bool {
+        false
     }
 }

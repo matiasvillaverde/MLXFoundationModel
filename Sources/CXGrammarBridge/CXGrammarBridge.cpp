@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <sstream>
@@ -97,6 +98,31 @@ DLTensor make_bitmask_tensor(int32_t *bitmask, int64_t *shape) {
     tensor.strides = nullptr;
     tensor.byte_offset = 0;
     return tensor;
+}
+
+DLTensor make_batch_bitmask_tensor(int32_t *bitmask, int64_t *shape) {
+    DLTensor tensor = make_bitmask_tensor(bitmask, shape);
+    tensor.ndim = 2;
+    return tensor;
+}
+
+uint32_t valid_vocab_bits_for_word(int32_t word_index, int32_t vocab_size) {
+    int32_t remaining = vocab_size - (word_index * 32);
+    if (remaining >= 32) {
+        return std::numeric_limits<uint32_t>::max();
+    }
+    if (remaining <= 0) {
+        return 0;
+    }
+    return (uint32_t{1} << remaining) - 1;
+}
+
+int32_t popcount32(uint32_t word) {
+    return static_cast<int32_t>(__builtin_popcount(word));
+}
+
+int32_t trailing_zero_count32(uint32_t word) {
+    return static_cast<int32_t>(__builtin_ctz(word));
 }
 
 CXGGrammarMatcher *make_matcher(xgrammar::CompiledGrammar compiled_grammar) {
@@ -205,6 +231,19 @@ CXGGrammarMatcher *cxg_compiler_compile_ebnf(
     }, error_message);
 }
 
+CXGGrammarMatcher *cxg_compiler_compile_structural_tag(
+    CXGGrammarCompiler *compiler,
+    const char *structural_tag_json,
+    char **error_message
+) {
+    return run_bridge([&]() -> CXGGrammarMatcher * {
+        if (compiler == nullptr || structural_tag_json == nullptr) {
+            throw std::invalid_argument("Invalid structural tag compiler input");
+        }
+        return make_matcher(compiler->compiler->CompileStructuralTag(structural_tag_json));
+    }, error_message);
+}
+
 CXGGrammarMatcher *cxg_compiler_compile_regex(
     CXGGrammarCompiler *compiler,
     const char *regex,
@@ -252,6 +291,49 @@ bool cxg_matcher_fill_next_token_bitmask(
     }, error_message);
 }
 
+bool cxg_matcher_batch_fill_next_token_bitmask(
+    CXGGrammarMatcher *const *matchers,
+    int32_t matcher_count,
+    int32_t *bitmask,
+    int32_t batch_count,
+    int32_t bitmask_count,
+    char **error_message
+) {
+    return run_bridge([&]() -> bool {
+        if (matchers == nullptr || bitmask == nullptr) {
+            throw std::invalid_argument("Invalid batch grammar matcher input");
+        }
+        if (matcher_count <= 0 || batch_count <= 0 || matcher_count != batch_count) {
+            throw std::invalid_argument("Invalid batch grammar matcher count");
+        }
+
+        std::vector<xgrammar::GrammarMatcher> batch_matchers;
+        batch_matchers.reserve(static_cast<std::size_t>(matcher_count));
+        int32_t expected_vocab_size = 0;
+        for (int32_t index = 0; index < matcher_count; ++index) {
+            const CXGGrammarMatcher *matcher = matchers[index];
+            if (matcher == nullptr || matcher->matcher == nullptr) {
+                throw std::invalid_argument("Invalid batch grammar matcher row");
+            }
+            if (expected_vocab_size == 0) {
+                expected_vocab_size = matcher->vocab_size;
+            } else if (matcher->vocab_size != expected_vocab_size) {
+                throw std::invalid_argument("Batch grammar matchers must share vocabulary size");
+            }
+            batch_matchers.push_back(*matcher->matcher);
+        }
+        if (bitmask_count != xgrammar::GetBitmaskSize(expected_vocab_size)) {
+            throw std::invalid_argument("Invalid grammar batch bitmask size");
+        }
+
+        int64_t shape[] = {batch_count, bitmask_count};
+        DLTensor tensor = make_batch_bitmask_tensor(bitmask, shape);
+        xgrammar::BatchGrammarMatcher batch_matcher;
+        batch_matcher.BatchFillNextTokenBitmask(&batch_matchers, &tensor);
+        return true;
+    }, error_message);
+}
+
 bool cxg_matcher_accept_token(
     CXGGrammarMatcher *matcher,
     int32_t token_id,
@@ -271,6 +353,66 @@ bool cxg_matcher_is_completed(const CXGGrammarMatcher *matcher) {
 
 bool cxg_matcher_is_terminated(const CXGGrammarMatcher *matcher) {
     return matcher != nullptr && matcher->matcher->IsTerminated();
+}
+
+int32_t cxg_bitmask_count_accepted(
+    const int32_t *bitmask,
+    int32_t bitmask_count,
+    int32_t vocab_size
+) {
+    if (bitmask == nullptr || bitmask_count <= 0 || vocab_size <= 0) {
+        return 0;
+    }
+
+    int32_t accepted = 0;
+    for (int32_t index = 0; index < bitmask_count; ++index) {
+        uint32_t valid_bits = valid_vocab_bits_for_word(index, vocab_size);
+        if (valid_bits == 0) {
+            break;
+        }
+        uint32_t word = static_cast<uint32_t>(bitmask[index]) & valid_bits;
+        accepted += popcount32(word);
+    }
+    return accepted;
+}
+
+int32_t cxg_bitmask_fill_token_ids(
+    const int32_t *bitmask,
+    int32_t bitmask_count,
+    int32_t vocab_size,
+    bool accepted_state,
+    int32_t *output,
+    int32_t output_count
+) {
+    if (
+        bitmask == nullptr ||
+        output == nullptr ||
+        bitmask_count <= 0 ||
+        vocab_size <= 0 ||
+        output_count < 0
+    ) {
+        return 0;
+    }
+
+    int32_t written = 0;
+    for (int32_t word_index = 0; word_index < bitmask_count; ++word_index) {
+        uint32_t valid_bits = valid_vocab_bits_for_word(word_index, vocab_size);
+        if (valid_bits == 0) {
+            break;
+        }
+        uint32_t accepted = static_cast<uint32_t>(bitmask[word_index]) & valid_bits;
+        uint32_t selected = accepted_state ? accepted : (~accepted & valid_bits);
+        while (selected != 0) {
+            if (written >= output_count) {
+                return written;
+            }
+            int32_t bit_index = trailing_zero_count32(selected);
+            output[written] = (word_index * 32) + bit_index;
+            ++written;
+            selected &= selected - 1;
+        }
+    }
+    return written;
 }
 
 void cxg_free_string(char *string) {

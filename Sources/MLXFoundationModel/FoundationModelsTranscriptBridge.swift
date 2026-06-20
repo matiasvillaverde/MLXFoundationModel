@@ -38,7 +38,7 @@ enum FoundationModelsTranscriptBridge {
             appendToolCalls(calls, to: &result)
 
         case .toolOutput(let output):
-            appendMessage(entry, output.segments, role: .tool, to: &result, name: output.toolName)
+            appendToolOutput(entry, output, to: &result)
 
         case .reasoning(let reasoning):
             appendReasoning(entry, reasoning.segments, to: &result)
@@ -96,6 +96,22 @@ enum FoundationModelsTranscriptBridge {
         result.messages.append(MLXBridgeMessage(
             role: .assistant,
             content: FoundationModelsToolSchemaBuilder.toolCallsText(calls)
+        ))
+    }
+
+    private static func appendToolOutput(
+        _ entry: Transcript.Entry,
+        _ output: Transcript.ToolOutput,
+        to result: inout Result
+    ) {
+        guard let text = text(of: output.segments, to: &result) else {
+            result.unsupportedEntries.append(entry)
+            return
+        }
+        result.messages.append(MLXBridgeMessage(
+            role: .tool,
+            content: MLXToolOutputCompactor.compact(text),
+            name: output.toolName
         ))
     }
 

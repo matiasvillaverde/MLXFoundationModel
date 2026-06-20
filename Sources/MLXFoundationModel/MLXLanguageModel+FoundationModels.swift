@@ -10,7 +10,7 @@ extension MLXLanguageModel: LanguageModel {
         if model.capabilities.toolCalling {
             values.append(.toolCalling)
         }
-        if model.capabilities.vision {
+        if supportsVisionExecution {
             values.append(.vision)
         }
         if model.capabilities.reasoning {

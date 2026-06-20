@@ -22,9 +22,9 @@ enum FoundationModelsRequestBuilder {
         let cacheIdentity = promptCacheIdentity(for: rendered, style: model.model.promptStyle)
         let toolDefinitions = effectiveToolDefinitions(from: request)
         let sampling = FoundationModelsSamplingMapper.sampling(
-            from: request.generationOptions,
-            schema: request.schema,
+            from: request,
             toolDefinitions: toolDefinitions,
+            promptStyle: model.model.promptStyle,
             fallback: model.sampling
         )
         return LLMInput(
@@ -35,6 +35,12 @@ enum FoundationModelsRequestBuilder {
             sampling: sampling,
             limits: ResourceLimits(maxTokens: maxTokens)
         )
+    }
+
+    static func bridgeToolDefinitions(
+        from request: LanguageModelExecutorGenerationRequest
+    ) -> [MLXBridgeToolDefinition] {
+        effectiveToolDefinitions(from: request).map(FoundationModelsToolSchemaBuilder.bridgeToolDefinition)
     }
 
     private static func promptMetadata(
@@ -82,6 +88,7 @@ enum FoundationModelsRequestBuilder {
         let bridgeRequest = makeBridgeRequest(
             converted: converted,
             request: request,
+            model: model,
             toolDefinitions: toolDefinitions
         )
         return BridgeBuildResult(request: bridgeRequest, images: converted.images)
@@ -104,11 +111,18 @@ enum FoundationModelsRequestBuilder {
     private static func makeBridgeRequest(
         converted: FoundationModelsTranscriptBridge.Result,
         request: LanguageModelExecutorGenerationRequest,
+        model: MLXLanguageModel,
         toolDefinitions: [Transcript.ToolDefinition]
     ) -> MLXBridgeRequest {
-        MLXBridgeRequest(
+        let reasoningOptions = reasoningOptions(
+            for: request.contextOptions.reasoningLevel,
+            model: model
+        )
+        return MLXBridgeRequest(
             messages: converted.messages,
             instructions: converted.instructions.filter { !$0.isEmpty }.joined(separator: "\n\n"),
+            reasoningEnabled: reasoningOptions?.isEnabled ?? false,
+            reasoningOptions: reasoningOptions,
             responseConstraint: responseConstraint(from: request),
             tools: toolDefinitions.map(FoundationModelsToolSchemaBuilder.bridgeToolDefinition)
         )
@@ -173,6 +187,13 @@ enum FoundationModelsRequestBuilder {
                 reason: "Image attachments were present, but the model does not advertise vision."
             )
         }
+        if converted.containsImageAttachments, !model.supportsVisionExecution {
+            throw unsupportedCapability(
+                .vision,
+                model: model.model.id,
+                reason: "Image attachments require a VLM runtime, which this executor does not provide yet."
+            )
+        }
     }
 
     private static func validateReasoningCapability(
@@ -198,30 +219,6 @@ enum FoundationModelsRequestBuilder {
             debugDescription: "\(reason) model=\(model)",
             metadata: ["model": model]
         ))
-    }
-
-    private static func reasoningInstruction(
-        for level: ContextOptions.ReasoningLevel?
-    ) -> String? {
-        guard let level else {
-            return nil
-        }
-        switch level {
-        case .light:
-            return "Use light internal reasoning before answering."
-
-        case .moderate:
-            return "Use moderate internal reasoning before answering."
-
-        case .deep:
-            return "Use deep internal reasoning before answering."
-
-        case .custom(let value):
-            return "Use the requested internal reasoning level: \(value)."
-
-        @unknown default:
-            return nil
-        }
     }
 
     private static func responseConstraint(

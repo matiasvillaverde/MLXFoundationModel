@@ -9,124 +9,12 @@ public enum MLXPromptRenderer {
         style: MLXPromptStyle
     ) -> MLXRenderedRequest {
         let rendererID = "mlx.\(style.codingValue).v1"
-        let prompt: String
-        switch style {
-        case .plain:
-            prompt = renderPlain(request)
-
-        case .chatML:
-            prompt = renderChatML(request)
-        }
-        let fingerprint = PromptCacheIdentity.stableFingerprint(for: "\(rendererID)\n\(prompt)")
+        let prompt = MLXPromptTemplateRenderer.render(request, style: style)
+        let fingerprint = PromptCacheIdentity.stableFingerprint(for: rendererID)
         return MLXRenderedRequest(
             prompt: prompt,
             rendererID: rendererID,
             cacheFingerprint: fingerprint
         )
-    }
-
-    private static func renderPlain(_ request: MLXBridgeRequest) -> String {
-        var sections: [String] = []
-        let toolText = renderTools(request.tools)
-        if !toolText.isEmpty {
-            sections.append(toolText)
-        }
-        if let instructions = request.instructions, !instructions.isEmpty {
-            sections.append("System:\n\(instructions)")
-        }
-        if let constraintText = renderResponseConstraint(request.responseConstraint) {
-            sections.append(constraintText)
-        }
-        sections.append(contentsOf: request.messages.map(renderPlainMessage))
-        sections.append("Assistant:")
-        return sections.joined(separator: "\n\n")
-    }
-
-    private static func renderPlainMessage(_ message: MLXBridgeMessage) -> String {
-        switch message.role {
-        case .system:
-            return "System:\n\(message.content)"
-
-        case .user:
-            return "User:\n\(message.content)"
-
-        case .assistant:
-            return "Assistant:\n\(message.content)"
-
-        case .tool:
-            let name = message.name.map { " \($0)" } ?? ""
-            return "Tool\(name):\n\(message.content)"
-        }
-    }
-
-    private static func renderChatML(_ request: MLXBridgeRequest) -> String {
-        var messages: [MLXBridgeMessage] = []
-        let systemContent = [
-            renderTools(request.tools),
-            request.instructions,
-            renderResponseConstraint(request.responseConstraint)
-        ]
-            .compactMap(\.self)
-            .filter { !$0.isEmpty }
-            .joined(separator: "\n\n")
-        if !systemContent.isEmpty {
-            messages.append(MLXBridgeMessage(role: .system, content: systemContent))
-        }
-        messages.append(contentsOf: request.messages)
-
-        let rendered = messages.map { message in
-            "<|im_start|>\(chatMLRole(message))\n\(message.content)<|im_end|>"
-        }
-        return (rendered + ["<|im_start|>assistant\n"]).joined(separator: "\n")
-    }
-
-    private static func renderResponseConstraint(
-        _ constraint: MLXBridgeResponseConstraint?
-    ) -> String? {
-        guard let constraint else {
-            return nil
-        }
-        let instructions = constraint.instructions ?? "Return only JSON that conforms to this schema."
-        return """
-        Response constraints:
-        \(instructions)
-        schema:
-        \(constraint.jsonSchema)
-        """
-    }
-
-    private static func chatMLRole(_ message: MLXBridgeMessage) -> String {
-        switch message.role {
-        case .system:
-            return "system"
-
-        case .user:
-            return "user"
-
-        case .assistant:
-            return "assistant"
-
-        case .tool:
-            return "tool"
-        }
-    }
-
-    private static func renderTools(_ tools: [MLXBridgeToolDefinition]) -> String {
-        guard !tools.isEmpty else {
-            return ""
-        }
-        let definitions = tools
-            .sorted { $0.name < $1.name }
-            .map { tool in
-                "- \(tool.name): \(tool.description)\n  schema: \(tool.parametersJSONSchema)"
-            }
-            .joined(separator: "\n")
-        return """
-        Available tools:
-        \(definitions)
-
-        To call a tool, respond with a single JSON object:
-        {"tool_name":"<tool-name>","arguments":{"<argument-name>":"<argument-value>"}}
-        """
     }
 }

@@ -31,15 +31,39 @@ public struct MLXExecutor: LanguageModelExecutor {
 
     private let configuration: Configuration
     private let session: any MLXGeneratingSession
+    private let prewarmCoordinator = MLXPrewarmCoordinator()
 
     public init(configuration: Configuration) throws {
+        try self.init(configuration: configuration, session: MLXSessionFactory.create())
+    }
+
+    /// Creates an executor that leases sessions from a shared model pool.
+    public init(
+        configuration: Configuration,
+        pool: MLXModelPool
+    ) throws {
+        try self.init(
+            configuration: configuration,
+            session: MLXPooledSession(
+                model: Self.languageModel(from: configuration),
+                pool: pool
+            )
+        )
+    }
+
+    internal init(
+        configuration: Configuration,
+        session: any MLXGeneratingSession
+    ) throws {
         self.configuration = configuration
-        session = MLXSessionFactory.create()
+        self.session = session
     }
 
     public func prewarm(model: MLXLanguageModel, transcript: Transcript) {
-        // MLX model loading is asynchronous; respond(to:) drains preload progress before generation.
-        _ = model
+        prewarmCoordinator.prewarm(
+            configuration: model.providerConfiguration,
+            session: session
+        )
         _ = transcript
     }
 
@@ -50,11 +74,20 @@ public struct MLXExecutor: LanguageModelExecutor {
     ) async throws {
         do {
             let input = try FoundationModelsRequestBuilder.build(from: request, model: model)
+            let tools = FoundationModelsRequestBuilder.bridgeToolDefinitions(from: request)
             try await preloadIfNeeded(model.providerConfiguration)
             try await MLXEventTranslator().translate(
                 await session.stream(input),
                 into: channel,
-                toolDefinitionsEnabled: !request.enabledToolDefinitions.isEmpty
+                tools: tools,
+                promptStyle: model.model.promptStyle,
+                reasoningStartsOpen: MLXPromptTemplateRenderer.generationStartsInReasoning(
+                    reasoningOptions: FoundationModelsRequestBuilder.reasoningOptions(
+                        for: request.contextOptions.reasoningLevel,
+                        model: model
+                    ) ?? .disabled,
+                    style: model.model.promptStyle
+                )
             )
         } catch {
             throw MLXErrorMapper.map(error)
@@ -62,10 +95,22 @@ public struct MLXExecutor: LanguageModelExecutor {
     }
 
     private func preloadIfNeeded(_ providerConfiguration: ProviderConfiguration) async throws {
-        let progress = await session.preload(configuration: providerConfiguration)
-        for try await _ in progress {
-            // Drain progress before the first generation request.
-        }
+        try await prewarmCoordinator.ensureLoaded(
+            configuration: providerConfiguration,
+            session: session
+        )
+    }
+
+    private static func languageModel(
+        from configuration: Configuration
+    ) -> MLXLanguageModel {
+        MLXLanguageModel(
+            model: configuration.model,
+            compute: configuration.compute,
+            runtime: configuration.runtime,
+            sampling: configuration.sampling,
+            maximumResponseTokens: configuration.maximumResponseTokens
+        )
     }
 }
 #endif
