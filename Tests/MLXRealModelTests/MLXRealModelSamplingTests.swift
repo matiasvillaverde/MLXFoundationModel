@@ -13,7 +13,9 @@ struct MLXRealModelSamplingTests {
     @Test("Qwen3 generation applies sampling and logits controls")
     func qwen3GenerationAppliesSamplingAndLogitsControls() async throws {
         let models = try MLXRealModelCatalog.load()
-        let model = try MLXRealModelHarness.requireModel("qwen3-0.6b-4bit", in: models)
+        guard let model = try MLXRealModelHarness.selectedModel("qwen3-0.6b-4bit", in: models) else {
+            return
+        }
         let observed = try await MLXRealModelHarness.runWithDiagnostics(
             model: model,
             sampling: Self.samplingControls,

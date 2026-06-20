@@ -1,5 +1,5 @@
 import Foundation
-import MLXFoundationModel
+@testable import MLXFoundationModel
 @testable import MLXLocalModels
 import Testing
 
@@ -28,9 +28,43 @@ enum MLXRealModelHarness {
         model: MLXRealModelCatalog.Model,
         input: LLMInput
     ) async throws -> GenerationResult {
-        let session = MLXSessionFactory.create()
+        try await run(
+            model: model,
+            input: input,
+            runtime: ModelRuntimePreferences(promptCachePolicy: .memory)
+        )
+    }
+
+    static func run(
+        model: MLXRealModelCatalog.Model,
+        input: LLMInput,
+        runtime: ModelRuntimePreferences,
+        runtimeCapabilities: MLXGenerationRuntimeCapabilities = .scalar
+    ) async throws -> GenerationResult {
+        if runtimeCapabilities != .scalar {
+            return try await run(
+                session: MLXSession(runtimeCapabilities: runtimeCapabilities),
+                model: model,
+                input: input,
+                runtime: runtime
+            )
+        }
+        return try await run(
+            session: MLXSessionFactory.create(),
+            model: model,
+            input: input,
+            runtime: runtime
+        )
+    }
+
+    static func run(
+        session: any MLXGeneratingSession,
+        model: MLXRealModelCatalog.Model,
+        input: LLMInput,
+        runtime: ModelRuntimePreferences
+    ) async throws -> GenerationResult {
         do {
-            try await preload(session: session, model: model)
+            try await preload(session: session, model: model, runtime: runtime)
             let result = try await collectGeneration(from: await session.stream(input))
             await session.unload()
             return result
@@ -44,10 +78,22 @@ enum MLXRealModelHarness {
         model: MLXRealModelCatalog.Model,
         sampling: SamplingParameters,
         limits: ResourceLimits,
-        prompt: String? = nil
+        prompt: String? = nil,
+        runtime: ModelRuntimePreferences = ModelRuntimePreferences(promptCachePolicy: .memory),
+        runtimeCapabilities: MLXGenerationRuntimeCapabilities = .scalar
     ) async throws -> (result: GenerationResult, events: [MLXGenerationDiagnosticEvent]) {
         try await MLXGenerationDiagnostics.withRecording {
-            try await run(model: model, prompt: prompt, sampling: sampling, limits: limits)
+            let input = LLMInput(
+                context: prompt ?? model.prompt,
+                sampling: sampling,
+                limits: limits
+            )
+            return try await run(
+                model: model,
+                input: input,
+                runtime: runtime,
+                runtimeCapabilities: runtimeCapabilities
+            )
         }
     }
 
@@ -55,20 +101,33 @@ enum MLXRealModelHarness {
         model: MLXRealModelCatalog.Model,
         request: MLXBridgeRequest,
         limits: ResourceLimits,
-        style: MLXPromptStyle = .plain,
+        style: MLXPromptStyle? = nil,
         sampling: SamplingParameters = .deterministic
     ) async throws -> GenerationResult {
-        let rendered = MLXPromptRenderer.render(request, style: style)
+        let promptStyle = try style ?? inferredPromptStyle(for: model)
+        let rendered = MLXPromptRenderer.render(request, style: promptStyle)
+        let promptMetadata = promptStyle == .plain
+            ? nil
+            : PromptRenderMetadata(rendererID: rendered.rendererID)
+        let promptCacheIdentity = promptStyle == .plain
+            ? nil
+            : PromptCacheIdentity(stableFingerprint: rendered.cacheFingerprint)
         let input = LLMInput(
             context: rendered.prompt,
-            promptMetadata: style == .plain ? nil : PromptRenderMetadata(rendererID: rendered.rendererID),
-            promptCacheIdentity: style == .plain ? nil : PromptCacheIdentity(
-                stableFingerprint: rendered.cacheFingerprint
-            ),
+            promptMetadata: promptMetadata,
+            promptCacheIdentity: promptCacheIdentity,
             sampling: sampling,
             limits: limits
         )
         return try await run(model: model, input: input)
+    }
+
+    static func inferredPromptStyle(for model: MLXRealModelCatalog.Model) throws -> MLXPromptStyle {
+        try MLXModelProfile.load(
+            from: MLXRealModelEnvironment.modelURL(for: model),
+            id: model.id
+        )
+        .promptStyle
     }
 
     static func requireModel(
@@ -125,6 +184,17 @@ enum MLXRealModelHarness {
         }
     }
 
+    static func reasoningBudgetSnapshots(
+        from events: [MLXGenerationDiagnosticEvent]
+    ) -> [MLXReasoningBudgetSnapshot] {
+        events.compactMap { event in
+            guard case .reasoningBudget(let snapshot) = event else {
+                return nil
+            }
+            return snapshot
+        }
+    }
+
     static func generatedTokenSnapshots(
         from events: [MLXGenerationDiagnosticEvent]
     ) -> [MLXGeneratedTokenSnapshot] {
@@ -157,16 +227,28 @@ enum MLXRealModelHarness {
         #expect(tokens.contains { !$0.tokenText.isEmpty }, summary)
     }
 
-    private static func preload(
+    static func preload(
         session: any MLXGeneratingSession,
         model: MLXRealModelCatalog.Model
+    ) async throws {
+        try await preload(
+            session: session,
+            model: model,
+            runtime: ModelRuntimePreferences(promptCachePolicy: .memory)
+        )
+    }
+
+    static func preload(
+        session: any MLXGeneratingSession,
+        model: MLXRealModelCatalog.Model,
+        runtime: ModelRuntimePreferences
     ) async throws {
         let configuration = ProviderConfiguration(
             location: MLXRealModelEnvironment.modelURL(for: model),
             authentication: .noAuth,
             modelName: model.displayName,
             compute: .small,
-            runtime: ModelRuntimePreferences(promptCachePolicy: .memory)
+            runtime: runtime
         )
         let progress = await session.preload(configuration: configuration)
         for try await _ in progress {

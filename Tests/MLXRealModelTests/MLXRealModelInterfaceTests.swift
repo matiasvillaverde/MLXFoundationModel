@@ -42,7 +42,9 @@ struct MLXRealModelInterfaceTests {
     @Test("Qwen3 streams multiple chunks from a rendered text request")
     func qwen3StreamsMultipleChunksFromRenderedTextRequest() async throws {
         let models = try MLXRealModelCatalog.load()
-        let model = try MLXRealModelHarness.requireModel("qwen3-0.6b-4bit", in: models)
+        guard let model = try MLXRealModelHarness.selectedModel("qwen3-0.6b-4bit", in: models) else {
+            return
+        }
         let result = try await MLXRealModelHarness.runRenderedRequest(
             model: model,
             request: Self.textStreamingRequest,

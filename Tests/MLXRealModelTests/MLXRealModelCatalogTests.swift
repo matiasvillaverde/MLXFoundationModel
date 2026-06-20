@@ -25,6 +25,62 @@ struct MLXRealModelCatalogTests {
         #expect(downloadable.allSatisfy { $0.repository?.hasPrefix("mlx-community/") == true })
     }
 
+    @Test("known oversized catalog entries declare memory requirements")
+    func knownOversizedCatalogEntriesDeclareMemoryRequirements() throws {
+        let models = try MLXRealModelCatalog.load()
+        let gptOSS = try #require(models.first { $0.id == "gpt-oss" })
+        let mistralSmall = try #require(models.first { $0.id == "mistral-small-24b-2501-4bit" })
+        let qwen3Next = try #require(models.first { $0.id == "qwen3-next" })
+        let qwen35MoE = try #require(models.first { $0.id == "qwen3.5-moe" })
+
+        #expect(gptOSS.minimumMemoryGB == 48)
+        #expect(gptOSS.minimumDiskGB == 14)
+        #expect(mistralSmall.minimumMemoryGB == 48)
+        #expect(mistralSmall.minimumDiskGB == 16)
+        #expect(qwen3Next.minimumMemoryGB == 64)
+        #expect(qwen3Next.minimumDiskGB == 45)
+        #expect(qwen35MoE.minimumMemoryGB == 48)
+        #expect(qwen35MoE.minimumDiskGB == 28)
+    }
+
+    @Test("large downloadable catalog entries declare resource requirements")
+    func largeDownloadableCatalogEntriesDeclareResourceRequirements() throws {
+        let models = try MLXRealModelCatalog.load()
+        let largeDownloadable = models.filter { model in
+            model.isDownloadable && model.tags.contains("large")
+        }
+
+        #expect(!largeDownloadable.isEmpty)
+        #expect(largeDownloadable.allSatisfy { ($0.minimumMemoryGB ?? 0) > 0 })
+        #expect(largeDownloadable.allSatisfy { ($0.minimumDiskGB ?? 0) > 0 })
+    }
+
+    @Test("resource gate uses artifact-size fallback when catalog metadata is absent")
+    func resourceGateUsesArtifactSizeFallbackWhenCatalogMetadataIsAbsent() {
+        let small = Self.fixtureModel(id: "small")
+        let large = Self.fixtureModel(id: "large")
+        let explicitLarge = Self.fixtureModel(id: "explicit-large", minimumMemoryGB: 48)
+
+        #expect(MLXRealModelEnvironment.canRunWithinHostMemory(
+            small,
+            estimatedModelLoadBytes: 4 * Self.gib,
+            hostMemoryGB: 32
+        ))
+        #expect(!MLXRealModelEnvironment.canRunWithinHostMemory(
+            large,
+            estimatedModelLoadBytes: 11 * Self.gib,
+            hostMemoryGB: 32
+        ))
+        #expect(!MLXRealModelEnvironment.canRunWithinHostMemory(
+            explicitLarge,
+            estimatedModelLoadBytes: 1 * Self.gib,
+            hostMemoryGB: 32
+        ))
+        #expect(MLXRealModelEnvironment.estimatedRuntimeMemoryGB(
+            forModelLoadBytes: 11 * Self.gib
+        ) == 28)
+    }
+
     @Test("main scope includes representative downloadable architectures")
     func mainScopeIncludesRepresentativeDownloadableArchitectures() throws {
         let models = try MLXRealModelCatalog.load()
@@ -47,6 +103,27 @@ struct MLXRealModelCatalogTests {
         #expect(!relevantModels.isEmpty)
         #expect(allRelevantModelsDownloadable)
         #expect(Self.expectedRelevantArchitectures.subtracting(architectures).isEmpty)
+    }
+
+    private static let gib: Int64 = 1_073_741_824
+
+    private static func fixtureModel(
+        id: String,
+        minimumMemoryGB: Int? = nil
+    ) -> MLXRealModelCatalog.Model {
+        MLXRealModelCatalog.Model(
+            id: id,
+            displayName: id,
+            architecture: "fixture",
+            repository: "mlx-community/\(id)",
+            relativePath: id,
+            prompt: "Prompt",
+            expectedTokens: [],
+            maxTokens: 1,
+            minimumMemoryGB: minimumMemoryGB,
+            minimumDiskGB: nil,
+            tags: []
+        )
     }
 
     private static let expectedArchitectures: Set<String> = [

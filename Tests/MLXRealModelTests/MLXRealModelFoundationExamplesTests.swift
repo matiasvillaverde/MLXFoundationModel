@@ -15,7 +15,9 @@ import Testing
 struct MLXRealModelFoundationExamplesTests {
     @Test("Streaming chat example emits real tokens")
     func streamingChatExampleEmitsRealTokens() async throws {
-        let observed = try await Self.run(FoundationModelPlaygroundExamples.streamingChat)
+        guard let observed = try await Self.run(FoundationModelPlaygroundExamples.streamingChat) else {
+            return
+        }
 
         Self.verifyRealTokenOutput(observed)
         #expect(!observed.result.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -23,7 +25,11 @@ struct MLXRealModelFoundationExamplesTests {
 
     @Test("Apple Trip Planner guided generation emits constrained JSON")
     func appleTripPlannerGuidedGenerationEmitsConstrainedJSON() async throws {
-        let observed = try await Self.run(FoundationModelPlaygroundExamples.tripPlannerGuidedGeneration)
+        guard let observed = try await Self.run(
+            FoundationModelPlaygroundExamples.tripPlannerGuidedGeneration
+        ) else {
+            return
+        }
         let json = try Self.extractJSONObject(from: observed.result.text)
         let day = try #require(json["day"] as? [String: Any])
 
@@ -40,7 +46,11 @@ struct MLXRealModelFoundationExamplesTests {
 
     @Test("Apple tool-calling example emits parseable tool call")
     func appleToolCallingExampleEmitsParseableToolCall() async throws {
-        let observed = try await Self.run(FoundationModelPlaygroundExamples.pointsOfInterestToolCalling)
+        guard let observed = try await Self.run(
+            FoundationModelPlaygroundExamples.pointsOfInterestToolCalling
+        ) else {
+            return
+        }
         let call = try #require(MLXToolCallExtractor.extract(from: observed.result.text))
 
         Self.verifyRealTokenOutput(observed)
@@ -55,7 +65,11 @@ struct MLXRealModelFoundationExamplesTests {
 
     @Test("Apple finite-choice example only emits an allowed choice")
     func appleFiniteChoiceExampleOnlyEmitsAllowedChoice() async throws {
-        let observed = try await Self.run(FoundationModelPlaygroundExamples.finiteChoiceGuidedGeneration)
+        guard let observed = try await Self.run(
+            FoundationModelPlaygroundExamples.finiteChoiceGuidedGeneration
+        ) else {
+            return
+        }
         let choice = observed.result.text.trimmingCharacters(in: .whitespacesAndNewlines)
 
         Self.verifyRealTokenOutput(observed)
@@ -68,7 +82,9 @@ struct MLXRealModelFoundationExamplesTests {
 
     @Test("Apple content-tagging example emits constrained tags")
     func appleContentTaggingExampleEmitsConstrainedTags() async throws {
-        let observed = try await Self.run(FoundationModelPlaygroundExamples.contentTagging)
+        guard let observed = try await Self.run(FoundationModelPlaygroundExamples.contentTagging) else {
+            return
+        }
         let json = try Self.extractJSONObject(from: observed.result.text)
         let tags = try #require(json["tags"] as? [String])
 
@@ -86,9 +102,15 @@ struct MLXRealModelFoundationExamplesTests {
     ) async throws -> (
         result: MLXRealModelHarness.GenerationResult,
         events: [MLXGenerationDiagnosticEvent]
-    ) {
-        let model = try await selectedModel()
-        let rendered = MLXPromptRenderer.render(example.request, style: example.style)
+    )? {
+        guard let model = try await selectedModel() else {
+            return nil
+        }
+        let modelStyle = try MLXRealModelHarness.inferredPromptStyle(for: model)
+        let rendered = MLXPromptRenderer.render(
+            example.request,
+            style: example.resolvedStyle(modelDefault: modelStyle)
+        )
         let input = LLMInput(
             context: rendered.prompt,
             promptMetadata: PromptRenderMetadata(rendererID: rendered.rendererID),
@@ -101,9 +123,9 @@ struct MLXRealModelFoundationExamplesTests {
         }
     }
 
-    private static func selectedModel() async throws -> MLXRealModelCatalog.Model {
+    private static func selectedModel() async throws -> MLXRealModelCatalog.Model? {
         let models = try MLXRealModelCatalog.load()
-        return try MLXRealModelHarness.requireModel("qwen3-0.6b-4bit", in: models)
+        return try MLXRealModelHarness.selectedModel("qwen3-0.6b-4bit", in: models)
     }
 
     private static func verifyRealTokenOutput(

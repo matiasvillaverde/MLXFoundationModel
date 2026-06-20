@@ -52,6 +52,8 @@
     "prompt": "Write one short sentence about mixture-of-experts models.",
     "expectedTokens": ["expert", "experts", "model"],
     "maxTokens": 12,
+    "minimumMemoryGB": 48,
+    "minimumDiskGB": 24,
     "tags": ["relevant", "latest", "large"]
   },
   {
@@ -173,7 +175,9 @@
     "prompt": "Write one short sentence about helpful local assistants.",
     "expectedTokens": ["helpful", "local", "assistant"],
     "maxTokens": 12,
-    "tags": ["relevant", "latest"]
+    "minimumMemoryGB": 48,
+    "minimumDiskGB": 16,
+    "tags": ["relevant", "latest", "large"]
   },
   {
     "id": "phi-2-hf-4bit-mlx",
@@ -217,6 +221,8 @@
     "prompt": "Explain mixture of experts in one sentence.",
     "expectedTokens": ["mixture", "expert", "experts"],
     "maxTokens": 15,
+    "minimumMemoryGB": 48,
+    "minimumDiskGB": 32,
     "tags": ["large"]
   },
   {
@@ -316,6 +322,8 @@
     "prompt": "Write one short sentence about high quality inference.",
     "expectedTokens": ["quality", "inference", "model"],
     "maxTokens": 12,
+    "minimumMemoryGB": 16,
+    "minimumDiskGB": 8,
     "tags": ["latest", "large"]
   },
   {
@@ -327,6 +335,8 @@
     "prompt": "Write one short sentence about high quality local AI.",
     "expectedTokens": ["quality", "local", "AI"],
     "maxTokens": 12,
+    "minimumMemoryGB": 24,
+    "minimumDiskGB": 14,
     "tags": ["latest", "large"]
   },
   {
@@ -470,6 +480,8 @@
     "prompt": "Write one short sentence about reasoning models.",
     "expectedTokens": ["reasoning", "model", "models"],
     "maxTokens": 12,
+    "minimumMemoryGB": 24,
+    "minimumDiskGB": 12,
     "tags": ["relevant", "latest", "large"]
   },
   {
@@ -492,6 +504,8 @@
     "prompt": "Tell me about the history of Spain.",
     "expectedTokens": ["Spain", "history", "Spanish"],
     "maxTokens": 18,
+    "minimumMemoryGB": 256,
+    "minimumDiskGB": 400,
     "tags": ["large"]
   },
   {
@@ -613,7 +627,9 @@
     "prompt": "Write one short sentence about open models.",
     "expectedTokens": ["open", "model", "models"],
     "maxTokens": 12,
-    "tags": ["relevant", "latest"]
+    "minimumMemoryGB": 48,
+    "minimumDiskGB": 14,
+    "tags": ["relevant", "latest", "large"]
   },
   {
     "id": "falcon-h1-0.5b-instruct-4bit",
@@ -657,6 +673,8 @@
     "prompt": "Write one short sentence about next generation models.",
     "expectedTokens": ["next", "model", "models"],
     "maxTokens": 12,
+    "minimumMemoryGB": 64,
+    "minimumDiskGB": 45,
     "tags": ["latest", "large"]
   },
   {
@@ -679,6 +697,8 @@
     "prompt": "Write one short sentence about expert routing.",
     "expectedTokens": ["expert", "routing", "model"],
     "maxTokens": 12,
+    "minimumMemoryGB": 48,
+    "minimumDiskGB": 28,
     "tags": ["relevant", "latest", "large"]
   },
   {

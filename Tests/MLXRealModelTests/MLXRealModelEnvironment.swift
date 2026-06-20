@@ -2,7 +2,17 @@ import Foundation
 
 enum MLXRealModelEnvironment {
     private static let environment = ProcessInfo.processInfo.environment
+    private static let oneGiB: Int64 = 1_073_741_824
+    private static let modelLoadOverheadMultiplier = 2.5
+    private static let largeHostReserveGB = 8
+    private static let smallHostReserveGB = 4
     private static let tildeSlashPrefixLength = 2
+    private static let modelArtifactExtensions: Set<String> = [
+        "bin",
+        "mlx",
+        "npz",
+        "safetensors"
+    ]
 
     static var isEnabled: Bool {
         environment["MLX_RUN_REAL_MODEL_TESTS"] == "1"
@@ -31,25 +41,70 @@ enum MLXRealModelEnvironment {
     static func selectedModels(from models: [MLXRealModelCatalog.Model]) -> [MLXRealModelCatalog.Model] {
         let downloadable = models.filter(\.isDownloadable)
         let selectedIDs = selectedModelIDs
+        let selected: [MLXRealModelCatalog.Model]
         if !selectedIDs.isEmpty {
-            return downloadable.filter { selectedIDs.contains($0.id) }
+            selected = downloadable.filter { selectedIDs.contains($0.id) }
+        } else {
+            switch scope {
+            case "all":
+                selected = downloadable
+
+            case "relevant":
+                selected = downloadable.filter { $0.tags.contains("relevant") }
+
+            case "main":
+                selected = downloadable.filter { $0.tags.contains("main") }
+
+            case "downloaded":
+                selected = downloadable.filter { hasModelFiles(for: $0) }
+
+            default:
+                selected = downloadable.filter { $0.tags.contains("smoke") }
+            }
         }
-        switch scope {
-        case "all":
-            return downloadable
-
-        case "relevant":
-            return downloadable.filter { $0.tags.contains("relevant") }
-
-        case "main":
-            return downloadable.filter { $0.tags.contains("main") }
-
-        case "downloaded":
-            return downloadable.filter { hasModelFiles(for: $0) }
-
-        default:
-            return downloadable.filter { $0.tags.contains("smoke") }
+        guard environment["MLX_ALLOW_OVERSIZED_MODELS"] != "1" else {
+            return selected
         }
+        return selected.filter { model in
+            canRunWithinHostMemory(
+                model,
+                estimatedModelLoadBytes: estimatedModelLoadBytes(for: model),
+                hostMemoryGB: hostMemoryGB
+            )
+        }
+    }
+
+    static func canRunModel(id: String) -> Bool {
+        guard environment["MLX_ALLOW_OVERSIZED_MODELS"] != "1",
+            let model = try? MLXRealModelCatalog.load().first(where: { $0.id == id })
+        else {
+            return true
+        }
+        return canRunWithinHostMemory(
+            model,
+            estimatedModelLoadBytes: estimatedModelLoadBytes(for: model),
+            hostMemoryGB: hostMemoryGB
+        )
+    }
+
+    static func canRunWithinHostMemory(
+        _ model: MLXRealModelCatalog.Model,
+        estimatedModelLoadBytes: Int64?,
+        hostMemoryGB: Int
+    ) -> Bool {
+        if let minimumMemoryGB = model.minimumMemoryGB, minimumMemoryGB > hostMemoryGB {
+            return false
+        }
+        guard let estimatedModelLoadBytes else {
+            return true
+        }
+        return estimatedRuntimeBytes(forModelLoadBytes: estimatedModelLoadBytes) <=
+            hostModelBudgetBytes(hostMemoryGB: hostMemoryGB)
+    }
+
+    static func estimatedRuntimeMemoryGB(forModelLoadBytes bytes: Int64) -> Int {
+        let runtimeBytes = estimatedRuntimeBytes(forModelLoadBytes: bytes)
+        return Int((Double(runtimeBytes) / Double(oneGiB)).rounded(.up))
     }
 
     private static var selectedModelIDs: Set<String> {
@@ -88,6 +143,29 @@ enum MLXRealModelEnvironment {
         return hasConfig && hasTokenizer && (hasSingleFileWeights || hasIndexedWeights || hasShardWeights)
     }
 
+    static func estimatedModelLoadBytes(for model: MLXRealModelCatalog.Model) -> Int64? {
+        estimatedModelLoadBytes(at: modelURL(for: model))
+    }
+
+    static func estimatedModelLoadBytes(at url: URL) -> Int64? {
+        guard let enumerator = FileManager.default.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else {
+            return nil
+        }
+
+        var byteCount: Int64 = 0
+        for case let fileURL as URL in enumerator {
+            guard let bytes = modelArtifactByteCount(for: fileURL) else {
+                continue
+            }
+            byteCount += bytes
+        }
+        return byteCount > 0 ? byteCount : nil
+    }
+
     static func missingModelsMessage(_ models: [MLXRealModelCatalog.Model]) -> String {
         let ids = models.map(\.id).joined(separator: ", ")
         return """
@@ -106,6 +184,37 @@ enum MLXRealModelEnvironment {
         default:
             return "MLX_ASSUME_YES=1 MLX_MODEL_FILTER=\(scope) scripts/download-test-models.sh"
         }
+    }
+
+    private static var hostMemoryGB: Int {
+        if let value = environment["MLX_HOST_MEMORY_GB"], let integer = Int(value) {
+            return integer
+        }
+        return max(1, Int(ProcessInfo.processInfo.physicalMemory / 1_073_741_824))
+    }
+
+    private static func estimatedRuntimeBytes(forModelLoadBytes bytes: Int64) -> Int64 {
+        guard bytes > 0 else {
+            return 0
+        }
+        return Int64((Double(bytes) * modelLoadOverheadMultiplier).rounded(.up))
+    }
+
+    private static func hostModelBudgetBytes(hostMemoryGB: Int) -> Int64 {
+        let reserve = hostMemoryGB < 24 ? smallHostReserveGB : largeHostReserveGB
+        return Int64(max(1, hostMemoryGB - reserve)) * oneGiB
+    }
+
+    private static func modelArtifactByteCount(for url: URL) -> Int64? {
+        guard modelArtifactExtensions.contains(url.pathExtension.lowercased()),
+            let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]),
+            values.isRegularFile == true,
+            let fileSize = values.fileSize,
+            fileSize > 0
+        else {
+            return nil
+        }
+        return Int64(fileSize)
     }
 
     private static func expandTilde(in path: String) -> String {

@@ -10,6 +10,8 @@ enum MLXRealModelCatalog {
         let prompt: String
         let expectedTokens: [String]
         let maxTokens: Int
+        let minimumMemoryGB: Int?
+        let minimumDiskGB: Int?
         let tags: [String]
 
         var isDownloadable: Bool {

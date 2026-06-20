@@ -15,7 +15,9 @@ struct MLXRealModelConstrainedDecodingTests {
     @Test("Qwen3 generates valid JSON through token-level schema constraints")
     func qwen3GeneratesValidJSONThroughTokenLevelSchemaConstraints() async throws {
         let models = try MLXRealModelCatalog.load()
-        let model = try MLXRealModelHarness.requireModel("qwen3-0.6b-4bit", in: models)
+        guard let model = try MLXRealModelHarness.selectedModel("qwen3-0.6b-4bit", in: models) else {
+            return
+        }
         let observed = try await MLXRealModelHarness.runWithDiagnostics(
             model: model,
             sampling: Self.schemaSampling,
@@ -38,7 +40,9 @@ struct MLXRealModelConstrainedDecodingTests {
     @Test("Qwen3 generates only one finite-choice token sequence")
     func qwen3GeneratesOnlyOneFiniteChoiceTokenSequence() async throws {
         let models = try MLXRealModelCatalog.load()
-        let model = try MLXRealModelHarness.requireModel("qwen3-0.6b-4bit", in: models)
+        guard let model = try MLXRealModelHarness.selectedModel("qwen3-0.6b-4bit", in: models) else {
+            return
+        }
         let observed = try await MLXRealModelHarness.runWithDiagnostics(
             model: model,
             sampling: Self.fruitChoiceSampling,
