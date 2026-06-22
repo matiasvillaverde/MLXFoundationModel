@@ -9,6 +9,7 @@ ASSUME_YES="${MLX_ASSUME_YES:-0}"
 DOWNLOADER="${MLX_MODEL_DOWNLOADER:-auto}"
 HF_MAX_WORKERS="${MLX_HF_MAX_WORKERS:-4}"
 ALLOW_OVERSIZED_MODELS="${MLX_ALLOW_OVERSIZED_MODELS:-0}"
+DOWNLOAD_TIMEOUT_SECONDS="${MLX_MODEL_DOWNLOAD_TIMEOUT_SECONDS:-1800}"
 
 if ! command -v python3 >/dev/null 2>&1; then
   echo "python3 is required"
@@ -43,13 +44,42 @@ git | git-lfs)
   ;;
 esac
 
+run_with_timeout() {
+  local seconds="$1"
+  shift
+  python3 - "$seconds" "$@" <<'PY'
+import subprocess
+import sys
+
+seconds = int(sys.argv[1])
+command = sys.argv[2:]
+process = subprocess.Popen(command)
+try:
+    sys.exit(process.wait(timeout=seconds))
+except subprocess.TimeoutExpired:
+    process.terminate()
+    try:
+        process.wait(timeout=15)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait()
+    print(
+        f"Timed out after {seconds}s: {' '.join(command)}",
+        file=sys.stderr,
+    )
+    sys.exit(124)
+PY
+}
+
 download_with_hf() {
   local repository="$1"
   local target="$2"
 
   command -v hf >/dev/null 2>&1 || return 127
   mkdir -p "$target"
-  hf download "$repository" --local-dir "$target" --max-workers "$HF_MAX_WORKERS"
+  run_with_timeout \
+    "$DOWNLOAD_TIMEOUT_SECONDS" \
+    hf download "$repository" --local-dir "$target" --max-workers "$HF_MAX_WORKERS"
 }
 
 download_with_git_lfs() {
@@ -62,7 +92,9 @@ download_with_git_lfs() {
   git lfs install >/dev/null
 
   rm -rf "$tmp_target"
-  if git clone --depth 1 "https://huggingface.co/$repository" "$tmp_target"; then
+  if run_with_timeout \
+    "$DOWNLOAD_TIMEOUT_SECONDS" \
+    git clone --depth 1 "https://huggingface.co/$repository" "$tmp_target"; then
     rm -rf "$tmp_target/.git"
     rm -rf "$target"
     mv "$tmp_target" "$target"
@@ -88,8 +120,10 @@ download_model() {
   case "$DOWNLOADER" in
   auto)
     if command -v hf >/dev/null 2>&1; then
-      download_with_hf "$repository" "$target"
-      return $?
+      if download_with_hf "$repository" "$target"; then
+        return 0
+      fi
+      echo "hf download failed for $repository; falling back to git-lfs." >&2
     fi
     download_with_git_lfs "$repository" "$target"
     ;;
@@ -145,6 +179,7 @@ echo "Target:  $MODEL_DIR"
 echo "Downloader: $DOWNLOADER"
 echo "Host RAM: ${HOST_MEMORY_GB} GiB"
 echo "Free disk: ${AVAILABLE_DISK_GB} GiB"
+echo "Download timeout: ${DOWNLOAD_TIMEOUT_SECONDS}s"
 if [[ -n "$FILTER" ]]; then
   echo "Filter:  $FILTER"
 fi
