@@ -21,9 +21,13 @@ struct FMRequiredToolGrammarBuilderTests {
 
     @available(macOS 27.0, iOS 27.0, visionOS 27.0, *)
     @Generable
-    struct WeatherControlArguments {
-        let city: String
+    struct WeatherCountArguments {
         let count: Int
+    }
+
+    @available(macOS 27.0, iOS 27.0, visionOS 27.0, *)
+    @Generable
+    struct WeatherEnabledArguments {
         let enabled: Bool
     }
 
@@ -92,19 +96,24 @@ struct FMRequiredToolGrammarBuilderTests {
             return
         }
 
-        let grammar = FMRequiredToolGrammarBuilder.grammar(
-            from: [Self.weatherControlTool],
+        let countGrammar = FMRequiredToolGrammarBuilder.grammar(
+            from: [Self.weatherCountTool],
             promptStyle: .qwenXML
         )
 
         try NativeToolGrammarMaskTestSupport.expectAllowsOnlyAfterAcceptingPrefix(
-            grammar,
+            countGrammar,
             prefix: #"<tool_call><function=weather><parameter=count>"#,
             allowed: "2",
             rejected: "Berlin"
         )
+
+        let enabledGrammar = FMRequiredToolGrammarBuilder.grammar(
+            from: [Self.weatherEnabledTool],
+            promptStyle: .qwenXML
+        )
         try NativeToolGrammarMaskTestSupport.expectAllowsOnlyAfterAcceptingPrefix(
-            grammar,
+            enabledGrammar,
             prefix: #"<tool_call><function=weather><parameter=enabled>"#,
             allowed: "true",
             rejected: "2"
@@ -117,21 +126,28 @@ struct FMRequiredToolGrammarBuilderTests {
             return
         }
 
-        let grammar = FMRequiredToolGrammarBuilder.grammar(
-            from: [Self.weatherControlTool],
+        let countGrammar = FMRequiredToolGrammarBuilder.grammar(
+            from: [Self.weatherCountTool],
             promptStyle: .deepSeekDSML
         )
 
-        #expect(grammar.kind == .structuralTag)
-        #expect(grammar.grammar.contains(#""style":"deepseek_xml""#))
+        #expect(countGrammar.kind == .structuralTag)
+        #expect(countGrammar.grammar.contains(#""style":"deepseek_xml""#))
         try NativeToolGrammarMaskTestSupport.expectAllowsOnlyAfterAcceptingPrefix(
-            grammar,
+            countGrammar,
             prefix: Self.deepSeekCountPrefix,
             allowed: "2",
             rejected: "Berlin"
         )
+
+        let enabledGrammar = FMRequiredToolGrammarBuilder.grammar(
+            from: [Self.weatherEnabledTool],
+            promptStyle: .deepSeekDSML
+        )
+        #expect(enabledGrammar.kind == .structuralTag)
+        #expect(enabledGrammar.grammar.contains(#""style":"deepseek_xml""#))
         try NativeToolGrammarMaskTestSupport.expectAllowsOnlyAfterAcceptingPrefix(
-            grammar,
+            enabledGrammar,
             prefix: Self.deepSeekEnabledPrefix,
             allowed: "true",
             rejected: "2"
@@ -145,7 +161,7 @@ struct FMRequiredToolGrammarBuilderTests {
         }
 
         let grammar = FMRequiredToolGrammarBuilder.grammar(
-            from: [Self.weatherControlTool],
+            from: [Self.weatherCountTool],
             promptStyle: .gemma
         )
 
@@ -167,11 +183,20 @@ struct FMRequiredToolGrammarBuilderTests {
     }
 
     @available(macOS 27.0, iOS 27.0, visionOS 27.0, *)
-    private static var weatherControlTool: Transcript.ToolDefinition {
+    private static var weatherCountTool: Transcript.ToolDefinition {
         Transcript.ToolDefinition(
             name: "weather",
             description: "Read local weather for a city",
-            parameters: WeatherControlArguments.generationSchema
+            parameters: WeatherCountArguments.generationSchema
+        )
+    }
+
+    @available(macOS 27.0, iOS 27.0, visionOS 27.0, *)
+    private static var weatherEnabledTool: Transcript.ToolDefinition {
+        Transcript.ToolDefinition(
+            name: "weather",
+            description: "Read local weather for a city",
+            parameters: WeatherEnabledArguments.generationSchema
         )
     }
 

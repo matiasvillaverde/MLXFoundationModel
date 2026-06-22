@@ -30,24 +30,51 @@ enum MLXToolArgumentNormalizer {
         for emittedName: String,
         validNames: Set<String>
     ) -> String {
-        guard !validNames.contains(emittedName),
-            emittedName.contains(":") else {
+        guard !validNames.contains(emittedName) else {
             return emittedName
         }
 
-        let parts = emittedName.split(separator: ":", omittingEmptySubsequences: false)
-        guard parts.count > 1 else {
-            return emittedName
-        }
-
-        let candidates = Set((1..<parts.count).compactMap { index -> String? in
-            let suffix = parts[index...].joined(separator: ":")
-            return validNames.contains(suffix) ? suffix : nil
-        })
+        let candidates = Set(remapCandidates(for: emittedName, validNames: validNames))
         if candidates.count == 1, let candidate = candidates.first {
             return candidate
         }
         return emittedName
+    }
+
+    private static func remapCandidates(
+        for emittedName: String,
+        validNames: Set<String>
+    ) -> [String] {
+        candidateNameSources(for: emittedName).flatMap { source in
+            candidateNames(from: source, validNames: validNames)
+        }
+    }
+
+    private static func candidateNameSources(for emittedName: String) -> [String] {
+        let prefixes = ["functions.", "function."]
+        let prefixed = prefixes.compactMap { prefix -> String? in
+            guard emittedName.hasPrefix(prefix) else {
+                return nil
+            }
+            return String(emittedName.dropFirst(prefix.count))
+        }
+        return [emittedName] + prefixed
+    }
+
+    private static func candidateNames(
+        from source: String,
+        validNames: Set<String>
+    ) -> [String] {
+        var candidates: [String] = validNames.contains(source) ? [source] : []
+        let parts = source.split(separator: ":", omittingEmptySubsequences: false)
+        guard parts.count > 1 else {
+            return candidates
+        }
+        candidates.append(contentsOf: (1..<parts.count).compactMap { index -> String? in
+            let suffix = parts[index...].joined(separator: ":")
+            return validNames.contains(suffix) ? suffix : nil
+        })
+        return candidates
     }
 
     private static func normalize(

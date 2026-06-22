@@ -18,6 +18,23 @@ struct MLXUpstreamToolCallExtractorTests {
         #expect(call.argumentsJSON == #"{"city":"Berlin"}"#)
     }
 
+    @Test("extracts Qwen XML parameter values containing angle brackets")
+    func extractsQwenXMLParameterValuesContainingAngleBrackets() throws {
+        let call = try #require(MLXToolCallExtractor.extract(
+            from: """
+            <tool_call>\
+            <function=weather>\
+            <parameter=condition>temperature < 10 and humidity > 30</parameter>\
+            </function>\
+            </tool_call>
+            """
+        ))
+        let arguments = try Self.jsonObject(from: call.argumentsJSON)
+
+        #expect(call.name == "weather")
+        #expect(arguments["condition"] as? String == "temperature < 10 and humidity > 30")
+    }
+
     @Test("extracts Kimi K2 section tool calls")
     func extractsKimiK2SectionToolCalls() {
         let calls = MLXToolCallExtractor.extractAll(

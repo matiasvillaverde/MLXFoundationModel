@@ -135,6 +135,59 @@ struct MLXToolAwareStreamReducerTests {
         #expect(Self.actionKinds(in: actions) == ["toolCall", "toolUsage"])
     }
 
+    @Test("keeps text after empty Qwen tool block")
+    func keepsTextAfterEmptyQwenToolBlock() {
+        var reducer = MLXToolAwareStreamReducer(tools: [Self.weatherTool])
+        var actions: [MLXToolAwareStreamReducer.Action] = []
+
+        actions.append(contentsOf: reducer.consume(Self.textChunk("<tool_call>")))
+        actions.append(contentsOf: reducer.consume(Self.textChunk("</tool_call>Visible answer.")))
+        actions.append(contentsOf: reducer.consume(Self.metricsChunk()))
+        actions.append(contentsOf: reducer.finish())
+
+        #expect(Self.toolCalls(in: actions).isEmpty)
+        #expect(Self.responseTexts(in: actions).joined() == "Visible answer.")
+        #expect(Self.actionKinds(in: actions) == ["responseText", "responseUsage"])
+    }
+
+    @Test("keeps split Qwen XML parameter values containing angle brackets")
+    func keepsSplitQwenXMLParameterValuesContainingAngleBrackets() throws {
+        var reducer = MLXToolAwareStreamReducer(tools: [Self.weatherTool])
+        var actions: [MLXToolAwareStreamReducer.Action] = []
+
+        actions.append(contentsOf: reducer.consume(Self.textChunk(
+            "<tool_call><function=functions.weather><parameter=condition>temperature "
+        )))
+        actions.append(contentsOf: reducer.consume(Self.textChunk(
+            "< 10</parameter></function></tool_call>Visible answer."
+        )))
+        actions.append(contentsOf: reducer.consume(Self.metricsChunk()))
+        actions.append(contentsOf: reducer.finish())
+
+        let call = try #require(Self.toolCalls(in: actions).first)
+        let arguments = try Self.jsonObject(from: call.argumentsJSON)
+
+        #expect(call.name == "weather")
+        #expect(arguments["condition"] as? String == "temperature < 10")
+        #expect(Self.responseTexts(in: actions).joined() == "Visible answer.")
+        #expect(Self.actionKinds(in: actions) == ["responseText", "toolCall", "toolUsage"])
+    }
+
+    @Test("keeps text after empty Gemma 4 tool block")
+    func keepsTextAfterEmptyGemma4ToolBlock() {
+        var reducer = MLXToolAwareStreamReducer(tools: [Self.weatherTool])
+        var actions: [MLXToolAwareStreamReducer.Action] = []
+
+        actions.append(contentsOf: reducer.consume(Self.textChunk("<|tool_call>")))
+        actions.append(contentsOf: reducer.consume(Self.textChunk("<tool_call|>Visible answer.")))
+        actions.append(contentsOf: reducer.consume(Self.metricsChunk()))
+        actions.append(contentsOf: reducer.finish())
+
+        #expect(Self.toolCalls(in: actions).isEmpty)
+        #expect(Self.responseTexts(in: actions).joined() == "Visible answer.")
+        #expect(Self.actionKinds(in: actions) == ["responseText", "responseUsage"])
+    }
+
     @Test("drops unknown thinking tool calls and keeps response usage")
     func dropsUnknownThinkingToolCallsAndKeepsResponseUsage() {
         var reducer = MLXToolAwareStreamReducer(tools: [Self.searchTool])
@@ -200,7 +253,14 @@ struct MLXToolAwareStreamReducerTests {
             name: "weather",
             description: "Read local weather",
             parametersJSONSchema: """
-            {"type":"object","properties":{"city":{"type":"string"},"count":{"type":"integer"}}}
+            {
+              "type":"object",
+              "properties":{
+                "city":{"type":"string"},
+                "condition":{"type":"string"},
+                "count":{"type":"integer"}
+              }
+            }
             """
         )
     }

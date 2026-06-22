@@ -23,15 +23,45 @@ enum NativeToolGrammarMaskTestSupport {
         allowed: String,
         rejected: String
     ) throws {
+        let prefixTokens = prefixTokens(for: prefix, grammar: grammar)
+        let allowedTokenID = prefixTokens.count + 1
+        let rejectedTokenID = prefixTokens.count + 2
         let matcher = try matcher(
-            vocabulary: ["</s>", prefix, allowed, rejected],
+            vocabulary: ["</s>"] + prefixTokens + [allowed, rejected],
             grammar: grammar
         )
-        try matcher.accept(token: 1)
+        if !prefixTokens.isEmpty {
+            for tokenID in 1 ... prefixTokens.count {
+                try matcher.accept(token: Int32(tokenID))
+            }
+        }
         let mask = try #require(try matcher.nextMask())
 
-        #expect(isAllowed(tokenID: 2, by: mask))
-        #expect(!isAllowed(tokenID: 3, by: mask))
+        #expect(isAllowed(tokenID: allowedTokenID, by: mask))
+        #expect(!isAllowed(tokenID: rejectedTokenID, by: mask))
+    }
+
+    private static func prefixTokens(
+        for prefix: String,
+        grammar: GrammarSamplingConfiguration
+    ) -> [String] {
+        guard grammar.kind == .structuralTag else {
+            return [prefix]
+        }
+        for marker in [
+            "<｜DSML｜parameter",
+            "<parameter=",
+            "<arg_key>",
+            "<parameter name=\""
+        ] {
+            if let range = prefix.range(of: marker, options: .backwards) {
+                return [
+                    String(prefix[..<range.lowerBound]),
+                    String(prefix[range.lowerBound...])
+                ].filter { !$0.isEmpty }
+            }
+        }
+        return [prefix]
     }
 
     private static func matcher(

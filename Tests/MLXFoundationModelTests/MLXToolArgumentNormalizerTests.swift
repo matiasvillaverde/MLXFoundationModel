@@ -75,6 +75,24 @@ struct MLXToolArgumentNormalizerTests {
         #expect(arguments["count"] as? Int == 2)
     }
 
+    @Test("remaps functions-prefixed XML tool names")
+    func remapsFunctionsPrefixedXMLToolNames() throws {
+        let call = try #require(MLXToolCallExtractor.extract(
+            from: """
+            <tool_call><function=functions.weather>\
+            <parameter=city>Berlin</parameter>\
+            <parameter=count>"2"</parameter>\
+            </function></tool_call>
+            """,
+            tools: [Self.weatherTool]
+        ))
+        let arguments = try Self.jsonObject(from: call.argumentsJSON)
+
+        #expect(call.name == "weather")
+        #expect(arguments["city"] as? String == "Berlin")
+        #expect(arguments["count"] as? Int == 2)
+    }
+
     @Test("keeps ambiguous namespaced tool names unchanged")
     func keepsAmbiguousNamespacedToolNamesUnchanged() throws {
         let call = try #require(MLXToolCallExtractor.extract(
