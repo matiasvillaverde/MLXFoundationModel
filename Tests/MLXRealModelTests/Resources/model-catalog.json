@@ -830,7 +830,7 @@
     "architecture": "apertus",
     "repository": "mlx-community/Apertus-8B-Instruct-2509-4bit",
     "relativePath": "Apertus-8B-Instruct-2509-4bit",
-    "prompt": "Write one short sentence about open multilingual models.",
+    "prompt": "<s><|user_start|>Write one short sentence about open multilingual models.<|user_end|><|assistant_start|>",
     "expectedTokens": ["open", "multilingual", "model"],
     "maxTokens": 12,
     "tags": ["relevant", "latest"]

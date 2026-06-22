@@ -92,6 +92,11 @@ struct MLXModelPromptStyleInferenceTests {
 
     private static let fixtures = [
         Fixture(
+            modelType: "apertus",
+            template: "<|user_start|>hello<|user_end|><|assistant_start|>",
+            style: .apertus
+        ),
+        Fixture(
             modelType: "command-r",
             template: "<|START_ACTION|>{}</|END_ACTION|>",
             style: .cohereAction
@@ -144,6 +149,7 @@ struct MLXModelPromptStyleInferenceTests {
     ]
 
     private static let idFixtures = [
+        Fixture(modelType: "unknown", template: "", style: .apertus, id: "Apertus-8B-Instruct"),
         Fixture(modelType: "unknown", template: "", style: .qwenXML, id: "Qwen3-0.6B-4bit"),
         Fixture(modelType: "unknown", template: "", style: .glmXML, id: "GLM-4.7-9B-4bit"),
         Fixture(modelType: "unknown", template: "", style: .minimaxM3, id: "MiniMax-M3-4bit"),

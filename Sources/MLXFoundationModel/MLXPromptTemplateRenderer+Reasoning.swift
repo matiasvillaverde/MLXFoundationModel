@@ -33,7 +33,8 @@ extension MLXPromptTemplateRenderer {
         case .cohereAction:
             return reasoningOptions.isEnabled
 
-        case .harmony,
+        case .apertus,
+            .harmony,
             .kimiK2,
             .mistralToolCall:
             return false
@@ -55,7 +56,7 @@ extension MLXPromptTemplateRenderer {
         case .gemma:
             return "<|channel>thought\n"
 
-        case .harmony:
+        case .apertus, .harmony:
             return nil
 
         case .minimaxM3:

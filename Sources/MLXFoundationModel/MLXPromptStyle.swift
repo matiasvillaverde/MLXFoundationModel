@@ -3,6 +3,9 @@ import Foundation
 /// Prompt format used when converting a Foundation Models transcript into text
 /// for an instruction-tuned MLX model.
 public enum MLXPromptStyle: Codable, CaseIterable, Hashable, Sendable {
+    /// Apertus native role markers used by Apertus instruction models.
+    case apertus
+
     /// ChatML-style role markers used by Qwen and related instruction models.
     case chatML
 
@@ -46,6 +49,7 @@ public enum MLXPromptStyle: Codable, CaseIterable, Hashable, Sendable {
     case qwenXML
 
     private static let decodedStyles: [String: Self] = [
+        "apertus": .apertus,
         "chatML": .chatML,
         "cohereAction": .cohereAction,
         "deepSeekDSML": .deepSeekDSML,

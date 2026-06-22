@@ -5,6 +5,7 @@ enum MLXPromptTemplateRenderer {
     private typealias RenderingStrategy = @Sendable (MLXBridgeRequest, MLXPromptStyle) -> String
 
     private static let strategies: [MLXPromptStyle: RenderingStrategy] = [
+        .apertus: { Self.renderApertus($0, style: $1) },
         .chatML: { Self.renderChatML($0, style: $1) },
         .cohereAction: { Self.renderCohere($0, style: $1) },
         .deepSeekDSML: { Self.renderDeepSeekDSML($0, style: $1) },

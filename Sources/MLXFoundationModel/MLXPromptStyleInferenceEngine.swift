@@ -116,6 +116,11 @@ enum MLXPromptStyleInferenceEngine {
 
     private static let orderedRules: [Rule] = [
         .init(
+            style: .apertus,
+            templateMarkers: ["<|assistant_start|>", "<|user_start|>"],
+            modelFamilies: ["apertus"]
+        ),
+        .init(
             style: .harmony,
             templateMarkers: ["<|channel|>", "gpt_oss"],
             modelFamilies: ["gpt_oss", "gpt-oss", "gptoss", "harmony"]
