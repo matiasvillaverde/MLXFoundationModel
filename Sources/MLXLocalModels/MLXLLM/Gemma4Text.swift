@@ -391,20 +391,22 @@ private final class Gemma4Attention: Module {
     let numKVHeads: Int
     let headDim: Int
     let useKEqualsV: Bool
+    let hasKV: Bool
     let scale: Float = 1.0
     let rope: Gemma4RoPE
 
     @ModuleInfo(key: "q_proj") var qProj: Linear
-    @ModuleInfo(key: "k_proj") var kProj: Linear
+    @ModuleInfo(key: "k_proj") var kProj: Linear?
     @ModuleInfo(key: "v_proj") var vProj: Linear?
     @ModuleInfo(key: "o_proj") var oProj: Linear
     @ModuleInfo(key: "q_norm") var qNorm: RMSNorm
-    @ModuleInfo(key: "k_norm") var kNorm: RMSNorm
-    @ModuleInfo(key: "v_norm") var vNorm: Gemma4RMSNormNoScale
+    @ModuleInfo(key: "k_norm") var kNorm: RMSNorm?
+    @ModuleInfo(key: "v_norm") var vNorm: Gemma4RMSNormNoScale?
 
     init(_ config: Gemma4TextConfiguration, layerIndex: Int) {
         self.layerType = config.layerTypes[layerIndex]
         self.isSliding = layerType == "sliding_attention"
+        self.hasKV = layerIndex < config.numHiddenLayers - config.numKvSharedLayers
         self.headDim =
             if !isSliding, let globalHeadDim = config.globalHeadDim {
                 globalHeadDim
@@ -420,14 +422,18 @@ private final class Gemma4Attention: Module {
         }
 
         _qProj.wrappedValue = Linear(config.hiddenSize, numHeads * headDim, bias: false)
-        _kProj.wrappedValue = Linear(config.hiddenSize, numKVHeads * headDim, bias: false)
-        if !useKEqualsV {
-            _vProj.wrappedValue = Linear(config.hiddenSize, numKVHeads * headDim, bias: false)
+        if hasKV {
+            _kProj.wrappedValue = Linear(config.hiddenSize, numKVHeads * headDim, bias: false)
+            if !useKEqualsV {
+                _vProj.wrappedValue = Linear(config.hiddenSize, numKVHeads * headDim, bias: false)
+            }
         }
         _oProj.wrappedValue = Linear(numHeads * headDim, config.hiddenSize, bias: false)
         _qNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: config.rmsNormEps)
-        _kNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: config.rmsNormEps)
-        _vNorm.wrappedValue = Gemma4RMSNormNoScale(eps: config.rmsNormEps)
+        if hasKV {
+            _kNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: config.rmsNormEps)
+            _vNorm.wrappedValue = Gemma4RMSNormNoScale(eps: config.rmsNormEps)
+        }
 
         let ropeParameters =
             config.ropeParameters[isSliding ? "sliding_attention" : "full_attention"]
@@ -471,6 +477,12 @@ private final class Gemma4Attention: Module {
                 mask: adjustedMask
             )
         } else {
+            guard hasKV,
+                let kProj,
+                let kNorm,
+                let vNorm else {
+                fatalError("Gemma 4 shared-KV layer received no shared KV state.")
+            }
             var projectedKeys = kProj(input).reshaped(
                 batchSize,
                 sequenceLength,
@@ -844,6 +856,17 @@ private final class Gemma4LanguageModel: Module {
         logits(from: model(inputs, cache: cache))
     }
 
+    func greedyToken(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?
+    ) -> GreedyTokenOutput {
+        let hiddenStates = model(input[text: .newAxis].tokens, cache: cache)
+        let lastHidden = hiddenStates[0..., -1, 0...]
+        let logits = model.embedTokens.asLinear(lastHidden)
+        return GreedyTokenOutput(token: argMax(logits, axis: -1), state: state)
+    }
+
     func prepare(_ input: LMInput, cache: [KVCache], windowSize: Int?) throws -> PrepareResult {
         let prefillStepSize = windowSize ?? GenerationConstants.defaultPrefillStepSize
         let controller = MLXGenerationDiagnostics.currentAdaptivePrefillController
@@ -917,7 +940,7 @@ private final class Gemma4LanguageModel: Module {
     }
 }
 
-internal final class Gemma4Model: Module, LLMModel {
+internal final class Gemma4Model: Module, LLMModel, GreedyTokenModel {
     @ModuleInfo(key: "language_model") private var languageModel: Gemma4LanguageModel
 
     let config: Gemma4TextConfiguration
@@ -935,6 +958,14 @@ internal final class Gemma4Model: Module, LLMModel {
 
     func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
         languageModel(inputs, cache: cache)
+    }
+
+    func greedyToken(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?
+    ) -> GreedyTokenOutput {
+        languageModel.greedyToken(input, cache: cache, state: state)
     }
 
     func prepare(_ input: LMInput, cache: [KVCache], windowSize: Int?) throws -> PrepareResult {
@@ -1004,6 +1035,34 @@ internal final class Gemma4Model: Module, LLMModel {
             "rotary_emb.inv_freq"
         ]
         return droppedFragments.contains(where: key.contains)
+            || shouldDropSharedKVWeight(key)
+    }
+
+    private func shouldDropSharedKVWeight(_ key: String) -> Bool {
+        guard config.numKvSharedLayers > 0,
+            key.contains(".self_attn."),
+            [
+                ".self_attn.k_proj.",
+                ".self_attn.v_proj.",
+                ".self_attn.k_norm.",
+                ".self_attn.v_norm."
+            ].contains(where: key.contains),
+            let layerIndex = layerIndex(from: key) else {
+            return false
+        }
+
+        return layerIndex >= config.numHiddenLayers - config.numKvSharedLayers
+    }
+
+    private func layerIndex(from key: String) -> Int? {
+        guard let layersRange = key.range(of: "layers.") else {
+            return nil
+        }
+        let suffix = key[layersRange.upperBound...]
+        guard let endIndex = suffix.firstIndex(of: ".") else {
+            return nil
+        }
+        return Int(suffix[..<endIndex])
     }
 }
 

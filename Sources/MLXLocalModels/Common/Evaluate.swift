@@ -1798,9 +1798,26 @@ internal struct TokenIterator: Sequence, IteratorProtocol {
 
     /// Evaluate the next token and return the new token (y), updating cache state
     mutating func step(previous: LMInput.Text) -> MLXArray {
-        let result = model(
-            previous[text: .newAxis], cache: cache.isEmpty ? nil : cache, state: state)
-        self.state = result.state
+        let token: MLXArray
+        if processor == nil,
+            sampler is ArgMaxSampler,
+            let greedyModel = model as? any GreedyTokenModel {
+            let result = greedyModel.greedyToken(
+                previous,
+                cache: cache.isEmpty ? nil : cache,
+                state: state
+            )
+            self.state = result.state
+            token = result.token
+        } else {
+            let result = model(
+                previous[text: .newAxis],
+                cache: cache.isEmpty ? nil : cache,
+                state: state
+            )
+            self.state = result.state
+            token = convertToToken(logits: result.logits)
+        }
 
         // Apply dynamic cache quantization after each step
         maybeQuantizeKVCache(
@@ -1812,7 +1829,7 @@ internal struct TokenIterator: Sequence, IteratorProtocol {
         )
         MLXGenerationDiagnostics.recordCacheSnapshot(label: "step", cache: cache)
 
-        return convertToToken(logits: result.logits)
+        return token
     }
 
     mutating internal func next() -> Int? {

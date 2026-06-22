@@ -193,6 +193,16 @@ internal struct NativeMTPDraftOutput {
     }
 }
 
+internal struct GreedyTokenOutput {
+    internal let token: MLXArray
+    internal let state: LMOutput.State?
+
+    internal init(token: MLXArray, state: LMOutput.State? = nil) {
+        self.token = token
+        self.state = state
+    }
+}
+
 /// The result of the call to ``LanguageModel/prepare(_:cache:windowSize:)``
 internal enum PrepareResult {
     /// tokens to process by the ``TokenIterator``
@@ -253,6 +263,14 @@ internal protocol NativeMTPModel: LanguageModel {
         nextTokenIDs: MLXArray,
         cache: [KVCache]?
     ) -> NativeMTPDraftOutput?
+}
+
+internal protocol GreedyTokenModel: LanguageModel {
+    func greedyToken(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?
+    ) -> GreedyTokenOutput
 }
 
 extension LanguageModel {
