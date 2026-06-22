@@ -30,6 +30,7 @@ internal struct LFM2MoEConfiguration: Codable, Sendable {
     internal let convBias: Bool
     internal let convLCache: Int
     internal let ropeTheta: Float
+    internal let routedScalingFactor: Float
 
     private let _fullAttnIdxs: [Int]?
     private let layerTypes: [String]?
@@ -66,6 +67,7 @@ internal struct LFM2MoEConfiguration: Codable, Sendable {
         case convBias = "conv_bias"
         case convLCache = "conv_L_cache"
         case ropeTheta = "rope_theta"
+        case routedScalingFactor = "routed_scaling_factor"
         case ropeParameters = "rope_parameters"
         case _fullAttnIdxs = "full_attn_idxs"
         case layerTypes = "layer_types"
@@ -91,6 +93,8 @@ internal struct LFM2MoEConfiguration: Codable, Sendable {
         self.normEps = try container.decode(Float.self, forKey: .normEps)
         self.convBias = try container.decode(Bool.self, forKey: .convBias)
         self.convLCache = try container.decode(Int.self, forKey: .convLCache)
+        self.routedScalingFactor =
+            try container.decodeIfPresent(Float.self, forKey: .routedScalingFactor) ?? 1.0
         self.ropeParameters = try container.decodeIfPresent(
             [String: StringOrNumber].self, forKey: .ropeParameters)
 
@@ -259,6 +263,7 @@ class Lfm2MoeSparseMoeBlock: Module, UnaryLayer {
     let topK: Int
     let normTopKProb: Bool
     let useExpertBias: Bool
+    let routedScalingFactor: Float
 
     @ModuleInfo(key: "gate") var gate: Linear
     @ModuleInfo(key: "switch_mlp") var switchMLP: SwitchGLU
@@ -270,6 +275,7 @@ class Lfm2MoeSparseMoeBlock: Module, UnaryLayer {
         self.topK = args.numExpertsPerToken
         self.normTopKProb = args.normTopkProb
         self.useExpertBias = args.useExpertBias
+        self.routedScalingFactor = args.routedScalingFactor
 
         _gate.wrappedValue = Linear(args.hiddenSize, numExperts, bias: false)
         _switchMLP.wrappedValue = SwitchGLU(
@@ -285,26 +291,45 @@ class Lfm2MoeSparseMoeBlock: Module, UnaryLayer {
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        var gates = gate(x).asType(.float32)
-        gates = MLX.softmax(gates, axis: -1)
-
-        if useExpertBias, let expertBias {
-            gates = gates + expertBias
-        }
-
-        let k = topK
-        let indices = argPartition(-gates, kth: k - 1, axis: -1)[.ellipsis, ..<k]
-        var scores = takeAlong(gates, indices, axis: -1)
-        if normTopKProb {
-            let denom = scores.sum(axis: -1, keepDims: true) + 1e-20
-            scores = scores / denom
-        }
-        scores = scores.asType(x.dtype)
+        let (indices, scores) = lfm2MoERouter(
+            logits: gate(x),
+            expertBias: expertBias,
+            topK: topK,
+            normTopKProb: normTopKProb,
+            useExpertBias: useExpertBias,
+            routedScalingFactor: routedScalingFactor
+        )
 
         let expertOutputs = switchMLP(x, indices)
-        let weighted = expertOutputs * scores[.ellipsis, .newAxis]
+        let weighted = expertOutputs * scores.asType(x.dtype)[.ellipsis, .newAxis]
         return weighted.sum(axis: -2)
     }
+}
+
+internal func lfm2MoERouter(
+    logits: MLXArray,
+    expertBias: MLXArray?,
+    topK: Int,
+    normTopKProb: Bool,
+    useExpertBias: Bool,
+    routedScalingFactor: Float
+) -> (indices: MLXArray, scores: MLXArray) {
+    let routingWeights = sigmoid(logits.asType(.float32))
+    let selectionScores: MLXArray
+    if useExpertBias, let expertBias {
+        selectionScores = routingWeights + expertBias
+    } else {
+        selectionScores = routingWeights
+    }
+
+    let indices = argPartition(-selectionScores, kth: topK - 1, axis: -1)[.ellipsis, ..<topK]
+    var scores = takeAlong(routingWeights, indices, axis: -1)
+    if normTopKProb {
+        let denominator = scores.sum(axis: -1, keepDims: true) + 1e-6
+        scores = scores / denominator
+    }
+    scores = scores * routedScalingFactor
+    return (indices, scores)
 }
 
 class LFM2MoEDecoderLayer: Module {

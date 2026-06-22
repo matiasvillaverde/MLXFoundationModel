@@ -32,6 +32,7 @@ struct MLXRealModelCatalogTests {
         let mistralSmall = try #require(models.first { $0.id == "mistral-small-24b-2501-4bit" })
         let qwen3Next = try #require(models.first { $0.id == "qwen3-next" })
         let qwen35MoE = try #require(models.first { $0.id == "qwen3.5-moe" })
+        let gemma3nE2BBF16 = try #require(models.first { $0.id == "gemma-3n-e2b-it-lm-bf16" })
 
         #expect(gptOSS.minimumMemoryGB == 48)
         #expect(gptOSS.minimumDiskGB == 14)
@@ -41,6 +42,8 @@ struct MLXRealModelCatalogTests {
         #expect(qwen3Next.minimumDiskGB == 45)
         #expect(qwen35MoE.minimumMemoryGB == 48)
         #expect(qwen35MoE.minimumDiskGB == 28)
+        #expect(gemma3nE2BBF16.minimumMemoryGB == 48)
+        #expect(gemma3nE2BBF16.minimumDiskGB == 8)
     }
 
     @Test("large downloadable catalog entries declare resource requirements")
@@ -191,6 +194,7 @@ struct MLXRealModelCatalogTests {
         "gemma4",
         "granite",
         "lfm2",
+        "lfm2_moe",
         "llama",
         "mistral",
         "openelm",
@@ -217,6 +221,7 @@ struct MLXRealModelCatalogTests {
         "gpt_oss",
         "granite",
         "lfm2",
+        "lfm2_moe",
         "llama",
         "mimo",
         "mistral",

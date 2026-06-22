@@ -322,7 +322,7 @@
     "prompt": "Write one short sentence about high quality inference.",
     "expectedTokens": ["quality", "inference", "model"],
     "maxTokens": 12,
-    "minimumMemoryGB": 16,
+    "minimumMemoryGB": 48,
     "minimumDiskGB": 8,
     "tags": ["latest", "large"]
   },
@@ -429,14 +429,16 @@
   },
   {
     "id": "lfm2-moe",
-    "displayName": "LFM2 MoE",
+    "displayName": "LFM2.5 8B-A1B MoE 4-bit",
     "architecture": "lfm2_moe",
-    "repository": null,
-    "relativePath": "lfm2-moe",
+    "repository": "mlx-community/LFM2.5-8B-A1B-MLX-4bit",
+    "relativePath": "LFM2.5-8B-A1B-MLX-4bit",
     "prompt": "Write one short sentence about efficient experts.",
     "expectedTokens": ["expert", "efficient", "model"],
     "maxTokens": 12,
-    "tags": ["registry-only"]
+    "minimumMemoryGB": 24,
+    "minimumDiskGB": 8,
+    "tags": ["main", "relevant", "latest"]
   },
   {
     "id": "exaone-4.0-1.2b-4bit",
@@ -608,11 +610,11 @@
     "tags": ["smoke", "main", "relevant", "small"]
   },
   {
-    "id": "internlm2-chat-1.8b-4bit",
-    "displayName": "InternLM2 Chat 1.8B 4-bit",
+    "id": "internlm2.5-7b-chat-4bit",
+    "displayName": "InternLM2.5 7B Chat 4-bit",
     "architecture": "internlm2",
-    "repository": "mlx-community/internlm2-chat-1_8b-4bit",
-    "relativePath": "internlm2-chat-1_8b-4bit",
+    "repository": "mlx-community/internlm2_5-7b-chat-4bit",
+    "relativePath": "internlm2_5-7b-chat-4bit",
     "prompt": "Explain quantum computing in one sentence.",
     "expectedTokens": ["quantum", "computing", "qubit"],
     "maxTokens": 15,
