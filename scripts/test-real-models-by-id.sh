@@ -11,6 +11,7 @@ FEATURE_TIMEOUT_SECONDS="${MLX_REAL_MODEL_FEATURE_TIMEOUT_SECONDS:-900}"
 GENERATION_TOKENS="${MLX_REAL_MODEL_GENERATION_TOKENS:-2}"
 GENERATION_TIMEOUT_SECONDS="${MLX_REAL_MODEL_GENERATION_TIMEOUT_SECONDS:-120}"
 ALLOW_OVERSIZED_MODELS="${MLX_ALLOW_OVERSIZED_MODELS:-0}"
+SKIP_BUILD_AFTER_FIRST="${MLX_REAL_MODEL_SKIP_BUILD_AFTER_FIRST:-1}"
 DRY_RUN="${MLX_REAL_MODEL_DRY_RUN:-0}"
 
 if ! command -v python3 >/dev/null 2>&1; then
@@ -214,6 +215,7 @@ echo "Selected model count:  ${#MODELS[@]}"
 echo "Per-model timeout:     ${MODEL_TIMEOUT_SECONDS}s"
 echo "Feature timeout:       ${FEATURE_TIMEOUT_SECONDS}s"
 echo "Generation token cap:  ${GENERATION_TOKENS}"
+echo "Skip rebuild checks:   $([[ "$SKIP_BUILD_AFTER_FIRST" == "1" ]] && echo "enabled" || echo "disabled")"
 if [[ "$DRY_RUN" == "1" ]]; then
   echo "Dry run:               enabled"
 fi
@@ -243,6 +245,7 @@ COMMON_ENV=(
 )
 FAILURES=()
 LAST_TEST_STATUS=0
+SWIFT_TEST_INVOCATION_COUNT=0
 
 run_swift_test() {
   local label="$1"
@@ -250,21 +253,27 @@ run_swift_test() {
   local filter="$3"
   local model_id="${4:-}"
   local environment=("${COMMON_ENV[@]}")
+  local swift_test_flags=("${SWIFT_TEST_FLAGS[@]}")
   if [[ -n "$model_id" ]]; then
     environment+=(MLX_REAL_MODEL_IDS="$model_id")
+  fi
+  if [[ "$SKIP_BUILD_AFTER_FIRST" == "1" && "$SWIFT_TEST_INVOCATION_COUNT" -gt 0 ]]; then
+    swift_test_flags+=(--skip-build)
   fi
 
   echo "-> $label"
   if run_with_timeout "$timeout_seconds" \
-    env "${environment[@]}" swift test "${SWIFT_TEST_FLAGS[@]}" --filter "$filter"; then
+    env "${environment[@]}" swift test "${swift_test_flags[@]}" --filter "$filter"; then
     echo "   passed"
     LAST_TEST_STATUS=0
+    SWIFT_TEST_INVOCATION_COUNT=$((SWIFT_TEST_INVOCATION_COUNT + 1))
     return 0
   else
     local status=$?
     echo "   failed with exit status $status"
     FAILURES+=("$label (exit status $status)")
     LAST_TEST_STATUS="$status"
+    SWIFT_TEST_INVOCATION_COUNT=$((SWIFT_TEST_INVOCATION_COUNT + 1))
     return 0
   fi
 }

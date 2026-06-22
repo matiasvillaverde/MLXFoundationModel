@@ -46,6 +46,7 @@ struct MLXFoundationModelsStreamEventSinkTests {
         source.yield(Self.textChunk(Self.toolCallText, tokenCount: 4))
         source.yield(Self.metricsChunk())
         source.finish()
+        _ = try await Self.events(from: &iterator, count: 2)
         try await translation.value
     }
 
@@ -66,9 +67,10 @@ struct MLXFoundationModelsStreamEventSinkTests {
         source.yield(Self.textChunk(Self.toolCallText, tokenCount: 4))
         source.yield(Self.metricsChunk())
         source.finish()
-        try await translation.value
 
-        let events = try await Self.events(from: channel, count: 4)
+        var iterator = channel.makeAsyncIterator()
+        let events = try await Self.events(from: &iterator, count: 4)
+        try await translation.value
         let toolCall = try #require(Self.toolCall(in: events))
 
         #expect(Self.responseTexts(in: events) == ["visible ", "<thi"])
@@ -84,10 +86,9 @@ struct MLXFoundationModelsStreamEventSinkTests {
 
     @available(macOS 27.0, iOS 27.0, visionOS 27.0, *)
     private static func events(
-        from channel: LanguageModelExecutorGenerationChannel,
+        from iterator: inout LanguageModelExecutorGenerationChannel.AsyncIterator,
         count: Int
     ) async throws -> [any LanguageModelExecutorGenerationChannel.Event] {
-        var iterator = channel.makeAsyncIterator()
         var events: [any LanguageModelExecutorGenerationChannel.Event] = []
         for _ in 0..<count {
             if let event = try await iterator.next() {

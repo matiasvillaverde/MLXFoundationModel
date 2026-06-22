@@ -24,20 +24,8 @@ struct MLXSessionCompatibilityTests {
             return
         }
 
-        let session = LanguageModelSession(
-            model: Self.compatibilityModel,
-            instructions: "Answer briefly."
-        )
-
-        _ = session.streamResponse(
-            to: "Write one sentence about local inference.",
-            options: GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 4)
-        )
-        _ = session.streamResponse(
-            to: "Generate a summary.",
-            generating: CompatibilityAnswer.self,
-            options: GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 16)
-        )
+        // Keep this compile-only: on Xcode 27 unconsumed streams can start executor work.
+        _ = Self.typeCheckAppleSessionOverloads as (MLXLanguageModel) -> Void
     }
 
     @Test("request builder keeps schema grammar when schema is omitted from the prompt")
@@ -161,7 +149,7 @@ struct MLXSessionCompatibilityTests {
 
         #expect(input.context.contains("<tool_call><function=weather>"))
         #expect(!input.context.contains("Available tools:"))
-        #expect(grammar.kind == .ebnf)
+        #expect(grammar.kind == .structuralTag)
         #expect(grammar.grammar.contains(#""<tool_call><function=weather>""#))
         #expect(grammar.grammar.contains(#""city""#))
         #expect(!grammar.grammar.contains(#""tool_name""#))
@@ -227,6 +215,24 @@ struct MLXSessionCompatibilityTests {
     @available(macOS 27.0, iOS 27.0, visionOS 27.0, *)
     private static var compatibilityModel: MLXLanguageModel {
         compatibilityModel(style: .chatML)
+    }
+
+    @available(macOS 27.0, iOS 27.0, visionOS 27.0, *)
+    private static func typeCheckAppleSessionOverloads(model: MLXLanguageModel) {
+        let session = LanguageModelSession(
+            model: model,
+            instructions: "Answer briefly."
+        )
+
+        _ = session.streamResponse(
+            to: "Write one sentence about local inference.",
+            options: GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 4)
+        )
+        _ = session.streamResponse(
+            to: "Generate a summary.",
+            generating: CompatibilityAnswer.self,
+            options: GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 16)
+        )
     }
 
     @available(macOS 27.0, iOS 27.0, visionOS 27.0, *)

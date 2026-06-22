@@ -7,6 +7,8 @@ SWIFT_TEST_SERIAL_FLAGS = --configuration $(CONFIGURATION) --no-parallel
 FAST_TEST_FILTER ?= MLXFoundationModelTests
 REAL_MODEL_TEST_FILTER ?= MLXRealModel
 PROVIDER_TEST_FILTER ?= MLXSessionCompatibilityTests|MLXSessionProviderContractTests|MLXSessionProviderReasoningContractTests|MLXSessionProviderLongCatContractTests|MLXFoundationModelsStreamEventSinkTests|MLXExecutorStreamingTests|MLXExecutorPrewarmTests|FMRequiredToolGrammarBuilderTests|FMToolRequiredArgsTests
+PROVIDER_REAL_MODEL_TEST_FILTER ?= MLXRealModelFoundationModelsProviderTests
+PROVIDER_REAL_MODEL_ID ?= qwen3-0.6b-4bit
 MLX_REAL_MODEL_SCOPE ?= smoke
 
 GREEN = \033[0;32m
@@ -34,14 +36,21 @@ test: build ## Run unit tests
 
 test-provider: ## Run Foundation Models provider tests with the Apple API adapter enabled
 	@echo "$(BLUE)Testing Foundation Models provider adapter...$(NC)"
-	@swift test $(SWIFT_TEST_FLAGS) -Xswiftc -DFOUNDATION_MODELS_PROVIDER_API \
+	@swift test $(SWIFT_TEST_SERIAL_FLAGS) -Xswiftc -DFOUNDATION_MODELS_PROVIDER_API \
 		--filter '$(PROVIDER_TEST_FILTER)'
 	@echo "$(GREEN)Provider tests passed$(NC)"
 
+test-provider-real-models: ## Run the Foundation Models provider path against a real downloaded model
+	@echo "$(YELLOW)Testing Foundation Models provider adapter with $(PROVIDER_REAL_MODEL_ID)...$(NC)"
+	@MLX_RUN_REAL_MODEL_TESTS=1 MLX_REAL_MODEL_IDS=$(PROVIDER_REAL_MODEL_ID) \
+		swift test $(SWIFT_TEST_SERIAL_FLAGS) -Xswiftc -DFOUNDATION_MODELS_PROVIDER_API \
+		--filter '$(PROVIDER_REAL_MODEL_TEST_FILTER)'
+	@echo "$(GREEN)Provider real-model tests passed$(NC)"
+
 test-real-models: ## Run opt-in real-model smoke tests against downloaded weights
 	@echo "$(YELLOW)Running real-model tests with scope $(MLX_REAL_MODEL_SCOPE)...$(NC)"
-	@MLX_RUN_REAL_MODEL_TESTS=1 MLX_REAL_MODEL_SCOPE=$(MLX_REAL_MODEL_SCOPE) \
-		swift test $(SWIFT_TEST_SERIAL_FLAGS) --filter '$(REAL_MODEL_TEST_FILTER)'
+	@CONFIGURATION=$(CONFIGURATION) MLX_REAL_MODEL_SCOPE=$(MLX_REAL_MODEL_SCOPE) \
+		bash scripts/test-real-models-by-id.sh
 	@echo "$(GREEN)Real-model tests passed$(NC)"
 
 test-all-architectures: ## Run opt-in real-model tests for all downloadable catalog entries
@@ -51,7 +60,7 @@ test-main-architectures: ## Run opt-in real-model tests for representative main 
 	@$(MAKE) test-real-models MLX_REAL_MODEL_SCOPE=main
 
 test-relevant-models: ## Run opt-in real-model tests for relevant/latest representative models
-	@MLX_REAL_MODEL_SCOPE=relevant bash scripts/test-real-models-by-id.sh
+	@$(MAKE) test-real-models MLX_REAL_MODEL_SCOPE=relevant
 
 profile-real-model: ## Profile the release playground with Instruments/xctrace
 	@bash scripts/profile-real-model.sh

@@ -6,6 +6,8 @@ final class LLMChunkStreamSource: @unchecked Sendable {
 
     private let lock = NSLock()
     private var continuation: Continuation?
+    private var pendingChunks: [LLMStreamChunk] = []
+    private var didFinish = false
 
     deinit {
         // Required by the package lint profile.
@@ -15,21 +17,35 @@ final class LLMChunkStreamSource: @unchecked Sendable {
         AsyncThrowingStream { continuation in
             lock.lock()
             self.continuation = continuation
+            let chunks = pendingChunks
+            let shouldFinish = didFinish
+            pendingChunks = []
             lock.unlock()
+            for chunk in chunks {
+                continuation.yield(chunk)
+            }
+            if shouldFinish {
+                continuation.finish()
+            }
         }
     }
 
     func yield(_ chunk: LLMStreamChunk) {
-        currentContinuation?.yield(chunk)
+        lock.lock()
+        guard let continuation else {
+            pendingChunks.append(chunk)
+            lock.unlock()
+            return
+        }
+        lock.unlock()
+        continuation.yield(chunk)
     }
 
     func finish() {
-        currentContinuation?.finish()
-    }
-
-    private var currentContinuation: Continuation? {
         lock.lock()
-        defer { lock.unlock() }
-        return continuation
+        didFinish = true
+        let continuation = continuation
+        lock.unlock()
+        continuation?.finish()
     }
 }

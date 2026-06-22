@@ -51,6 +51,7 @@ struct MLXExecutorStreamingTests {
         source.yield(Self.textChunk(Self.toolCallText, tokenCount: 4))
         source.yield(Self.metricsChunk())
         source.finish()
+        _ = try await Self.events(from: &iterator, count: 2)
         try await response.value
     }
 
@@ -75,6 +76,7 @@ struct MLXExecutorStreamingTests {
 
         source.yield(Self.metricsChunk())
         source.finish()
+        _ = try await #require(iterator.next())
         try await response.value
     }
 
@@ -91,6 +93,20 @@ struct MLXExecutorStreamingTests {
             return
         }
         #expect(fragment.content == text)
+    }
+
+    @available(macOS 27.0, iOS 27.0, visionOS 27.0, *)
+    private static func events(
+        from iterator: inout LanguageModelExecutorGenerationChannel.AsyncIterator,
+        count: Int
+    ) async throws -> [any LanguageModelExecutorGenerationChannel.Event] {
+        var events: [any LanguageModelExecutorGenerationChannel.Event] = []
+        for _ in 0..<count {
+            if let event = try await iterator.next() {
+                events.append(event)
+            }
+        }
+        return events
     }
 
     @available(macOS 27.0, iOS 27.0, visionOS 27.0, *)
