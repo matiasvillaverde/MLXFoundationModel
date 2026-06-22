@@ -10,30 +10,14 @@ public enum MLXJSONTextExtractor {
     }
 
     private static func scanForJSONObject(in text: String) -> String? {
+        let scanner = MLXBalancedPrefixScanner(text: text)
         var searchStart = text.startIndex
         while let openingBrace = text[searchStart...].firstIndex(of: "{") {
-            if let object = firstJSONObject(startingAt: openingBrace, in: text) {
+            if let object = scanner.scan(from: openingBrace, opener: "{", closer: "}"),
+                isJSONObject(object) {
                 return object
             }
             searchStart = text.index(after: openingBrace)
-        }
-        return nil
-    }
-
-    private static func firstJSONObject(
-        startingAt start: String.Index,
-        in text: String
-    ) -> String? {
-        var end = text.index(after: start)
-        while end <= text.endIndex {
-            let candidate = String(text[start..<end])
-            if isJSONObject(candidate) {
-                return candidate
-            }
-            guard end < text.endIndex else {
-                return nil
-            }
-            end = text.index(after: end)
         }
         return nil
     }
