@@ -629,6 +629,7 @@ private final class Gemma4TextModelInner: Module {
     let config: Gemma4TextConfiguration
     let firstKVSharedLayerIndex: Int
     let previousKVs: [Int]
+    let sharedKVSourceLayerIndices: Set<Int>
 
     @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding
     @ModuleInfo(key: "layers") var layers: [Gemma4DecoderLayer]
@@ -660,6 +661,7 @@ private final class Gemma4TextModelInner: Module {
             }
         }
         self.previousKVs = previousKVs
+        self.sharedKVSourceLayerIndices = Set(previousKVs[firstKVSharedLayerIndex...])
 
         _embedTokens.wrappedValue = Embedding(
             embeddingCount: config.vocabSize,
@@ -704,24 +706,33 @@ private final class Gemma4TextModelInner: Module {
         hidden = (hidden * MLXArray(embedScale, dtype: .float32)).asType(hidden.dtype)
 
         let perLayerInputs = makePerLayerInputs(inputIDs: inputs, hiddenStates: hidden)
-        let cacheArray = paddedCache(cache)
-        let masks = makeMasks(hiddenStates: hidden, cache: cacheArray)
+        let singleToken = hidden.dim(1) == 1
+        let paddedCacheArray = singleToken ? [] : cacheArray(cache, padToLayerCount: true)
+        let masks = singleToken ? [] : makeMasks(hiddenStates: hidden, cache: paddedCacheArray)
 
         var intermediates = Array<(keys: MLXArray, values: MLXArray, offset: Int)?>(repeating: nil, count: layers.count)
         for (index, layer) in layers.enumerated() {
             let previousIndex = previousKVs[index]
             let shared = intermediates[previousIndex]
             let perLayerInput = perLayerInputs?[0..., 0..., index, 0...]
+            let layerCache: KVCache? =
+                if singleToken {
+                    if let cache, index < cache.count { cache[index] } else { nil }
+                } else {
+                    paddedCacheArray[index]
+                }
             let result = layer(
                 hidden,
-                mask: masks[index],
-                cache: cacheArray[index],
+                mask: singleToken ? .none : masks[index],
+                cache: layerCache,
                 perLayerInput: perLayerInput,
                 sharedKV: shared.map { ($0.keys, $0.values) },
                 sharedOffset: shared?.offset
             )
             hidden = result.output
-            intermediates[index] = (result.kv.keys, result.kv.values, result.offset)
+            if sharedKVSourceLayerIndices.contains(index) {
+                intermediates[index] = (result.kv.keys, result.kv.values, result.offset)
+            }
         }
 
         return norm(hidden)
@@ -763,9 +774,9 @@ private final class Gemma4TextModelInner: Module {
         return (projected + tokenInputs) * MLXArray(perLayerInputScale, dtype: hiddenStates.dtype)
     }
 
-    private func paddedCache(_ cache: [KVCache]?) -> [KVCache?] {
+    private func cacheArray(_ cache: [KVCache]?, padToLayerCount: Bool) -> [KVCache?] {
         var cacheArray = cache?.map { Optional($0) } ?? []
-        if cacheArray.count < layers.count {
+        if padToLayerCount, cacheArray.count < layers.count {
             cacheArray.append(contentsOf: Array(repeating: nil, count: layers.count - cacheArray.count))
         }
         return cacheArray
@@ -830,12 +841,79 @@ private final class Gemma4LanguageModel: Module {
     }
 
     func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
-        var output = model(inputs, cache: cache)
-        output = model.embedTokens.asLinear(output)
+        logits(from: model(inputs, cache: cache))
+    }
+
+    func prepare(_ input: LMInput, cache: [KVCache], windowSize: Int?) throws -> PrepareResult {
+        let prefillStepSize = windowSize ?? GenerationConstants.defaultPrefillStepSize
+        let controller = MLXGenerationDiagnostics.currentAdaptivePrefillController
+        var y = input.text
+
+        guard y.tokens.size > 0 else {
+            let emptyToken = MLXArray(Int32(0))[0 ..< 0]
+            return .tokens(.init(tokens: emptyToken))
+        }
+
+        while true {
+            let remainingTokenCount = y.tokens.size
+            let chunkSize = adaptiveChunkSize(
+                remainingTokenCount: remainingTokenCount,
+                prefillStepSize: prefillStepSize,
+                controller: controller
+            )
+            guard remainingTokenCount > chunkSize else {
+                break
+            }
+
+            let memoryBeforeBytes = Int64(Memory.activeMemory)
+            let chunk = y[.newAxis, ..<chunkSize]
+            _ = model(chunk.tokens, cache: cache.isEmpty ? nil : cache)
+            eval(cache)
+            let memoryAfterBytes = Int64(Memory.activeMemory)
+            controller?.recordChunk(
+                tokenCount: chunkSize,
+                memoryBeforeBytes: memoryBeforeBytes,
+                memoryAfterBytes: memoryAfterBytes
+            )
+            MLXGenerationDiagnostics.recordPrefillChunk(
+                chunkSize: chunkSize,
+                remainingTokenCount: remainingTokenCount,
+                prefillStepSize: prefillStepSize,
+                memoryBeforeBytes: memoryBeforeBytes,
+                memoryAfterBytes: memoryAfterBytes
+            )
+            y = y[chunkSize...]
+        }
+
+        let hiddenStates = model(y[.newAxis].tokens, cache: cache.isEmpty ? nil : cache)
+        return .logits(.init(logits: logitsForLastToken(from: hiddenStates)))
+    }
+
+    private func logits(from hiddenStates: MLXArray) -> MLXArray {
+        var output = model.embedTokens.asLinear(hiddenStates)
         if let softcap = config.finalLogitSoftcapping {
             output = tanh(output / softcap) * softcap
         }
         return output
+    }
+
+    private func logitsForLastToken(from hiddenStates: MLXArray) -> MLXArray {
+        logits(from: hiddenStates[0..., -1, 0...])
+            .reshaped([hiddenStates.dim(0), 1, config.vocabSize])
+    }
+
+    private func adaptiveChunkSize(
+        remainingTokenCount: Int,
+        prefillStepSize: Int,
+        controller: MLXAdaptivePrefillChunkController?
+    ) -> Int {
+        let requested = min(max(1, prefillStepSize), max(1, remainingTokenCount))
+        guard let controller else {
+            return requested
+        }
+        let decision = controller.decision(remainingTokenCount: remainingTokenCount)
+        MLXGenerationDiagnostics.recordAdaptivePrefillChunk(decision.snapshot)
+        return min(max(1, decision.selectedChunkSize), requested)
     }
 }
 
@@ -857,6 +935,10 @@ internal final class Gemma4Model: Module, LLMModel {
 
     func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
         languageModel(inputs, cache: cache)
+    }
+
+    func prepare(_ input: LMInput, cache: [KVCache], windowSize: Int?) throws -> PrepareResult {
+        try languageModel.prepare(input, cache: cache, windowSize: windowSize)
     }
 
     func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
