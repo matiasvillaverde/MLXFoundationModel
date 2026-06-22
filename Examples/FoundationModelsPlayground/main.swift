@@ -27,6 +27,9 @@ struct PlaygroundConfiguration: Sendable {
     let modelURL: URL
     let modelID: String
     let exampleID: String?
+    let benchmarkPrompt: String?
+    let benchmarkInstructions: String?
+    let benchmarkMaxTokens: Int?
 
     static func parse() throws -> Self {
         let arguments = Array(CommandLine.arguments.dropFirst())
@@ -44,11 +47,39 @@ struct PlaygroundConfiguration: Sendable {
             modelID: value(for: "--model-id", in: arguments)
                 ?? environment["MLX_FOUNDATION_MODEL_ID"]
                 ?? "local-mlx-model",
-            exampleID: value(for: "--example", in: arguments)
+            exampleID: value(for: "--example", in: arguments),
+            benchmarkPrompt: value(for: "--prompt", in: arguments)
+                ?? environment["MLX_PROFILE_PROMPT"],
+            benchmarkInstructions: value(for: "--instructions", in: arguments)
+                ?? environment["MLX_PROFILE_INSTRUCTIONS"],
+            benchmarkMaxTokens: intValue(for: "--max-tokens", in: arguments)
+                ?? intValue(environment["MLX_PROFILE_MAX_TOKENS"])
         )
     }
 
     var selectedExamples: [FoundationModelPlaygroundExample] {
+        if let benchmarkPrompt, !benchmarkPrompt.isEmpty {
+            return [
+                FoundationModelPlaygroundExample(
+                    id: "benchmark",
+                    title: "Benchmark",
+                    request: MLXBridgeRequest(
+                        messages: [
+                            MLXBridgeMessage(role: .user, content: benchmarkPrompt)
+                        ],
+                        instructions: benchmarkInstructions
+                            ?? "You are a concise assistant. Do not think aloud."
+                    ),
+                    sampling: .deterministic,
+                    limits: ResourceLimits(
+                        maxTokens: benchmarkMaxTokens ?? 128,
+                        maxTime: .seconds(300),
+                        reusePromptCache: false
+                    )
+                )
+            ]
+        }
+
         guard let exampleID else {
             return FoundationModelPlaygroundExamples.all
         }
@@ -67,6 +98,20 @@ struct PlaygroundConfiguration: Sendable {
             return nil
         }
         return arguments[valueIndex]
+    }
+
+    private static func intValue(
+        for flag: String,
+        in arguments: [String]
+    ) -> Int? {
+        value(for: flag, in: arguments).flatMap(intValue)
+    }
+
+    private static func intValue(_ value: String?) -> Int? {
+        guard let value, let parsed = Int(value), parsed > 0 else {
+            return nil
+        }
+        return parsed
     }
 }
 
@@ -150,7 +195,31 @@ struct DirectMLXPlayground {
             return "usage unavailable"
         }
         let promptTokens = usage.promptTokens.map(String.init) ?? "unknown"
-        return "tokens prompt=\(promptTokens) generated=\(usage.generatedTokens) total=\(usage.totalTokens)"
+        var fields = [
+            "tokens prompt=\(promptTokens) generated=\(usage.generatedTokens) total=\(usage.totalTokens)"
+        ]
+
+        if let timing = metrics?.timing {
+            let totalSeconds = seconds(timing.totalTime)
+            let promptSeconds = timing.promptProcessingTime.map(seconds)
+            let generationSeconds = max(totalSeconds - (promptSeconds ?? 0), 0)
+            if generationSeconds > 0 {
+                fields.append(String(
+                    format: "generation=%.2f tok/s",
+                    Double(usage.generatedTokens) / generationSeconds
+                ))
+            }
+            if let promptSeconds {
+                fields.append(String(format: "prompt=%.3fs", promptSeconds))
+            }
+            fields.append(String(format: "total=%.3fs", totalSeconds))
+        }
+
+        return fields.joined(separator: " ")
+    }
+
+    private static func seconds(_ duration: Duration) -> Double {
+        Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18
     }
 
     private static func modelPromptStyle(for configuration: PlaygroundConfiguration) -> MLXPromptStyle {

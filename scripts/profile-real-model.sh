@@ -5,6 +5,9 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODEL_PATH="${MLX_PROFILE_MODEL_PATH:-$ROOT_DIR/.models/Qwen3-0.6B-4bit}"
 MODEL_ID="${MLX_PROFILE_MODEL_ID:-qwen3-0.6b-4bit}"
 EXAMPLE_ID="${MLX_PROFILE_EXAMPLE:-streaming-chat}"
+PROMPT="${MLX_PROFILE_PROMPT:-}"
+INSTRUCTIONS="${MLX_PROFILE_INSTRUCTIONS:-}"
+MAX_TOKENS="${MLX_PROFILE_MAX_TOKENS:-}"
 TEMPLATE="${MLX_PROFILE_TEMPLATE:-Time Profiler}"
 TIME_LIMIT="${MLX_PROFILE_TIME_LIMIT:-20s}"
 OUTPUT_DIR="${MLX_PROFILE_OUTPUT_DIR:-$ROOT_DIR/.build/reports/profiles}"
@@ -21,6 +24,9 @@ Environment:
   MLX_PROFILE_MODEL_PATH       Model directory. Defaults to .models/Qwen3-0.6B-4bit.
   MLX_PROFILE_MODEL_ID         Catalog/model identifier. Defaults to qwen3-0.6b-4bit.
   MLX_PROFILE_EXAMPLE          Playground example id. Defaults to streaming-chat.
+  MLX_PROFILE_PROMPT           Optional benchmark prompt. Overrides MLX_PROFILE_EXAMPLE.
+  MLX_PROFILE_INSTRUCTIONS     Optional system instructions for MLX_PROFILE_PROMPT.
+  MLX_PROFILE_MAX_TOKENS       Optional generated-token limit for MLX_PROFILE_PROMPT.
   MLX_PROFILE_TEMPLATE         xctrace template. Defaults to Time Profiler.
   MLX_PROFILE_TIME_LIMIT       xctrace time limit. Defaults to 20s.
   MLX_PROFILE_OUTPUT_DIR       Output directory. Defaults to .build/reports/profiles.
@@ -146,9 +152,13 @@ mkdir -p "$OUTPUT_DIR"
 
 RUN_ID="$(date +%Y%m%d-%H%M%S)"
 SAFE_TEMPLATE="$(printf '%s' "$TEMPLATE" | tr '[:upper:] ' '[:lower:]-' | tr -cd '[:alnum:]-')"
-TRACE_PATH="$OUTPUT_DIR/${MODEL_ID}-${EXAMPLE_ID}-${SAFE_TEMPLATE}-${RUN_ID}.trace"
-STDOUT_PATH="$OUTPUT_DIR/${MODEL_ID}-${EXAMPLE_ID}-${SAFE_TEMPLATE}-${RUN_ID}.stdout"
-TOC_PATH="$OUTPUT_DIR/${MODEL_ID}-${EXAMPLE_ID}-${SAFE_TEMPLATE}-${RUN_ID}-toc.xml"
+RUN_LABEL="$EXAMPLE_ID"
+if [[ -n "$PROMPT" ]]; then
+  RUN_LABEL="benchmark"
+fi
+TRACE_PATH="$OUTPUT_DIR/${MODEL_ID}-${RUN_LABEL}-${SAFE_TEMPLATE}-${RUN_ID}.trace"
+STDOUT_PATH="$OUTPUT_DIR/${MODEL_ID}-${RUN_LABEL}-${SAFE_TEMPLATE}-${RUN_ID}.stdout"
+TOC_PATH="$OUTPUT_DIR/${MODEL_ID}-${RUN_LABEL}-${SAFE_TEMPLATE}-${RUN_ID}-toc.xml"
 
 echo "Building $PRODUCT_NAME ($BUILD_CONFIGURATION)..."
 swift build --configuration "$BUILD_CONFIGURATION" --product "$PRODUCT_NAME"
@@ -163,6 +173,21 @@ echo "Recording $TEMPLATE for $TIME_LIMIT"
 echo "Trace:  $TRACE_PATH"
 echo "Stdout: $STDOUT_PATH"
 
+PLAYGROUND_ARGS=(
+  --model-path "$MODEL_PATH"
+  --model-id "$MODEL_ID"
+  --example "$EXAMPLE_ID"
+)
+if [[ -n "$PROMPT" ]]; then
+  PLAYGROUND_ARGS+=(--prompt "$PROMPT")
+fi
+if [[ -n "$INSTRUCTIONS" ]]; then
+  PLAYGROUND_ARGS+=(--instructions "$INSTRUCTIONS")
+fi
+if [[ -n "$MAX_TOKENS" ]]; then
+  PLAYGROUND_ARGS+=(--max-tokens "$MAX_TOKENS")
+fi
+
 set +e
 xcrun xctrace record \
   --template "$TEMPLATE" \
@@ -171,9 +196,7 @@ xcrun xctrace record \
   --target-stdout "$STDOUT_PATH" \
   --no-prompt \
   --launch -- "$BINARY_PATH" \
-  --model-path "$MODEL_PATH" \
-  --model-id "$MODEL_ID" \
-  --example "$EXAMPLE_ID"
+  "${PLAYGROUND_ARGS[@]}"
 XCTRACE_STATUS="$?"
 set -e
 
