@@ -12,6 +12,7 @@ GENERATION_TOKENS="${MLX_REAL_MODEL_GENERATION_TOKENS:-2}"
 GENERATION_TIMEOUT_SECONDS="${MLX_REAL_MODEL_GENERATION_TIMEOUT_SECONDS:-120}"
 ALLOW_OVERSIZED_MODELS="${MLX_ALLOW_OVERSIZED_MODELS:-0}"
 SKIP_BUILD_AFTER_FIRST="${MLX_REAL_MODEL_SKIP_BUILD_AFTER_FIRST:-1}"
+MODEL_STORAGE_TIMEOUT_SECONDS="${MLX_MODEL_STORAGE_TIMEOUT_SECONDS:-10}"
 DRY_RUN="${MLX_REAL_MODEL_DRY_RUN:-0}"
 
 if ! command -v python3 >/dev/null 2>&1; then
@@ -46,6 +47,51 @@ except subprocess.TimeoutExpired:
 PY
 }
 
+check_model_storage() {
+  python3 - "$MODEL_DIR" "$MODEL_STORAGE_TIMEOUT_SECONDS" <<'PY'
+import os
+import signal
+import sys
+
+model_dir = sys.argv[1]
+timeout_seconds = int(sys.argv[2])
+
+
+def timeout_handler(_signum, _frame):
+    raise TimeoutError
+
+
+signal.signal(signal.SIGALRM, timeout_handler)
+signal.alarm(timeout_seconds)
+
+try:
+    if not os.path.isdir(model_dir):
+        print(
+            f"Model directory does not exist: {model_dir}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    with os.scandir(model_dir) as entries:
+        next(entries, None)
+except TimeoutError:
+    print(
+        f"Model directory did not respond within {timeout_seconds}s: {model_dir}",
+        file=sys.stderr,
+    )
+    print(
+        "Check the model volume or set MLX_TEST_MODELS_DIR to a responsive model root.",
+        file=sys.stderr,
+    )
+    sys.exit(124)
+except OSError as error:
+    print(f"Cannot inspect model directory {model_dir}: {error}", file=sys.stderr)
+    sys.exit(1)
+finally:
+    signal.alarm(0)
+PY
+}
+
 host_memory_gb() {
   python3 <<'PY'
 import os
@@ -70,6 +116,7 @@ PY
 }
 
 HOST_MEMORY_GB="${MLX_HOST_MEMORY_GB:-$(host_memory_gb)}"
+check_model_storage
 
 mapfile -t MODELS < <(
   python3 - "$CATALOG_PATH" "$SCOPE" "$MODEL_DIR" "$HOST_MEMORY_GB" "$ALLOW_OVERSIZED_MODELS" <<'PY'
@@ -214,6 +261,7 @@ echo "Host RAM:              ${HOST_MEMORY_GB} GiB"
 echo "Selected model count:  ${#MODELS[@]}"
 echo "Per-model timeout:     ${MODEL_TIMEOUT_SECONDS}s"
 echo "Feature timeout:       ${FEATURE_TIMEOUT_SECONDS}s"
+echo "Storage timeout:       ${MODEL_STORAGE_TIMEOUT_SECONDS}s"
 echo "Generation token cap:  ${GENERATION_TOKENS}"
 echo "Skip rebuild checks:   $([[ "$SKIP_BUILD_AFTER_FIRST" == "1" ]] && echo "enabled" || echo "disabled")"
 if [[ "$DRY_RUN" == "1" ]]; then

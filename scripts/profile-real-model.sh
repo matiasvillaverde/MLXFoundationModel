@@ -11,6 +11,7 @@ OUTPUT_DIR="${MLX_PROFILE_OUTPUT_DIR:-$ROOT_DIR/.build/reports/profiles}"
 MIN_FREE_GIB="${MLX_PROFILE_MIN_FREE_GIB:-8}"
 PRODUCT_NAME="${MLX_PROFILE_PRODUCT:-FoundationModelsPlayground}"
 BUILD_CONFIGURATION="${CONFIGURATION:-release}"
+MODEL_STORAGE_TIMEOUT_SECONDS="${MLX_MODEL_STORAGE_TIMEOUT_SECONDS:-10}"
 
 usage() {
   cat <<'USAGE'
@@ -24,6 +25,8 @@ Environment:
   MLX_PROFILE_TIME_LIMIT       xctrace time limit. Defaults to 20s.
   MLX_PROFILE_OUTPUT_DIR       Output directory. Defaults to .build/reports/profiles.
   MLX_PROFILE_MIN_FREE_GIB     Refuse to start below this free-space floor. Defaults to 8.
+  MLX_MODEL_STORAGE_TIMEOUT_SECONDS
+                                Refuse to start if the model path does not respond within this many seconds.
   CONFIGURATION                Swift build configuration. Defaults to release.
 
 Examples:
@@ -43,16 +46,84 @@ if ! command -v swift >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "python3 is required" >&2
+  exit 1
+fi
+
 if ! TEMPLATES="$(xcrun xctrace list templates)"; then
   echo "xcrun xctrace is required" >&2
   exit 1
 fi
 
-if [[ ! -d "$MODEL_PATH" ]]; then
-  echo "Model path does not exist: $MODEL_PATH" >&2
-  echo "Download smoke models with: MLX_ASSUME_YES=1 MLX_MODEL_FILTER=smoke make download-test-models" >&2
-  exit 1
-fi
+python3 - "$MODEL_PATH" "$MODEL_STORAGE_TIMEOUT_SECONDS" <<'PY'
+import os
+import signal
+import sys
+
+model_path = sys.argv[1]
+timeout_seconds = int(sys.argv[2])
+
+
+def timeout_handler(_signum, _frame):
+    raise TimeoutError
+
+
+signal.signal(signal.SIGALRM, timeout_handler)
+signal.alarm(timeout_seconds)
+
+try:
+    if not os.path.isdir(model_path):
+        print(f"Model path does not exist: {model_path}", file=sys.stderr)
+        print(
+            "Download smoke models with: MLX_ASSUME_YES=1 MLX_MODEL_FILTER=smoke make download-test-models",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    config_path = os.path.join(model_path, "config.json")
+    with open(config_path, "rb") as file:
+        file.read(1)
+
+    has_tokenizer = any(
+        os.path.isfile(os.path.join(model_path, filename))
+        for filename in ("tokenizer.json", "tokenizer.model")
+    )
+    has_weights = False
+    with os.scandir(model_path) as entries:
+        for entry in entries:
+            if entry.is_file() and (
+                entry.name == "model.safetensors.index.json"
+                or entry.name.endswith(".safetensors")
+            ):
+                has_weights = True
+                break
+
+    if not has_tokenizer:
+        print(f"Model path is missing tokenizer files: {model_path}", file=sys.stderr)
+        sys.exit(1)
+    if not has_weights:
+        print(f"Model path is missing safetensors weights: {model_path}", file=sys.stderr)
+        sys.exit(1)
+except FileNotFoundError as error:
+    print(f"Model path is incomplete: {error.filename}", file=sys.stderr)
+    sys.exit(1)
+except TimeoutError:
+    print(
+        f"Model path did not respond within {timeout_seconds}s: {model_path}",
+        file=sys.stderr,
+    )
+    print(
+        "Check the model volume or set MLX_PROFILE_MODEL_PATH to a responsive model directory.",
+        file=sys.stderr,
+    )
+    sys.exit(124)
+except OSError as error:
+    print(f"Cannot inspect model path {model_path}: {error}", file=sys.stderr)
+    sys.exit(1)
+finally:
+    signal.alarm(0)
+PY
 
 if ! grep -Fxq "$TEMPLATE" <<<"$TEMPLATES"; then
   echo "xctrace template is not installed: $TEMPLATE" >&2

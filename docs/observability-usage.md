@@ -76,3 +76,7 @@ make test-all-architectures
 On 32 GB hosts, keep the default runner behavior: it runs one model at a time,
 uses short generations by default, and skips oversized models unless
 `MLX_ALLOW_OVERSIZED_MODELS=1` is set.
+
+The real-model and profiling scripts fail fast when the model volume is not
+responsive. Override the default 10-second storage preflight with
+`MLX_MODEL_STORAGE_TIMEOUT_SECONDS` when testing slow external disks.
