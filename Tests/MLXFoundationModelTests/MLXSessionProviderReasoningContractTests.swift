@@ -21,6 +21,31 @@ struct MLXSessionProviderReasoningContractTests {
         #expect(input.sampling.advanced.reasoningBudget?.endMarker == "<channel|>")
     }
 
+    @Test("request builder replays Gemma reasoning transcript entries as native thought channel")
+    func requestBuilderReplaysGemmaReasoningTranscriptEntriesAsNativeThoughtChannel() throws {
+        guard #available(macOS 27.0, iOS 27.0, visionOS 27.0, *) else {
+            return
+        }
+
+        let transcript = Transcript(entries: [
+            .reasoning(.init(
+                segments: [.text(.init(content: "The answer needs a city lookup."))]
+            )),
+            .prompt(.init(segments: [.text(.init(content: "Continue."))]))
+        ])
+        let request = Self.request(transcript: transcript)
+
+        let input = try FoundationModelsRequestBuilder.build(from: request, model: Self.gemmaModel)
+        let expected = """
+        <|turn>model
+        <|channel>thought
+        The answer needs a city lookup.<channel|><turn|>
+        """
+
+        #expect(input.context.contains(expected))
+        #expect(!input.context.contains("Reasoning:"))
+    }
+
     @available(macOS 27.0, iOS 27.0, visionOS 27.0, *)
     private static var reasoningRequest: LanguageModelExecutorGenerationRequest {
         LanguageModelExecutorGenerationRequest(
@@ -32,6 +57,19 @@ struct MLXSessionProviderReasoningContractTests {
             schema: nil,
             generationOptions: GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 8),
             contextOptions: ContextOptions(reasoningLevel: .light),
+            metadata: [:]
+        )
+    }
+
+    @available(macOS 27.0, iOS 27.0, visionOS 27.0, *)
+    private static func request(transcript: Transcript) -> LanguageModelExecutorGenerationRequest {
+        LanguageModelExecutorGenerationRequest(
+            id: UUID(),
+            transcript: transcript,
+            enabledTools: [],
+            schema: nil,
+            generationOptions: GenerationOptions(samplingMode: .greedy, maximumResponseTokens: 8),
+            contextOptions: ContextOptions(),
             metadata: [:]
         )
     }

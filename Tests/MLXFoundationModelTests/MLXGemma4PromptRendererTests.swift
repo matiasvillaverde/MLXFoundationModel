@@ -42,6 +42,34 @@ struct MLXGemma4PromptRendererTests {
         #expect(Self.occurrences(of: "<|turn>model\n", in: rendered.prompt) == 2)
     }
 
+    @Test("renders assistant reasoning history as native thought channel")
+    func rendersAssistantReasoningHistoryAsNativeThoughtChannel() {
+        let rendered = MLXPromptRenderer.render(Self.reasoningHistoryRequest, style: .gemma)
+        let expected = """
+        <|turn>model
+        <|channel>thought
+        Checked the tool result.<channel|>Final.
+        """
+
+        #expect(rendered.prompt.contains(expected))
+        #expect(rendered.prompt.contains("Final.<turn|>"))
+        #expect(!rendered.prompt.contains("Reasoning:"))
+    }
+
+    @Test("renders reasoning history without requiring a tool call")
+    func rendersReasoningHistoryWithoutRequiringToolCall() {
+        let rendered = MLXPromptRenderer.render(Self.reasoningOnlyHistoryRequest, style: .gemma)
+        let expected = """
+        <|turn>model
+        <|channel>thought
+        Considered the answer.<channel|><turn|>
+        """
+
+        #expect(rendered.prompt.contains(expected))
+        #expect(!rendered.prompt.contains("<|tool_call>"))
+        #expect(!rendered.prompt.contains("Reasoning:"))
+    }
+
     @Test("enriches tool schemas without mutating caller definitions")
     func enrichesToolSchemasWithoutMutatingCallerDefinitions() {
         let tool = Self.delegateTool
@@ -85,6 +113,30 @@ struct MLXGemma4PromptRendererTests {
                 MLXBridgeMessage(role: .assistant, content: "The weather is sunny.")
             ],
             tools: [weatherTool]
+        )
+    }
+
+    private static var reasoningHistoryRequest: MLXBridgeRequest {
+        MLXBridgeRequest(
+            messages: [
+                MLXBridgeMessage(
+                    role: .assistant,
+                    content: "Final.",
+                    reasoningContent: "Checked the tool result."
+                )
+            ]
+        )
+    }
+
+    private static var reasoningOnlyHistoryRequest: MLXBridgeRequest {
+        MLXBridgeRequest(
+            messages: [
+                MLXBridgeMessage(
+                    role: .assistant,
+                    content: "",
+                    reasoningContent: "Considered the answer."
+                )
+            ]
         )
     }
 

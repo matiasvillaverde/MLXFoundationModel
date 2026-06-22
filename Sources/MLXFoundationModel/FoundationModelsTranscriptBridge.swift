@@ -88,7 +88,8 @@ enum FoundationModelsTranscriptBridge {
         }
         result.messages.append(MLXBridgeMessage(
             role: .assistant,
-            content: "Reasoning:\n\(text)"
+            content: "",
+            reasoningContent: text
         ))
     }
 

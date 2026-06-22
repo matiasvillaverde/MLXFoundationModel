@@ -5,10 +5,17 @@ public struct MLXBridgeMessage: Codable, Equatable, Hashable, Sendable {
     public let role: MLXBridgeRole
     public let content: String
     public let name: String?
+    public let reasoningContent: String?
 
-    public init(role: MLXBridgeRole, content: String, name: String? = nil) {
+    public init(
+        role: MLXBridgeRole,
+        content: String,
+        name: String? = nil,
+        reasoningContent: String? = nil
+    ) {
         self.role = role
         self.content = content
         self.name = name
+        self.reasoningContent = reasoningContent
     }
 }
