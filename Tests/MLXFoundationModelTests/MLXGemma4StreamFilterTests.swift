@@ -39,6 +39,19 @@ struct MLXGemma4StreamFilterTests {
         #expect(output == "<think>\nreasoning</think>\nAnswer")
     }
 
+    @Test("drops replacement characters at thought marker boundaries")
+    func dropsReplacementCharactersAtThoughtMarkerBoundaries() {
+        var filter = MLXGemma4StreamFilter()
+        let output = [
+            filter.feed("<|channel>thought\nreasoning\u{FFFD}<chan"),
+            filter.feed("nel|>"),
+            filter.feed("\u{FFFD}Answer"),
+            filter.finish()
+        ].joined()
+
+        #expect(output == "<think>\nreasoning</think>\nAnswer")
+    }
+
     @Test("drops tool response protocol markers")
     func dropsToolResponseProtocolMarkers() {
         var filter = MLXGemma4StreamFilter()

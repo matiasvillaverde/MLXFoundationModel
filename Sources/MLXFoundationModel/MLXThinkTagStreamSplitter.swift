@@ -36,6 +36,7 @@ struct MLXThinkTagStreamSplitter: Sendable {
     private var accumulatedReasoning = ""
     private var hasEmittedResponse = false
     private var shouldDropMarkerNewline = false
+    private var shouldDropLeadingReplacement = false
 
     init(startInReasoning: Bool = false) {
         mode = startInReasoning ? .reasoning : .response
@@ -49,7 +50,10 @@ struct MLXThinkTagStreamSplitter: Sendable {
         guard !text.isEmpty else {
             return []
         }
-        buffer += text
+        buffer += String.consumingLeadingUnicodeReplacementIfNeeded(
+            from: text,
+            shouldDrop: &shouldDropLeadingReplacement
+        )
         return drain(final: false)
     }
 
@@ -65,8 +69,16 @@ struct MLXThinkTagStreamSplitter: Sendable {
                 emitBufferedSuffix(final: final, into: &segments)
                 break
             }
-            appendSegment(String(buffer[..<marker.range.lowerBound]), to: &segments)
+            appendSegment(
+                String(buffer[..<marker.range.lowerBound])
+                    .droppingTrailingUnicodeReplacementCharacter(),
+                to: &segments
+            )
             buffer.removeSubrange(..<marker.range.upperBound)
+            String.dropLeadingUnicodeReplacement(
+                from: &buffer,
+                orNextChunk: &shouldDropLeadingReplacement
+            )
             apply(marker.action)
             shouldDropMarkerNewline = true
         }
@@ -77,7 +89,11 @@ struct MLXThinkTagStreamSplitter: Sendable {
     private mutating func emitBufferedSuffix(final: Bool, into segments: inout [Segment]) {
         let keepCount = final ? 0 : partialMarkerSuffixLength(in: buffer)
         let endIndex = buffer.index(buffer.endIndex, offsetBy: -keepCount)
-        appendSegment(String(buffer[..<endIndex]), to: &segments)
+        let text = String(buffer[..<endIndex])
+        appendSegment(
+            keepCount > 0 ? text.droppingTrailingUnicodeReplacementCharacter() : text,
+            to: &segments
+        )
         buffer = String(buffer[endIndex...])
     }
 

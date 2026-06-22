@@ -25,9 +25,13 @@ struct MLXGemma4StreamFilter {
 
     private var buffer = ""
     private var inThought = false
+    private var shouldDropLeadingReplacement = false
 
     mutating func feed(_ text: String) -> String {
-        buffer += text
+        buffer += String.consumingLeadingUnicodeReplacementIfNeeded(
+            from: text,
+            shouldDrop: &shouldDropLeadingReplacement
+        )
         return drain(final: false)
     }
 
@@ -50,7 +54,12 @@ struct MLXGemma4StreamFilter {
             }
 
             output += String(buffer[..<match.range.lowerBound])
+                .droppingTrailingUnicodeReplacementCharacter()
             buffer = String(buffer[match.range.upperBound...])
+            String.dropLeadingUnicodeReplacement(
+                from: &buffer,
+                orNextChunk: &shouldDropLeadingReplacement
+            )
             output += consume(marker: match.marker)
         }
 
@@ -73,7 +82,10 @@ struct MLXGemma4StreamFilter {
         let split = retainCount == 0
             ? buffer.endIndex
             : buffer.index(buffer.endIndex, offsetBy: -retainCount)
-        let visible = String(buffer[..<split])
+        var visible = String(buffer[..<split])
+        if retainCount > 0 {
+            visible = visible.droppingTrailingUnicodeReplacementCharacter()
+        }
         buffer = String(buffer[split...])
         return visible
     }

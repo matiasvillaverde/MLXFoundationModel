@@ -19,16 +19,21 @@ struct MLXMiniMaxM3StreamFilter {
     private static let markers = replacements.map(\.marker)
 
     private var buffer = ""
+    private var shouldDropLeadingReplacement = false
 
     mutating func feed(_ text: String) -> String {
         guard !text.isEmpty else {
             return ""
         }
 
-        buffer += text
+        buffer += String.consumingLeadingUnicodeReplacementIfNeeded(
+            from: text,
+            shouldDrop: &shouldDropLeadingReplacement
+        )
         let retainCount = partialMarkerSuffixLength(in: buffer)
         guard retainCount > 0 else {
             defer {
+                shouldDropLeadingReplacement = Self.endsWithMarker(buffer)
                 buffer = ""
             }
             return Self.replaceMarkers(in: buffer)
@@ -36,7 +41,9 @@ struct MLXMiniMaxM3StreamFilter {
 
         let split = buffer.index(buffer.endIndex, offsetBy: -retainCount)
         let ready = String(buffer[..<split])
+            .droppingTrailingUnicodeReplacementCharacter()
         buffer = String(buffer[split...])
+        shouldDropLeadingReplacement = Self.endsWithMarker(ready)
         return Self.replaceMarkers(in: ready)
     }
 
@@ -49,10 +56,19 @@ struct MLXMiniMaxM3StreamFilter {
 
     private static func replaceMarkers(in text: String) -> String {
         replacements.reduce(text) { partial, replacement in
-            partial.replacingOccurrences(
-                of: replacement.marker,
-                with: replacement.replacement
-            )
+            partial
+                .replacingOccurrences(
+                    of: "\u{FFFD}\(replacement.marker)",
+                    with: replacement.replacement
+                )
+                .replacingOccurrences(
+                    of: "\(replacement.marker)\u{FFFD}",
+                    with: replacement.replacement
+                )
+                .replacingOccurrences(
+                    of: replacement.marker,
+                    with: replacement.replacement
+                )
         }
     }
 
@@ -71,5 +87,10 @@ struct MLXMiniMaxM3StreamFilter {
         }
 
         return 0
+    }
+    private static func endsWithMarker(_ text: String) -> Bool {
+        replacements.contains { replacement in
+            text.hasSuffix(replacement.marker)
+        }
     }
 }

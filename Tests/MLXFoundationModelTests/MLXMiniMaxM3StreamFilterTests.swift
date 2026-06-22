@@ -17,6 +17,20 @@ struct MLXMiniMaxM3StreamFilterTests {
         #expect(output == "<think>reasoning</think>Answer")
     }
 
+    @Test("drops replacement characters at thinking marker boundaries")
+    func dropsReplacementCharactersAtThinkingMarkerBoundaries() {
+        var filter = MLXMiniMaxM3StreamFilter()
+
+        let output = [
+            filter.feed("<mm:think>reasoning\u{FFFD}</mm:"),
+            filter.feed("think>"),
+            filter.feed("\u{FFFD}Answer"),
+            filter.finish()
+        ].joined()
+
+        #expect(output == "<think>reasoning</think>Answer")
+    }
+
     @Test("drops split MiniMax M3 special tokens")
     func dropsSplitMiniMaxM3SpecialTokens() {
         var filter = MLXMiniMaxM3StreamFilter()

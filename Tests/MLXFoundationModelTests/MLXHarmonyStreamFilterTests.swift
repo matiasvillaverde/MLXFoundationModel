@@ -31,6 +31,19 @@ struct MLXHarmonyStreamFilterTests {
         #expect(output == "Done")
     }
 
+    @Test("drops replacement characters at channel marker boundaries")
+    func dropsReplacementCharactersAtChannelMarkerBoundaries() {
+        var filter = MLXHarmonyStreamFilter()
+        let output = [
+            filter.feed("<|channel|>analysis<|message|>thinking\u{FFFD}<|e"),
+            filter.feed("nd|>"),
+            filter.feed("\u{FFFD}<|start|>assistant<|channel|>final<|message|>Answer<|return|>"),
+            filter.finish()
+        ].joined()
+
+        #expect(output == "<think>\nthinking</think>\nAnswer")
+    }
+
     @Test("falls back to visible text for unknown channels without recipient")
     func fallsBackToVisibleTextForUnknownChannelsWithoutRecipient() {
         var filter = MLXHarmonyStreamFilter()

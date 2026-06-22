@@ -18,12 +18,16 @@ struct MLXCohereCommandStreamFilter {
     ]
 
     private var buffer = ""
+    private var shouldDropLeadingReplacement = false
 
     mutating func feed(_ text: String) -> String {
         guard !text.isEmpty else {
             return ""
         }
-        buffer += text
+        buffer += String.consumingLeadingUnicodeReplacementIfNeeded(
+            from: text,
+            shouldDrop: &shouldDropLeadingReplacement
+        )
         return drain(final: false)
     }
 
@@ -34,14 +38,26 @@ struct MLXCohereCommandStreamFilter {
     private mutating func drain(final: Bool) -> String {
         let keepCount = final ? 0 : partialMarkerSuffixLength(in: buffer)
         let endIndex = buffer.index(buffer.endIndex, offsetBy: -keepCount)
-        let ready = String(buffer[..<endIndex])
+        var ready = String(buffer[..<endIndex])
+        if keepCount > 0 {
+            ready = ready.droppingTrailingUnicodeReplacementCharacter()
+        }
         buffer = String(buffer[endIndex...])
+        shouldDropLeadingReplacement = Self.endsWithMarker(ready)
         return Self.normalized(ready)
     }
 
     private static func normalized(_ text: String) -> String {
         var output = text
         for replacement in replacements {
+            output = output.replacingOccurrences(
+                of: "\u{FFFD}\(replacement.marker)",
+                with: replacement.replacement
+            )
+            output = output.replacingOccurrences(
+                of: "\(replacement.marker)\u{FFFD}",
+                with: replacement.replacement
+            )
             output = output.replacingOccurrences(
                 of: replacement.marker,
                 with: replacement.replacement
@@ -66,5 +82,11 @@ struct MLXCohereCommandStreamFilter {
 
     private static var longestMarkerLength: Int {
         replacements.map(\.marker.count).max() ?? 0
+    }
+
+    private static func endsWithMarker(_ text: String) -> Bool {
+        replacements.contains { replacement in
+            text.hasSuffix(replacement.marker)
+        }
     }
 }

@@ -30,6 +30,22 @@ struct MLXThinkTagStreamSplitterTests {
         ])
     }
 
+    @Test("drops replacement characters at split marker boundaries")
+    func dropsReplacementCharactersAtSplitMarkerBoundaries() {
+        var splitter = MLXThinkTagStreamSplitter()
+        var segments: [MLXThinkTagStreamSplitter.Segment] = []
+
+        segments.append(contentsOf: splitter.consume("<think>reasoning\u{FFFD}</thi"))
+        segments.append(contentsOf: splitter.consume("nk>"))
+        segments.append(contentsOf: splitter.consume("\u{FFFD}Answer"))
+        segments.append(contentsOf: splitter.finish())
+
+        #expect(segments == [
+            .init(kind: .reasoning, text: "reasoning"),
+            .init(kind: .response, text: "Answer")
+        ])
+    }
+
     @Test("preserves ordinary text and unfinished marker prose")
     func preservesOrdinaryTextAndUnfinishedMarkerProse() {
         var splitter = MLXThinkTagStreamSplitter()

@@ -33,9 +33,13 @@ struct MLXHarmonyStreamFilter {
     private var buffer = ""
     private var isHarmonyMode = false
     private var currentContentMode: ContentMode?
+    private var shouldDropLeadingReplacement = false
 
     mutating func feed(_ text: String) -> String {
-        buffer += text
+        buffer += String.consumingLeadingUnicodeReplacementIfNeeded(
+            from: text,
+            shouldDrop: &shouldDropLeadingReplacement
+        )
         return drain(final: false)
     }
 
@@ -52,6 +56,7 @@ struct MLXHarmonyStreamFilter {
                     return output
                 }
                 output += String(buffer[..<activationRange.lowerBound])
+                    .droppingTrailingUnicodeReplacementCharacter()
                 buffer = String(buffer[activationRange.lowerBound...])
                 isHarmonyMode = true
             }
@@ -97,6 +102,10 @@ struct MLXHarmonyStreamFilter {
         let mode = Self.contentMode(channel: channel)
         currentContentMode = mode
         buffer = String(buffer[messageRange.upperBound...])
+        String.dropLeadingUnicodeReplacement(
+            from: &buffer,
+            orNextChunk: &shouldDropLeadingReplacement
+        )
         return mode == .thinking ? Self.thinkOpen : ""
     }
 
@@ -124,7 +133,10 @@ struct MLXHarmonyStreamFilter {
         let split = retainCount == 0
             ? buffer.endIndex
             : buffer.index(buffer.endIndex, offsetBy: -retainCount)
-        let visible = String(buffer[..<split])
+        var visible = String(buffer[..<split])
+        if retainCount > 0 {
+            visible = visible.droppingTrailingUnicodeReplacementCharacter()
+        }
         buffer = String(buffer[split...])
         return ContentDrain(output: visible, shouldContinue: false)
     }
@@ -134,7 +146,12 @@ struct MLXHarmonyStreamFilter {
         terminatorRange: Range<String.Index>
     ) -> ContentDrain {
         let content = String(buffer[..<terminatorRange.lowerBound])
+            .droppingTrailingUnicodeReplacementCharacter()
         buffer = String(buffer[terminatorRange.upperBound...])
+        String.dropLeadingUnicodeReplacement(
+            from: &buffer,
+            orNextChunk: &shouldDropLeadingReplacement
+        )
         currentContentMode = nil
         return ContentDrain(
             output: output(for: content, mode: mode, final: true),

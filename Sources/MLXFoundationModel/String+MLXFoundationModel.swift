@@ -27,4 +27,42 @@ extension String {
         }
         return text
     }
+
+    func droppingLeadingUnicodeReplacementCharacter() -> String {
+        guard first == "\u{FFFD}" else {
+            return self
+        }
+        return String(dropFirst())
+    }
+
+    func droppingTrailingUnicodeReplacementCharacter() -> String {
+        guard last == "\u{FFFD}" else {
+            return self
+        }
+        return String(dropLast())
+    }
+
+    static func consumingLeadingUnicodeReplacementIfNeeded(
+        from text: String,
+        shouldDrop: inout Bool
+    ) -> String {
+        guard shouldDrop else {
+            return text
+        }
+        shouldDrop = false
+        return text.droppingLeadingUnicodeReplacementCharacter()
+    }
+
+    static func dropLeadingUnicodeReplacement(
+        from buffer: inout String,
+        orNextChunk shouldDrop: inout Bool
+    ) {
+        let stripped = buffer.droppingLeadingUnicodeReplacementCharacter()
+        if stripped.count != buffer.count {
+            buffer = stripped
+            shouldDrop = false
+        } else {
+            shouldDrop = buffer.isEmpty
+        }
+    }
 }

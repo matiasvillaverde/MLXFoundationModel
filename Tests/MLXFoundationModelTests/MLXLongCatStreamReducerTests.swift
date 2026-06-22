@@ -5,6 +5,19 @@ import Testing
 
 @Suite("MLX LongCat stream reducer")
 struct MLXLongCatStreamReducerTests {
+    @Test("drops replacement characters at LongCat think marker boundaries")
+    func dropsReplacementCharactersAtLongCatThinkMarkerBoundaries() {
+        var filter = MLXLongCatStreamFilter()
+        let output = [
+            filter.feed("<longcat_think>reasoning\u{FFFD}</long"),
+            filter.feed("cat_think>"),
+            filter.feed("\u{FFFD}Answer"),
+            filter.finish()
+        ].joined()
+
+        #expect(output == "<think>reasoning</think>Answer")
+    }
+
     @Test("suppresses JSON tool call while streaming visible text")
     func suppressesJSONToolCallWhileStreamingVisibleText() throws {
         var reducer = MLXToolAwareStreamReducer(tools: [Self.weatherTool])

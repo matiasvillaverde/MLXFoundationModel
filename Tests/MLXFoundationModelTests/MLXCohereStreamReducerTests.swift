@@ -20,6 +20,23 @@ struct MLXCohereStreamReducerTests {
         #expect(Self.actionKinds(in: actions) == ["responseText", "responseText", "responseUsage"])
     }
 
+    @Test("drops replacement characters at Cohere marker boundaries")
+    func dropsReplacementCharactersAtCohereMarkerBoundaries() {
+        var reducer = MLXToolAwareStreamReducer(tools: [], promptStyle: .cohereAction)
+        var actions: [MLXToolAwareStreamReducer.Action] = []
+
+        actions.append(contentsOf: reducer.consume(Self.textChunk(
+            "<|START_THINKING|>reasoning\u{FFFD}<|END_THINK"
+        )))
+        actions.append(contentsOf: reducer.consume(Self.textChunk("ING|>")))
+        actions.append(contentsOf: reducer.consume(Self.textChunk("\u{FFFD}<|START_TEXT|>Answer")))
+        actions.append(contentsOf: reducer.consume(Self.metricsChunk()))
+        actions.append(contentsOf: reducer.finish())
+
+        #expect(Self.responseTexts(in: actions).joined() == "<think>\nreasoning</think>\nAnswer")
+        #expect(Self.actionKinds(in: actions) == ["responseText", "responseText", "responseUsage"])
+    }
+
     @Test("suppresses Cohere action marker tool call while streaming")
     func suppressesCohereActionMarkerToolCallWhileStreaming() throws {
         var reducer = MLXToolAwareStreamReducer(tools: [Self.weatherTool])
