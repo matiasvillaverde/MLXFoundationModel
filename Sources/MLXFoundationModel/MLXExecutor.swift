@@ -73,25 +73,81 @@ public struct MLXExecutor: LanguageModelExecutor {
         streamingInto channel: LanguageModelExecutorGenerationChannel
     ) async throws {
         do {
-            let input = try FoundationModelsRequestBuilder.build(from: request, model: model)
+            let input = try renderRequest(request, model: model)
             let tools = FoundationModelsRequestBuilder.bridgeToolDefinitions(from: request)
             try await preloadIfNeeded(model.providerConfiguration)
+            try await translateStream(
+                input: input,
+                tools: tools,
+                request: request,
+                model: model,
+                channel: channel
+            )
+        } catch {
+            recordProviderFailure(error, model: model)
+            throw MLXErrorMapper.map(error)
+        }
+    }
+
+    private func renderRequest(
+        _ request: LanguageModelExecutorGenerationRequest,
+        model: MLXLanguageModel
+    ) throws -> LLMInput {
+        try MLXObservability.withSpan(
+            .requestRender,
+            attributes: ["model": model.providerConfiguration.modelName]
+        ) {
+            try FoundationModelsRequestBuilder.build(from: request, model: model)
+        }
+    }
+
+    private func translateStream(
+        input: LLMInput,
+        tools: [MLXBridgeToolDefinition],
+        request: LanguageModelExecutorGenerationRequest,
+        model: MLXLanguageModel,
+        channel: LanguageModelExecutorGenerationChannel
+    ) async throws {
+        try await MLXObservability.withAsyncSpan(
+            .streamTranslate,
+            attributes: ["model": model.providerConfiguration.modelName]
+        ) {
             try await MLXEventTranslator().translate(
                 await session.stream(input),
                 into: channel,
                 tools: tools,
                 promptStyle: model.model.promptStyle,
-                reasoningStartsOpen: MLXPromptTemplateRenderer.generationStartsInReasoning(
-                    reasoningOptions: FoundationModelsRequestBuilder.reasoningOptions(
-                        for: request.contextOptions.reasoningLevel,
-                        model: model
-                    ) ?? .disabled,
-                    style: model.model.promptStyle
-                )
+                reasoningStartsOpen: Self.reasoningStartsOpen(for: request, model: model)
             )
-        } catch {
-            throw MLXErrorMapper.map(error)
         }
+    }
+
+    private static func reasoningStartsOpen(
+        for request: LanguageModelExecutorGenerationRequest,
+        model: MLXLanguageModel
+    ) -> Bool {
+        MLXPromptTemplateRenderer.generationStartsInReasoning(
+            reasoningOptions: FoundationModelsRequestBuilder.reasoningOptions(
+                for: request.contextOptions.reasoningLevel,
+                model: model
+            ) ?? .disabled,
+            style: model.model.promptStyle
+        )
+    }
+
+    private func recordProviderFailure(
+        _ error: Error,
+        model: MLXLanguageModel
+    ) {
+        MLXObservability.log(
+            "provider.respond.failed",
+            category: .provider,
+            severity: .error,
+            attributes: [
+                "model": model.providerConfiguration.modelName,
+                "error": String(describing: error)
+            ]
+        )
     }
 
     private func preloadIfNeeded(_ providerConfiguration: ProviderConfiguration) async throws {

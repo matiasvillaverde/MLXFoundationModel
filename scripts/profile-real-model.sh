@@ -92,6 +92,7 @@ echo "Recording $TEMPLATE for $TIME_LIMIT"
 echo "Trace:  $TRACE_PATH"
 echo "Stdout: $STDOUT_PATH"
 
+set +e
 xcrun xctrace record \
   --template "$TEMPLATE" \
   --time-limit "$TIME_LIMIT" \
@@ -102,6 +103,17 @@ xcrun xctrace record \
   --model-path "$MODEL_PATH" \
   --model-id "$MODEL_ID" \
   --example "$EXAMPLE_ID"
+XCTRACE_STATUS="$?"
+set -e
+
+if [[ "$XCTRACE_STATUS" -ne 0 ]]; then
+  if [[ -d "$TRACE_PATH" ]]; then
+    echo "xctrace exited with status $XCTRACE_STATUS after saving the trace; continuing."
+  else
+    echo "xctrace failed with status $XCTRACE_STATUS before writing a trace." >&2
+    exit "$XCTRACE_STATUS"
+  fi
+fi
 
 if xcrun xctrace export --input "$TRACE_PATH" --toc --output "$TOC_PATH" >/dev/null 2>&1; then
   echo "Trace TOC: $TOC_PATH"
@@ -111,7 +123,11 @@ else
 fi
 
 echo "Generated output:"
-sed -n '1,120p' "$STDOUT_PATH"
+if [[ -s "$STDOUT_PATH" ]]; then
+  sed -n '1,120p' "$STDOUT_PATH"
+else
+  echo "(target stdout was empty)"
+fi
 
 echo
 du -sh "$TRACE_PATH" "$STDOUT_PATH" 2>/dev/null || true

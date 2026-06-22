@@ -23,8 +23,8 @@ internal func downloadModel(
     hub: HubApi, configuration: ModelConfiguration,
     progressHandler: @Sendable @escaping (Progress) -> Void
 ) async throws -> URL {
-    let logger = Logger(subsystem: "MLXSession", category: "ModelDownload")
-    
+    let logger = MLXObservability.logger(for: .modelLoad)
+
     do {
         switch configuration.id {
         case .id(let id, let revision):
@@ -83,9 +83,9 @@ internal func loadWeights(
     quantization: BaseConfiguration.Quantization? = nil,
     perLayerQuantization: BaseConfiguration.PerLayerQuantization? = nil
 ) throws {
-    let logger = Logger(subsystem: "MLXSession", category: "ModelWeights")
+    let logger = MLXObservability.logger(for: .modelLoad)
     logger.info("Loading model weights from: \(modelDirectory.path)")
-    
+
     // load the weights
     var weights = [String: MLXArray]()
     var metadata = [String: String]()

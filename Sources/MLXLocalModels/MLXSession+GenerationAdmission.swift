@@ -7,7 +7,15 @@ extension MLXSession {
         continuation: AsyncThrowingStream<LLMStreamChunk, Error>.Continuation
     ) async {
         do {
-            let lease = try await generationAdmission.acquire()
+            let span = MLXObservability.startSpan(.admissionWait)
+            let lease: MLXGenerationAdmissionController.Lease
+            do {
+                lease = try await generationAdmission.acquire()
+                span.end()
+            } catch {
+                span.end()
+                throw error
+            }
             cancellationState.activate()
             defer { finishGenerationAdmission(lease, cancellationState: cancellationState) }
             try await runAdmittedStream(input: input, continuation: continuation)

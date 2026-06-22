@@ -7,10 +7,10 @@ import OSLog
 internal actor MLXSession: LLMSession {
     // MARK: - Properties
 
-    let logger = Logger(subsystem: "MLXSession", category: "MLXSession")
+    let logger = MLXObservability.logger(for: .generation)
 
     #if DEBUG
-    private let debugLogger = Logger(subsystem: "MLXSession", category: "MLXSession.Debug")
+    private let debugLogger = MLXObservability.logger(for: .generation)
     #endif
 
     var configuration: ProviderConfiguration?
@@ -76,6 +76,12 @@ internal actor MLXSession: LLMSession {
             throw LLMError.invalidConfiguration("Configuration not set. Call preload first.")
         }
 
+        let span = MLXObservability.startSpan(
+            .modelLoad,
+            attributes: ["model": configuration.modelName]
+        )
+        defer { span.end() }
+
         let loadStart = clock.now
         logger.info("Preloading model from \(configuration.location.path)")
 
@@ -103,6 +109,12 @@ internal actor MLXSession: LLMSession {
             logger.error("Model not loaded: Configuration must be set via preload() before generation")
             throw LLMError.invalidConfiguration("Configuration not set. Call preload first.")
         }
+
+        let span = MLXObservability.startSpan(
+            .modelLoad,
+            attributes: ["model": configuration.modelName]
+        )
+        defer { span.end() }
 
         let loadStart = clock.now
         logger.info("Loading model from \(configuration.location.path)")
@@ -150,37 +162,57 @@ internal actor MLXSession: LLMSession {
         input: LLMInput,
         continuation: AsyncThrowingStream<LLMStreamChunk, Error>.Continuation
     ) async throws {
-        let runtimePreferences = self.runtimePreferences
+        let span = MLXObservability.startSpan(
+            .generation,
+            attributes: [
+                "model": configuration?.modelName ?? "unknown",
+                "strategy": String(describing: generationExecutionPlan?.selectedStrategy ?? .scalar)
+            ]
+        )
+        defer { span.end() }
+
+        let request = await makeScalarGenerationRunRequest(
+            input: input,
+            container: container,
+            continuation: continuation
+        )
+        let metricsData = try await generateTokens(container: container, request: request)
+
+        let totalDuration = metricsData.generationStartTime.duration(to: clock.now)
+        let metrics = metricsData.chunkMetrics(
+            totalDuration: totalDuration,
+            contextWindowSize: configuration?.compute.contextSize
+        )
+        recordGenerationSummary(metricsData: metricsData, totalDuration: totalDuration)
+        continuation.yield(LLMStreamChunk(text: "", event: .finished, metrics: metrics))
+
+        logGenerationMetrics(metricsData: metricsData, startTime: request.generationStartTime)
+    }
+
+    private func makeScalarGenerationRunRequest(
+        input: LLMInput,
+        container: ModelContainer,
+        continuation: AsyncThrowingStream<LLMStreamChunk, Error>.Continuation
+    ) async -> MLXGenerationRunRequest {
+        let currentRuntimePreferences = runtimePreferences
         let generateParams = await createGenerateParameters(
             from: input,
             container: container,
-            runtimePreferences: runtimePreferences,
+            runtimePreferences: currentRuntimePreferences,
         )
         MLXGenerationDiagnostics.recordParameters(generateParams)
-        let generationStartTime = clock.now
-
         #if DEBUG
         debugLogger.info(
             "Starting generation: \(input.limits.maxTokens) tokens, temp \(generateParams.temperature)"
         )
         #endif
-
-        let request = MLXGenerationRunRequest(
+        return MLXGenerationRunRequest(
             input: input,
             parameters: generateParams,
-            runtimePreferences: runtimePreferences,
-            generationStartTime: generationStartTime,
+            runtimePreferences: currentRuntimePreferences,
+            generationStartTime: clock.now,
             continuation: continuation
         )
-        let metricsData = try await generateTokens(container: container, request: request)
-
-        let metrics = metricsData.chunkMetrics(
-            totalDuration: metricsData.generationStartTime.duration(to: clock.now),
-            contextWindowSize: configuration?.compute.contextSize
-        )
-        continuation.yield(LLMStreamChunk(text: "", event: .finished, metrics: metrics))
-
-        logGenerationMetrics(metricsData: metricsData, startTime: generationStartTime)
     }
 
     private func logGenerationMetrics(metricsData: MetricsData, startTime: ContinuousClock.Instant) {

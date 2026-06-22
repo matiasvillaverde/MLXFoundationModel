@@ -167,6 +167,12 @@ extension MLXSession {
         generationStartTime: ContinuousClock.Instant,
         continuation: AsyncThrowingStream<LLMStreamChunk, any Error>.Continuation
     ) async throws {
+        let span = MLXObservability.startSpan(
+            .continuousBatch,
+            attributes: ["model": configuration?.modelName ?? "unknown"]
+        )
+        defer { span.end() }
+
         let queueID = try await engine.enqueue(prepared.prefillRequest)
         try await waitForContinuousBatchCompletion(
             prepared,
@@ -186,7 +192,7 @@ extension MLXSession {
         continuation: AsyncThrowingStream<LLMStreamChunk, any Error>.Continuation
     ) {
         let now = clock.now
-        let metrics = MetricsData(
+        let metricsData = MetricsData(
             generationStartTime: generationStartTime,
             promptStartTime: prepared.promptStartTime,
             promptEndTime: prepared.state.firstTokenTime ?? now,
@@ -198,7 +204,13 @@ extension MLXSession {
             promptCacheReusedTokenCount: prepared.promptCacheReusedTokenCount,
             stopReason: prepared.state.stopReason,
             parameters: prepared.parameters
-        ).chunkMetrics(totalDuration: generationStartTime.duration(to: now), contextWindowSize: nil)
+        )
+        let totalDuration = generationStartTime.duration(to: now)
+        let metrics = metricsData.chunkMetrics(
+            totalDuration: totalDuration,
+            contextWindowSize: configuration?.compute.contextSize
+        )
+        recordGenerationSummary(metricsData: metricsData, totalDuration: totalDuration)
         continuation.yield(LLMStreamChunk(text: "", event: .finished, metrics: metrics))
     }
 

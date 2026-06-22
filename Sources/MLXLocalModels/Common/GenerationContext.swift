@@ -703,6 +703,8 @@ private final class MLXGenerationDiagnosticStore: @unchecked Sendable {
             defaultEvents.append(event)
         }
         lock.unlock()
+
+        MLXObservability.recordDiagnosticEvent(event)
     }
 }
 
