@@ -50,12 +50,13 @@ extension MLXModelOptimizationProfile {
         .fp8ScaleDequantization,
         .indexCache,
         .prefillStepPromptCacheReuse,
-        .turboQuantKV
+        .turboQuantKV,
+        .vlmMTP,
+        .vlmMTPDrafter
     ]
 
     private static let failClosedStateFeatures: Set<MLXModelOptimizationFeature> = [
-        .dFlash,
-        .vlmMTP
+        .dFlash
     ]
 
     private func implementedState(

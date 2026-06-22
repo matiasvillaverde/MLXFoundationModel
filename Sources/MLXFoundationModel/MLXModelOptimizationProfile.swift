@@ -202,6 +202,12 @@ public struct MLXModelOptimizationProfile: Codable, Equatable, Hashable, Sendabl
         if nativeMTPRuntimeSupported {
             features.insert(.nativeMTP)
         }
+        if supportsVLMMTP {
+            features.insert(.vlmMTP)
+        }
+        if supportsVLMMTPDrafter {
+            features.insert(.vlmMTPDrafter)
+        }
         if supportsIndexCache {
             features.insert(.indexCache)
         }

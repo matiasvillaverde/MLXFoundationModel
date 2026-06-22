@@ -18,8 +18,8 @@ struct MLXModelOptimizationProfileDFlashTests {
         #expect(optimization.supportsVLMMTP)
         #expect(optimization.supportsDFlash)
         #expect(optimization.detectedFeatures.contains(.vlmMTP))
-        #expect(optimization.pendingRuntimeFeatures == [.dFlash, .vlmMTP])
-        #expect(!optimization.implementedFeatures.contains(.vlmMTP))
+        #expect(optimization.pendingRuntimeFeatures == [.dFlash])
+        #expect(optimization.implementedFeatures.contains(.vlmMTP))
         #expect(profile.capabilities.vision)
     }
 
@@ -57,8 +57,8 @@ struct MLXModelOptimizationProfileDFlashTests {
             #expect(!optimization.supportsVLMMTP)
             #expect(!optimization.supportsDFlash)
             #expect(optimization.detectedFeatures.contains(.vlmMTPDrafter))
-            #expect(optimization.pendingRuntimeFeatures.contains(.vlmMTPDrafter))
-            #expect(!optimization.implementedFeatures.contains(.vlmMTPDrafter))
+            #expect(!optimization.pendingRuntimeFeatures.contains(.vlmMTPDrafter))
+            #expect(optimization.implementedFeatures.contains(.vlmMTPDrafter))
         }
     }
 }

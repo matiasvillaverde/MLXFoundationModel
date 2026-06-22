@@ -32,7 +32,7 @@ struct MLXModelOptimizationFeatureStatusTests {
         #expect(states[.oQQuantization] == .pendingRuntime)
         #expect(states[.speculativePrefill] == .scalarFallback)
         #expect(states[.dFlash] == .failClosed)
-        #expect(states[.vlmMTP] == .failClosed)
+        #expect(states[.vlmMTP] == .implemented)
     }
 
     @Test("marks native MTP implemented only for supported runtime families")
