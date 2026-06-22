@@ -203,6 +203,57 @@ internal struct GreedyTokenOutput {
     }
 }
 
+internal struct SharedKVState {
+    internal let keys: MLXArray
+    internal let values: MLXArray
+    internal let offset: Int
+
+    internal init(keys: MLXArray, values: MLXArray, offset: Int) {
+        self.keys = keys
+        self.values = values
+        self.offset = offset
+    }
+}
+
+internal struct SharedKVTargetOutput {
+    internal let logits: MLXArray
+    internal let hiddenStates: MLXArray
+    internal let sharedKVStates: [String: SharedKVState]
+    internal let state: LMOutput.State?
+
+    internal init(
+        logits: MLXArray,
+        hiddenStates: MLXArray,
+        sharedKVStates: [String: SharedKVState],
+        state: LMOutput.State? = nil
+    ) {
+        self.logits = logits
+        self.hiddenStates = hiddenStates
+        self.sharedKVStates = sharedKVStates
+        self.state = state
+    }
+}
+
+internal struct SharedKVDraftOutput {
+    internal let logits: MLXArray
+    internal let hiddenStates: MLXArray
+
+    internal init(logits: MLXArray, hiddenStates: MLXArray) {
+        self.logits = logits
+        self.hiddenStates = hiddenStates
+    }
+}
+
+internal struct SharedKVGreedyDraftOutput {
+    internal let token: MLXArray
+    internal let hiddenStates: MLXArray
+
+    internal init(token: MLXArray, hiddenStates: MLXArray) {
+        self.token = token
+        self.hiddenStates = hiddenStates
+    }
+}
+
 /// The result of the call to ``LanguageModel/prepare(_:cache:windowSize:)``
 internal enum PrepareResult {
     /// tokens to process by the ``TokenIterator``
@@ -271,6 +322,42 @@ internal protocol GreedyTokenModel: LanguageModel {
         cache: [KVCache]?,
         state: LMOutput.State?
     ) -> GreedyTokenOutput
+}
+
+internal protocol SharedKVSpeculativeTargetModel: LanguageModel {
+    func speculativePrepare(
+        _ input: LMInput,
+        cache: [KVCache],
+        windowSize: Int?
+    ) throws -> SharedKVTargetOutput
+
+    func speculativeTargetOutput(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?
+    ) -> SharedKVTargetOutput
+
+    func speculativeDraftHidden(_ hiddenStates: MLXArray) -> MLXArray
+
+    func speculativeTokenEmbeddings(_ tokenIDs: MLXArray) -> MLXArray
+}
+
+internal protocol SharedKVSpeculativeDraftModel: LanguageModel {
+    var speculativeDraftBlockSize: Int { get }
+
+    func sharedKVDraftOutput(
+        tokenEmbeddings: MLXArray,
+        hiddenStates: MLXArray,
+        sharedKVStates: [String: SharedKVState],
+        position: Int
+    ) -> SharedKVDraftOutput
+
+    func sharedKVGreedyDraftOutput(
+        tokenEmbeddings: MLXArray,
+        hiddenStates: MLXArray,
+        sharedKVStates: [String: SharedKVState],
+        position: Int
+    ) -> SharedKVGreedyDraftOutput?
 }
 
 extension LanguageModel {

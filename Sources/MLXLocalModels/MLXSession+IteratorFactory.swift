@@ -1,4 +1,5 @@
 extension MLXSession {
+    // swiftlint:disable:next function_body_length
     nonisolated func makeIterator(
         genContext: GenerationContext,
         cachePlan: PromptCachePlan,
@@ -15,10 +16,20 @@ extension MLXSession {
             )
         }
 
+        if shouldUseSharedKVMTP(genContext) {
+            return try makeSharedKVMTPIterator(
+                genContext: genContext,
+                cachePlan: cachePlan,
+                fullInput: fullInput,
+                speculativeDecoding: speculativeDecoding
+            )
+        }
+
         guard let speculativeDecoding, genContext.parameters.grammar == nil else {
             recordSpeculativeBypassIfNeeded(
                 speculativeDecoding: speculativeDecoding,
                 nativeMTPRequested: isNativeMTPRequested(genContext),
+                sharedKVMTPRequested: isSharedKVMTPRequested(genContext),
                 grammar: genContext.parameters.grammar
             )
             return .standard(try makeStandardIterator(
@@ -96,6 +107,14 @@ extension MLXSession {
         genContext.runtimePreferences.optimization.mode == .nativeMTP
     }
 
+    nonisolated private func shouldUseSharedKVMTP(_ genContext: GenerationContext) -> Bool {
+        isSharedKVMTPRequested(genContext) && genContext.parameters.grammar == nil
+    }
+
+    nonisolated private func isSharedKVMTPRequested(_ genContext: GenerationContext) -> Bool {
+        genContext.runtimePreferences.optimization.mode == .vlmMTP
+    }
+
     nonisolated private func makeNativeMTPIterator(
         genContext: GenerationContext,
         cachePlan: PromptCachePlan,
@@ -123,12 +142,55 @@ extension MLXSession {
         ))
     }
 
+    // swiftlint:disable:next function_body_length
+    nonisolated private func makeSharedKVMTPIterator(
+        genContext: GenerationContext,
+        cachePlan: PromptCachePlan,
+        fullInput: LMInput,
+        speculativeDecoding: MLXSpeculativeDecodingConfiguration?
+    ) throws -> TokenGenerationIterator {
+        guard let speculativeDecoding else {
+            throw LLMError.invalidConfiguration(
+                "vlmMTP was requested, but no draft model was loaded."
+            )
+        }
+        guard let targetModel = genContext.modelContext.model as? any SharedKVSpeculativeTargetModel
+        else {
+            throw LLMError.invalidConfiguration(
+                "vlmMTP was requested, but the loaded model does not expose shared-KV target state."
+            )
+        }
+        guard let draftModel = speculativeDecoding.draftContext.model as? any SharedKVSpeculativeDraftModel
+        else {
+            throw LLMError.invalidConfiguration(
+                "vlmMTP was requested, but the draft model does not expose shared-KV drafting."
+            )
+        }
+
+        let configuredBlockSize = max(1, draftModel.speculativeDraftBlockSize - 1)
+        let requestedDraftTokens = genContext.runtimePreferences.speculativeDraftTokens
+        let numDraftTokens = max(1, configuredBlockSize, requestedDraftTokens)
+        MLXGenerationDiagnostics.recordSpeculativeDecoding(numDraftTokens: numDraftTokens)
+        return .sharedKVMTP(try SharedKVMTPTokenIterator(
+            input: cachePlan.input,
+            targetModel: targetModel,
+            draftModel: draftModel,
+            targetCache: cachePlan.cache,
+            parameters: genContext.parameters,
+            numDraftTokens: numDraftTokens,
+            processorPrompt: fullInput.text,
+            grammarCompiler: genContext.modelContext.grammarCompiler
+        ))
+    }
+
     nonisolated private func recordSpeculativeBypassIfNeeded(
         speculativeDecoding: MLXSpeculativeDecodingConfiguration?,
         nativeMTPRequested: Bool,
+        sharedKVMTPRequested: Bool,
         grammar: GrammarSamplingConfiguration?
     ) {
-        guard speculativeDecoding != nil || nativeMTPRequested, let grammar else {
+        guard speculativeDecoding != nil || nativeMTPRequested || sharedKVMTPRequested,
+            let grammar else {
             return
         }
         recordGrammarIteratorEvent(

@@ -638,13 +638,13 @@ public struct MLXRuntimeOptimizationConfiguration: Codable, Equatable, Hashable,
 
     private var unsupportedRuntimePathMessage: String? {
         switch mode {
-        case .vlmMTP, .dFlash:
+        case .dFlash:
             """
             \(mode.rawValue) optimization is detected by model profiles but is not \
             implemented in the MLXFoundationModel runtime yet.
             """
 
-        case .off, .turboQuantKV, .nativeMTP, .specPrefill:
+        case .off, .turboQuantKV, .nativeMTP, .vlmMTP, .specPrefill:
             nil
         }
     }

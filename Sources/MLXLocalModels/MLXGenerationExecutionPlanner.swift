@@ -76,6 +76,9 @@ internal enum MLXGenerationExecutionPlanner {
         if optimization.mode == .nativeMTP {
             return .nativeMTPRequiresScalar
         }
+        if optimization.mode == .vlmMTP {
+            return .sharedKVMTPRequiresScalar
+        }
         if optimization.mode == .specPrefill {
             return .specPrefillRequiresScalar
         }

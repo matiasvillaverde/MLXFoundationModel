@@ -2343,10 +2343,349 @@ internal struct NativeMTPTokenIterator: Sequence, IteratorProtocol {
     }
 }
 
+internal struct SharedKVMTPTokenIterator: Sequence, IteratorProtocol {
+    private var lastBonusToken: MLXArray?
+    private var draftHiddenStates: MLXArray?
+    private var sharedKVStates: [String: SharedKVState] = [:]
+    private var kvOffset = 0
+
+    private let targetModel: any SharedKVSpeculativeTargetModel
+    private let draftModel: any SharedKVSpeculativeDraftModel
+    private var targetState: LMOutput.State?
+    private var targetCache: [KVCache]
+    private let quantizeKVCache: (inout [KVCache]) -> Void
+
+    private var processor: LogitProcessor?
+    private let sampler: LogitSampler
+
+    private var pendingTokens: [Int] = []
+    private var pendingIndex = 0
+
+    internal private(set) var tokenCount = 0
+    internal let maxTokens: Int?
+    internal let numDraftTokens: Int
+    private var adaptiveDraftTokens: Int
+    internal var cacheForPromptReuse: PromptCacheReusableState {
+        PromptCacheReusableState(cache: targetCache)
+    }
+
+    internal init(
+        input: LMInput,
+        targetModel: any SharedKVSpeculativeTargetModel,
+        draftModel: any SharedKVSpeculativeDraftModel,
+        targetCache: [KVCache]? = nil,
+        parameters: GenerateParameters,
+        numDraftTokens: Int,
+        processorPrompt: LMInput.Text? = nil,
+        grammarCompiler: GrammarConstraintCompiler? = nil
+    ) throws {
+        self.targetModel = targetModel
+        self.draftModel = draftModel
+        self.targetCache = targetCache ?? targetModel.newCache(parameters: parameters)
+        guard canTrimPromptCache(self.targetCache) else {
+            throw KVCacheError(message: "Shared-KV MTP decoding requires trimmable KV caches.")
+        }
+
+        self.processor = try parameters.processor(grammarCompiler: grammarCompiler)
+        self.sampler = parameters.sampler()
+        self.maxTokens = parameters.maxTokens
+        self.numDraftTokens = Swift.max(0, numDraftTokens)
+        self.adaptiveDraftTokens = Swift.max(0, numDraftTokens)
+        self.quantizeKVCache = { cache in
+            maybeQuantizeKVCache(
+                cache: &cache,
+                kvBits: parameters.kvBits,
+                kvGroupSize: parameters.kvGroupSize,
+                quantizedKVStart: parameters.quantizedKVStart,
+                skipLastLayer: parameters.quantizedKVSkipLastLayer
+            )
+        }
+
+        try prepare(
+            input: input,
+            processorPrompt: processorPrompt,
+            windowSize: parameters.prefillStepSize
+        )
+    }
+
+    internal mutating func next() -> Int? {
+        if let maxTokens, tokenCount >= maxTokens {
+            return nil
+        }
+        if let pendingToken = nextPendingToken() {
+            return pendingToken
+        }
+
+        pendingTokens.removeAll(keepingCapacity: true)
+        pendingIndex = 0
+        sharedKVMTPRound()
+
+        return nextPendingToken()
+    }
+
+    private mutating func prepare(
+        input: LMInput,
+        processorPrompt: LMInput.Text?,
+        windowSize: Int?
+    ) throws {
+        processor?.prompt((processorPrompt ?? input.text).tokens)
+        let output = try targetModel.speculativePrepare(
+            input,
+            cache: targetCache,
+            windowSize: windowSize
+        )
+        targetState = output.state
+        sharedKVStates = output.sharedKVStates
+        kvOffset = cacheOffset(targetCache)
+
+        let firstBonus = sampleNextToken(logits: output.logits, processor: &processor)
+        processor?.didSample(token: firstBonus)
+        lastBonusToken = firstBonus
+        draftHiddenStates = lastDraftHidden(from: output.hiddenStates)
+        pendingTokens.append(firstBonus.item(Int.self))
+        asyncEval(firstBonus)
+        MLXGenerationDiagnostics.recordCacheSnapshot(label: "sharedKVMTPPrepared", cache: targetCache)
+    }
+
+    private mutating func sharedKVMTPRound() {
+        guard let lastBonusToken, let draftHiddenStates else {
+            return
+        }
+
+        let remainingTokens = maxTokens.map { $0 - tokenCount } ?? (adaptiveDraftTokens + 1)
+        guard remainingTokens > 0 else {
+            return
+        }
+
+        let draftCount = Swift.min(Swift.max(remainingTokens - 1, 0), adaptiveDraftTokens)
+        guard draftCount > 0 else {
+            acceptMainOnly(lastBonusToken: lastBonusToken)
+            return
+        }
+
+        let draftTokens = generateDraftTokens(
+            count: draftCount,
+            lastBonusToken: lastBonusToken,
+            hiddenStates: draftHiddenStates
+        )
+        guard !draftTokens.isEmpty else {
+            acceptMainOnly(lastBonusToken: lastBonusToken)
+            return
+        }
+
+        let verification = verifyDraftTokens(lastBonusToken: lastBonusToken, draftTokens: draftTokens)
+        acceptVerifiedTokens(verification: verification, draftTokens: draftTokens)
+    }
+
+    private mutating func generateDraftTokens(
+        count: Int,
+        lastBonusToken: MLXArray,
+        hiddenStates: MLXArray
+    ) -> [MLXArray] {
+        var draftProcessor = processor
+        var draftTokens: [MLXArray] = []
+        draftTokens.reserveCapacity(count)
+
+        var nextToken = lastBonusToken
+        var hiddenStates = hiddenStates
+        let position = Swift.max(kvOffset - 1, 0)
+        let useGreedyDraft = processor == nil && sampler is ArgMaxSampler
+
+        for _ in 0 ..< count {
+            let tokenEmbeddings = targetModel.speculativeTokenEmbeddings(
+                nextToken.reshaped([1, 1])
+            )
+            let token: MLXArray
+            if useGreedyDraft,
+                let output = draftModel.sharedKVGreedyDraftOutput(
+                    tokenEmbeddings: tokenEmbeddings,
+                    hiddenStates: hiddenStates,
+                    sharedKVStates: sharedKVStates,
+                    position: position
+                ) {
+                token = output.token
+                hiddenStates = output.hiddenStates
+            } else {
+                let output = draftModel.sharedKVDraftOutput(
+                    tokenEmbeddings: tokenEmbeddings,
+                    hiddenStates: hiddenStates,
+                    sharedKVStates: sharedKVStates,
+                    position: position
+                )
+                token = sampleNextToken(logits: output.logits, processor: &draftProcessor)
+                draftProcessor?.didSample(token: token)
+                hiddenStates = output.hiddenStates
+            }
+            let flatToken = token.reshaped([-1])
+            asyncEval(flatToken)
+            draftTokens.append(flatToken)
+            nextToken = flatToken
+        }
+
+        MLXGenerationDiagnostics.recordCacheSnapshot(label: "sharedKVMTPDraftStep", cache: [])
+        return draftTokens
+    }
+
+    private mutating func verifyDraftTokens(
+        lastBonusToken: MLXArray,
+        draftTokens: [MLXArray]
+    ) -> (targetTokens: MLXArray, output: SharedKVTargetOutput) {
+        let verifyTokens = [lastBonusToken] + draftTokens
+        let verifyInput = LMInput.Text(tokens: concatenated(verifyTokens))
+        let output = targetModel.speculativeTargetOutput(
+            verifyInput,
+            cache: targetCache.isEmpty ? nil : targetCache,
+            state: targetState
+        )
+        targetState = output.state
+        MLXGenerationDiagnostics.recordCacheSnapshot(label: "sharedKVMTPVerifyStep", cache: targetCache)
+
+        guard var verifyProcessor = processor else {
+            let logits = output.logits[0..., 0..., 0...].squeezed(axis: 0)
+            return (sampler.sample(logits: logits), output)
+        }
+
+        let sampled = (0 ..< draftTokens.count + 1).map { index in
+            var logits = output.logits[0..., index, 0...]
+            logits = verifyProcessor.process(logits: logits)
+            let token = sampler.sample(logits: logits)
+            verifyProcessor.didSample(token: token)
+            return token
+        }
+        return (concatenated(sampled), output)
+    }
+
+    private mutating func acceptVerifiedTokens(
+        verification: (targetTokens: MLXArray, output: SharedKVTargetOutput),
+        draftTokens: [MLXArray]
+    ) {
+        eval(verification.targetTokens, draftTokens)
+        let targetTokenIDs = verification.targetTokens.asArray(Int.self)
+        let draftTokenIDs = concatenated(draftTokens).asArray(Int.self)
+        var acceptedCount = 0
+
+        for index in 0 ..< draftTokens.count {
+            guard targetTokenIDs[index] == draftTokenIDs[index] else {
+                break
+            }
+
+            processor?.didSample(token: draftTokens[index])
+            pendingTokens.append(targetTokenIDs[index])
+            acceptedCount += 1
+        }
+
+        let finalToken = verification.targetTokens[acceptedCount ... acceptedCount]
+        processor?.didSample(token: finalToken)
+        pendingTokens.append(targetTokenIDs[acceptedCount])
+
+        let rejectedCount = draftTokens.count - acceptedCount
+        MLXGenerationDiagnostics.recordSpeculativeDecoding(
+            numDraftTokens: draftTokens.count,
+            acceptedDraftTokens: acceptedCount,
+            rejectedDraftTokens: rejectedCount,
+            emittedTokens: acceptedCount + 1
+        )
+        updateAdaptiveDraftWindow(acceptedCount: acceptedCount, attemptedCount: draftTokens.count)
+        trimPromptCache(targetCache, numTokens: rejectedCount)
+        quantizeKVCache(&targetCache)
+        kvOffset += acceptedCount + 1
+        sharedKVStates = trimmedSharedKVStates(
+            verification.output.sharedKVStates,
+            rejectedCount: rejectedCount
+        )
+        draftHiddenStates = lastDraftHidden(
+            from: verification.output.hiddenStates[0..., acceptedCount ..< acceptedCount + 1, 0...]
+        )
+        lastBonusToken = finalToken
+    }
+
+    private mutating func updateAdaptiveDraftWindow(acceptedCount: Int, attemptedCount: Int) {
+        guard numDraftTokens > 1, attemptedCount > 0 else {
+            return
+        }
+        if acceptedCount == attemptedCount {
+            adaptiveDraftTokens = Swift.min(numDraftTokens, adaptiveDraftTokens + 1)
+            return
+        }
+        if acceptedCount * 2 < attemptedCount {
+            adaptiveDraftTokens = Swift.max(1, adaptiveDraftTokens - 1)
+        }
+    }
+
+    private mutating func acceptMainOnly(lastBonusToken: MLXArray) {
+        let output = targetModel.speculativeTargetOutput(
+            .init(tokens: lastBonusToken.reshaped([1])),
+            cache: targetCache.isEmpty ? nil : targetCache,
+            state: targetState
+        )
+        targetState = output.state
+        let token = sampleNextToken(logits: output.logits, processor: &processor)
+        eval(token)
+        processor?.didSample(token: token)
+        pendingTokens.append(token.item(Int.self))
+        quantizeKVCache(&targetCache)
+        kvOffset += 1
+        sharedKVStates = output.sharedKVStates
+        draftHiddenStates = lastDraftHidden(from: output.hiddenStates)
+        self.lastBonusToken = token
+    }
+
+    private mutating func nextPendingToken() -> Int? {
+        guard pendingIndex < pendingTokens.count else {
+            return nil
+        }
+
+        let token = pendingTokens[pendingIndex]
+        pendingIndex += 1
+        tokenCount += 1
+        return token
+    }
+
+    private func sampleNextToken(logits: MLXArray, processor: inout LogitProcessor?) -> MLXArray {
+        let logits = logits[0..., -1, 0...]
+        return sampleToken(logits: logits, processor: &processor)
+    }
+
+    private func sampleToken(logits: MLXArray, processor: inout LogitProcessor?) -> MLXArray {
+        var logits = logits
+        logits = processor?.process(logits: logits) ?? logits
+        return sampler.sample(logits: logits)
+    }
+
+    private func lastDraftHidden(from hiddenStates: MLXArray) -> MLXArray {
+        let lastIndex = Swift.max(hiddenStates.dim(1) - 1, 0)
+        let hidden = hiddenStates[0..., lastIndex ..< lastIndex + 1, 0...]
+        return targetModel.speculativeDraftHidden(hidden)
+    }
+
+    private func cacheOffset(_ cache: [KVCache]) -> Int {
+        cache.map(\.offset).max() ?? 0
+    }
+
+    private func trimmedSharedKVStates(
+        _ states: [String: SharedKVState],
+        rejectedCount: Int
+    ) -> [String: SharedKVState] {
+        guard rejectedCount > 0 else {
+            return states
+        }
+        return states.mapValues { state in
+            let sequenceAxis = state.keys.shape.count - 2
+            let validLength = Swift.max(1, state.keys.shape[sequenceAxis] - rejectedCount)
+            return SharedKVState(
+                keys: state.keys[.ellipsis, ..<validLength, 0...],
+                values: state.values[.ellipsis, ..<validLength, 0...],
+                offset: Swift.max(0, state.offset - rejectedCount)
+            )
+        }
+    }
+}
+
 internal enum TokenGenerationIterator: Sequence, IteratorProtocol {
     case standard(TokenIterator)
     case speculative(SpeculativeTokenIterator)
     case nativeMTP(NativeMTPTokenIterator)
+    case sharedKVMTP(SharedKVMTPTokenIterator)
 
     internal var cacheForPromptReuse: PromptCacheReusableState {
         switch self {
@@ -2355,6 +2694,8 @@ internal enum TokenGenerationIterator: Sequence, IteratorProtocol {
         case .speculative(let iterator):
             iterator.cacheForPromptReuse
         case .nativeMTP(let iterator):
+            iterator.cacheForPromptReuse
+        case .sharedKVMTP(let iterator):
             iterator.cacheForPromptReuse
         }
     }
@@ -2374,6 +2715,11 @@ internal enum TokenGenerationIterator: Sequence, IteratorProtocol {
         case .nativeMTP(var iterator):
             let token = iterator.next()
             self = .nativeMTP(iterator)
+            return token
+
+        case .sharedKVMTP(var iterator):
+            let token = iterator.next()
+            self = .sharedKVMTP(iterator)
             return token
         }
     }

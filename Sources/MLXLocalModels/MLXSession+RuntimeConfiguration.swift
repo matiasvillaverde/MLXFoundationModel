@@ -76,6 +76,7 @@ extension MLXSession {
         }
     }
 
+    // swiftlint:disable:next function_body_length
     internal func persistPromptCacheIfNeeded() async throws {
         guard runtimePreferences.promptCachePolicy == .persistent,
             speculativeDecoding == nil,
@@ -114,6 +115,7 @@ extension MLXSession {
         )
     }
 
+    // swiftlint:disable:next function_body_length
     internal func restorePersistentPromptCacheIfNeeded() async throws {
         guard runtimePreferences.promptCachePolicy == .persistent,
             speculativeDecoding == nil,
@@ -136,7 +138,9 @@ extension MLXSession {
             envelope = try JSONDecoder().decode(PersistedPromptCacheEnvelope.self, from: envelopeData)
             cache = payload.0
         } catch {
-            logger.warning("Skipping corrupt persistent prompt cache at \(url.path): \(error.localizedDescription)")
+            logger.warning(
+                "Skipping corrupt persistent prompt cache at \(url.path): \(error.localizedDescription)"
+            )
             try? FileManager.default.removeItem(at: url)
             return
         }
@@ -159,9 +163,22 @@ extension MLXSession {
 
     internal func makeSpeculativeDecodingConfigurationIfNeeded() async throws
         -> MLXSpeculativeDecodingConfiguration? {
+        if runtimePreferences.optimization.mode == .vlmMTP {
+            guard let draftModelID = runtimePreferences.optimization.draftModelID,
+                !draftModelID.isEmpty else {
+                return nil
+            }
+            let draftContext = try await LLMModelFactory.shared.load(
+                configuration: draftModelConfiguration(for: draftModelID)
+            )
+            return MLXSpeculativeDecodingConfiguration(
+                draftContext: draftContext,
+                numDraftTokens: max(1, runtimePreferences.speculativeDraftTokens)
+            )
+        }
+
         guard runtimePreferences.speculativeDecodingMode == .sameModelDraft,
-            let modelContainer
-        else {
+            let modelContainer else {
             return nil
         }
 
@@ -174,4 +191,30 @@ extension MLXSession {
         )
     }
 
+    private func draftModelConfiguration(for draftModelID: String) -> ModelConfiguration {
+        let expandedPath = expandedTildePath(draftModelID)
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: expandedPath, isDirectory: &isDirectory),
+            isDirectory.boolValue {
+            return ModelConfiguration(directory: URL(fileURLWithPath: expandedPath, isDirectory: true))
+        }
+
+        if let sibling = configuration?.location.deletingLastPathComponent()
+            .appendingPathComponent(draftModelID, isDirectory: true),
+            FileManager.default.fileExists(atPath: sibling.path, isDirectory: &isDirectory),
+            isDirectory.boolValue {
+            return ModelConfiguration(directory: sibling)
+        }
+
+        return ModelConfiguration(id: draftModelID)
+    }
+
+    private func expandedTildePath(_ path: String) -> String {
+        guard path.hasPrefix("~/") else {
+            return path
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(String(path.dropFirst(2)))
+            .path
+    }
 }

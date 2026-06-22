@@ -13,6 +13,27 @@ internal extension MLXObservability {
                 value: Double(snapshot.numDraftTokens),
                 category: .generation
             )
+            if let acceptedDraftTokens = snapshot.acceptedDraftTokens {
+                incrementCounter(
+                    "generation.speculative.accepted_draft_tokens",
+                    by: Double(acceptedDraftTokens),
+                    category: .generation
+                )
+            }
+            if let rejectedDraftTokens = snapshot.rejectedDraftTokens {
+                incrementCounter(
+                    "generation.speculative.rejected_draft_tokens",
+                    by: Double(rejectedDraftTokens),
+                    category: .generation
+                )
+            }
+            if let emittedTokens = snapshot.emittedTokens {
+                incrementCounter(
+                    "generation.speculative.emitted_tokens",
+                    by: Double(emittedTokens),
+                    category: .generation
+                )
+            }
         case .specPrefillPlan(let snapshot):
             recordSpecPrefillPlan(snapshot)
         case .dFlashPlan(let snapshot):

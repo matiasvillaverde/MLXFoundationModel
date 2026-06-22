@@ -240,6 +240,43 @@ internal struct Gemma4RopeParameters: Codable, Sendable {
     ]
 }
 
+internal struct Gemma4AssistantConfiguration: Codable, Sendable {
+    let modelType: String
+    let backboneHiddenSize: Int
+    let useOrderedEmbeddings: Bool
+    let numCentroids: Int
+    let centroidIntermediateTopK: Int
+    let tieWordEmbeddings: Bool
+    let blockSize: Int
+    let textConfig: Gemma4TextConfiguration
+
+    enum CodingKeys: String, CodingKey {
+        case modelType = "model_type"
+        case backboneHiddenSize = "backbone_hidden_size"
+        case useOrderedEmbeddings = "use_ordered_embeddings"
+        case numCentroids = "num_centroids"
+        case centroidIntermediateTopK = "centroid_intermediate_top_k"
+        case tieWordEmbeddings = "tie_word_embeddings"
+        case blockSize = "block_size"
+        case textConfig = "text_config"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        modelType = try container.decode(String.self, forKey: .modelType)
+        backboneHiddenSize = try container.decode(Int.self, forKey: .backboneHiddenSize)
+        useOrderedEmbeddings =
+            try container.decodeIfPresent(Bool.self, forKey: .useOrderedEmbeddings) ?? false
+        numCentroids = try container.decodeIfPresent(Int.self, forKey: .numCentroids) ?? 2_048
+        centroidIntermediateTopK =
+            try container.decodeIfPresent(Int.self, forKey: .centroidIntermediateTopK) ?? 32
+        tieWordEmbeddings =
+            try container.decodeIfPresent(Bool.self, forKey: .tieWordEmbeddings) ?? true
+        blockSize = try container.decodeIfPresent(Int.self, forKey: .blockSize) ?? 4
+        textConfig = try container.decode(Gemma4TextConfiguration.self, forKey: .textConfig)
+    }
+}
+
 private final class Gemma4RMSNormNoScale: Module, UnaryLayer {
     let eps: Float
 
@@ -714,6 +751,20 @@ private final class Gemma4TextModelInner: Module {
     }
 
     func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
+        forward(inputs, cache: cache).hiddenStates
+    }
+
+    func tokenEmbeddings(_ inputs: MLXArray) -> MLXArray {
+        let embeddings = embedTokens(inputs)
+        return (embeddings * MLXArray(embedScale, dtype: .float32)).asType(embeddings.dtype)
+    }
+
+    func forward(
+        _ inputs: MLXArray,
+        cache: [KVCache]?,
+        skipFinalNorm: Bool = false,
+        returnSharedKV: Bool = false
+    ) -> (hiddenStates: MLXArray, sharedKVStates: [String: SharedKVState]) {
         var hidden = embedTokens(inputs)
         hidden = (hidden * MLXArray(embedScale, dtype: .float32)).asType(hidden.dtype)
 
@@ -723,6 +774,7 @@ private final class Gemma4TextModelInner: Module {
         let masks = singleToken ? [] : makeMasks(hiddenStates: hidden, cache: paddedCacheArray)
 
         var intermediates = Array<(keys: MLXArray, values: MLXArray, offset: Int)?>(repeating: nil, count: layers.count)
+        var sharedKVStates: [String: SharedKVState] = [:]
         for (index, layer) in layers.enumerated() {
             let previousIndex = previousKVs[index]
             let shared = intermediates[previousIndex]
@@ -745,9 +797,19 @@ private final class Gemma4TextModelInner: Module {
             if sharedKVSourceLayerIndices.contains(index) {
                 intermediates[index] = (result.kv.keys, result.kv.values, result.offset)
             }
+            if returnSharedKV {
+                sharedKVStates[layer.layerType] = SharedKVState(
+                    keys: result.kv.keys,
+                    values: result.kv.values,
+                    offset: result.offset
+                )
+            }
         }
 
-        return norm(hidden)
+        if !skipFinalNorm {
+            hidden = norm(hidden)
+        }
+        return (hidden, sharedKVStates)
     }
 
     private func makePerLayerInputs(inputIDs: MLXArray, hiddenStates: MLXArray) -> MLXArray? {
@@ -856,6 +918,14 @@ private final class Gemma4LanguageModel: Module {
         logits(from: model(inputs, cache: cache))
     }
 
+    func speculativePrepare(
+        _ input: LMInput,
+        cache: [KVCache],
+        windowSize: Int?
+    ) throws -> SharedKVTargetOutput {
+        try prepareSharedKVTarget(input, cache: cache, windowSize: windowSize)
+    }
+
     func greedyToken(
         _ input: LMInput.Text,
         cache: [KVCache]?,
@@ -867,14 +937,64 @@ private final class Gemma4LanguageModel: Module {
         return GreedyTokenOutput(token: argMax(logits, axis: -1), state: state)
     }
 
+    func speculativeTargetOutput(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?
+    ) -> SharedKVTargetOutput {
+        let output = model.forward(
+            input[text: .newAxis].tokens,
+            cache: cache,
+            skipFinalNorm: true,
+            returnSharedKV: true
+        )
+        return SharedKVTargetOutput(
+            logits: logits(from: model.norm(output.hiddenStates)),
+            hiddenStates: output.hiddenStates,
+            sharedKVStates: output.sharedKVStates,
+            state: state
+        )
+    }
+
+    func speculativeDraftHidden(_ hiddenStates: MLXArray) -> MLXArray {
+        model.norm(hiddenStates)
+    }
+
+    func speculativeTokenEmbeddings(_ tokenIDs: MLXArray) -> MLXArray {
+        model.tokenEmbeddings(tokenIDs)
+    }
+
     func prepare(_ input: LMInput, cache: [KVCache], windowSize: Int?) throws -> PrepareResult {
+        guard input.text.tokens.size > 0 else {
+            let emptyToken = MLXArray(Int32(0))[0 ..< 0]
+            return .tokens(.init(tokens: emptyToken))
+        }
+        let output = try prepareSharedKVTarget(
+            input,
+            cache: cache,
+            windowSize: windowSize,
+            returnSharedKV: false
+        )
+        return .logits(.init(logits: output.logits, state: output.state))
+    }
+
+    private func prepareSharedKVTarget(
+        _ input: LMInput,
+        cache: [KVCache],
+        windowSize: Int?,
+        returnSharedKV: Bool = true
+    ) throws -> SharedKVTargetOutput {
         let prefillStepSize = windowSize ?? GenerationConstants.defaultPrefillStepSize
         let controller = MLXGenerationDiagnostics.currentAdaptivePrefillController
         var y = input.text
 
         guard y.tokens.size > 0 else {
             let emptyToken = MLXArray(Int32(0))[0 ..< 0]
-            return .tokens(.init(tokens: emptyToken))
+            return SharedKVTargetOutput(
+                logits: emptyToken.reshaped([1, 0, config.vocabSize]),
+                hiddenStates: emptyToken.reshaped([1, 0, 1]),
+                sharedKVStates: [:]
+            )
         }
 
         while true {
@@ -908,8 +1028,18 @@ private final class Gemma4LanguageModel: Module {
             y = y[chunkSize...]
         }
 
-        let hiddenStates = model(y[.newAxis].tokens, cache: cache.isEmpty ? nil : cache)
-        return .logits(.init(logits: logitsForLastToken(from: hiddenStates)))
+        let output = model.forward(
+            y[.newAxis].tokens,
+            cache: cache.isEmpty ? nil : cache,
+            skipFinalNorm: true,
+            returnSharedKV: returnSharedKV
+        )
+        let normalizedHidden = model.norm(output.hiddenStates)
+        return SharedKVTargetOutput(
+            logits: logitsForLastToken(from: normalizedHidden),
+            hiddenStates: output.hiddenStates,
+            sharedKVStates: output.sharedKVStates
+        )
     }
 
     private func logits(from hiddenStates: MLXArray) -> MLXArray {
@@ -940,7 +1070,317 @@ private final class Gemma4LanguageModel: Module {
     }
 }
 
-internal final class Gemma4Model: Module, LLMModel, GreedyTokenModel {
+private final class Gemma4AssistantMaskedEmbedder: Module {
+    let hiddenSize: Int
+    let vocabSize: Int
+    let numCentroids: Int
+    let topK: Int
+    let vocabSizePerCentroid: Int
+
+    @ModuleInfo var centroids: Linear
+    @ModuleInfo(key: "token_ordering") var tokenOrdering: MLXArray
+
+    init(_ config: Gemma4AssistantConfiguration) {
+        let textConfig = config.textConfig
+        self.hiddenSize = textConfig.hiddenSize
+        self.vocabSize = textConfig.vocabSize
+        self.numCentroids = config.numCentroids
+        self.topK = min(max(1, config.centroidIntermediateTopK), config.numCentroids)
+        self.vocabSizePerCentroid = max(1, textConfig.vocabSize / config.numCentroids)
+
+        _centroids.wrappedValue = Linear(textConfig.hiddenSize, config.numCentroids, bias: false)
+        _tokenOrdering.wrappedValue = MLXArray.zeros([textConfig.vocabSize], dtype: .int32)
+        super.init()
+    }
+
+    func callAsFunction(_ hiddenStates: MLXArray, lmHeadWeight: MLXArray) -> MLXArray {
+        let (selectedTokenIDs, selectedLogits) = selectedLogits(
+            hiddenStates,
+            lmHeadWeight: lmHeadWeight
+        )
+        let batchSize = hiddenStates.dim(0)
+        let sequenceLength = hiddenStates.dim(1)
+        let flatTokenIDs = selectedTokenIDs.reshaped([batchSize, sequenceLength, -1])
+        let maskValue = selectedLogits.min(axis: -1, keepDims: true) - 1
+        let output = MLXArray.full(
+            [batchSize, sequenceLength, vocabSize],
+            values: maskValue,
+            dtype: hiddenStates.dtype
+        )
+        return putAlong(output, flatTokenIDs, values: selectedLogits, axis: -1)
+    }
+
+    func argmax(_ hiddenStates: MLXArray, lmHeadWeight: MLXArray) -> MLXArray {
+        let (selectedTokenIDs, selectedLogits) = selectedLogits(
+            hiddenStates,
+            lmHeadWeight: lmHeadWeight
+        )
+        let batchSize = hiddenStates.dim(0)
+        let sequenceLength = hiddenStates.dim(1)
+        let flatTokenIDs = selectedTokenIDs.reshaped([batchSize, sequenceLength, -1])
+        let best = argMax(selectedLogits, axis: -1)[.ellipsis, .newAxis]
+        return takeAlong(flatTokenIDs, best, axis: -1).squeezed(axis: -1)
+    }
+
+    private func selectedLogits(
+        _ hiddenStates: MLXArray,
+        lmHeadWeight: MLXArray
+    ) -> (tokenIDs: MLXArray, logits: MLXArray) {
+        let batchSize = hiddenStates.dim(0)
+        let sequenceLength = hiddenStates.dim(1)
+        let centroidLogits = centroids(hiddenStates)
+        let topKIndices = argPartition(centroidLogits, kth: -topK, axis: -1)[
+            .ellipsis, (-topK)...
+        ]
+        let tokenIDs = tokenOrdering.reshaped([numCentroids, vocabSizePerCentroid])[
+            topKIndices
+        ]
+        let flatTokenIDs = tokenIDs.reshaped([-1])
+        let selectedEmbeddings = lmHeadWeight[flatTokenIDs].reshaped([
+            batchSize,
+            sequenceLength,
+            topK * vocabSizePerCentroid,
+            hiddenSize
+        ])
+        let logits = matmul(
+            hiddenStates[.ellipsis, .newAxis, 0...],
+            selectedEmbeddings.swappedAxes(-1, -2)
+        ).squeezed(axis: -2)
+        return (tokenIDs, logits)
+    }
+}
+
+private final class Gemma4AssistantInner: Module {
+    let config: Gemma4TextConfiguration
+
+    @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding
+    @ModuleInfo(key: "layers") var layers: [Gemma4DecoderLayer]
+    @ModuleInfo var norm: RMSNorm
+
+    init(_ config: Gemma4TextConfiguration) {
+        self.config = config
+        _embedTokens.wrappedValue = Embedding(
+            embeddingCount: config.vocabSize,
+            dimensions: config.hiddenSize
+        )
+        _layers.wrappedValue = (0 ..< config.numHiddenLayers).map {
+            Gemma4DecoderLayer(config, layerIndex: $0)
+        }
+        _norm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
+        super.init()
+    }
+}
+
+internal final class Gemma4AssistantModel: Module, SharedKVSpeculativeDraftModel {
+    let config: Gemma4AssistantConfiguration
+
+    @ModuleInfo(key: "model") private var model: Gemma4AssistantInner
+    @ModuleInfo(key: "pre_projection") private var preProjection: Linear
+    @ModuleInfo(key: "post_projection") private var postProjection: Linear
+    @ModuleInfo(key: "lm_head") private var lmHead: Linear?
+    @ModuleInfo(key: "masked_embedding") private var maskedEmbedding: Gemma4AssistantMaskedEmbedder?
+
+    var speculativeDraftBlockSize: Int {
+        max(1, config.blockSize)
+    }
+
+    init(_ config: Gemma4AssistantConfiguration) {
+        self.config = config
+        _model.wrappedValue = Gemma4AssistantInner(config.textConfig)
+        _preProjection.wrappedValue = Linear(
+            2 * config.backboneHiddenSize,
+            config.textConfig.hiddenSize,
+            bias: false
+        )
+        _postProjection.wrappedValue = Linear(
+            config.textConfig.hiddenSize,
+            config.backboneHiddenSize,
+            bias: false
+        )
+        if !config.tieWordEmbeddings {
+            _lmHead.wrappedValue = Linear(
+                config.textConfig.hiddenSize,
+                config.textConfig.vocabSize,
+                bias: false
+            )
+        }
+        if config.useOrderedEmbeddings {
+            _maskedEmbedding.wrappedValue = Gemma4AssistantMaskedEmbedder(config)
+        }
+        super.init()
+    }
+
+    func newCache(parameters: GenerateParameters?) -> [KVCache] {
+        []
+    }
+
+    func prepare(_ input: LMInput, cache: [KVCache], windowSize: Int?) throws -> PrepareResult {
+        throw LLMError.invalidConfiguration(
+            "Gemma 4 assistant models can only be used as shared-KV draft models."
+        )
+    }
+
+    func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
+        fatalError("Gemma 4 assistant models require target hidden states and shared K/V.")
+    }
+
+    func sharedKVDraftOutput(
+        tokenEmbeddings: MLXArray,
+        hiddenStates: MLXArray,
+        sharedKVStates: [String: SharedKVState],
+        position: Int
+    ) -> SharedKVDraftOutput {
+        let (targetHidden, assistantHidden) = draftHiddenStates(
+            tokenEmbeddings: tokenEmbeddings,
+            hiddenStates: hiddenStates,
+            sharedKVStates: sharedKVStates,
+            position: position
+        )
+        return SharedKVDraftOutput(
+            logits: projectToLogits(assistantHidden),
+            hiddenStates: targetHidden
+        )
+    }
+
+    func sharedKVGreedyDraftOutput(
+        tokenEmbeddings: MLXArray,
+        hiddenStates: MLXArray,
+        sharedKVStates: [String: SharedKVState],
+        position: Int
+    ) -> SharedKVGreedyDraftOutput? {
+        guard let maskedEmbedding else {
+            let output = sharedKVDraftOutput(
+                tokenEmbeddings: tokenEmbeddings,
+                hiddenStates: hiddenStates,
+                sharedKVStates: sharedKVStates,
+                position: position
+            )
+            return SharedKVGreedyDraftOutput(
+                token: argMax(output.logits[0..., -1, 0...], axis: -1),
+                hiddenStates: output.hiddenStates
+            )
+        }
+
+        let (targetHidden, assistantHidden) = draftHiddenStates(
+            tokenEmbeddings: tokenEmbeddings,
+            hiddenStates: hiddenStates,
+            sharedKVStates: sharedKVStates,
+            position: position
+        )
+        return SharedKVGreedyDraftOutput(
+            token: maskedEmbedding.argmax(assistantHidden, lmHeadWeight: model.embedTokens.weight),
+            hiddenStates: targetHidden
+        )
+    }
+
+    func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
+        weights.reduce(into: [:]) { result, pair in
+            if pair.key == "lm_head.weight", config.tieWordEmbeddings {
+                return
+            }
+            if pair.key == "masked_embedding.token_ordering" {
+                result[pair.key] = pair.value.asType(.int32)
+                return
+            }
+            result[pair.key] = pair.value
+        }
+    }
+
+    private func draftHiddenStates(
+        tokenEmbeddings: MLXArray,
+        hiddenStates: MLXArray,
+        sharedKVStates: [String: SharedKVState],
+        position: Int
+    ) -> (targetHiddenStates: MLXArray, assistantHiddenStates: MLXArray) {
+        var hidden = preProjection(concatenated([tokenEmbeddings, hiddenStates], axis: -1))
+        let masks = makeMasks(
+            sharedKVStates: sharedKVStates,
+            queryLength: hidden.dim(1),
+            position: position,
+            dtype: hidden.dtype
+        )
+
+        for layer in model.layers {
+            guard let sharedKV = sharedKVStates[layer.layerType] else {
+                fatalError("Gemma 4 assistant missing shared K/V for \(layer.layerType).")
+            }
+            let result = layer(
+                hidden,
+                mask: masks[layer.layerType] ?? .none,
+                cache: nil,
+                perLayerInput: nil,
+                sharedKV: (sharedKV.keys, sharedKV.values),
+                sharedOffset: position
+            )
+            hidden = result.output
+        }
+
+        let assistantHidden = model.norm(hidden)
+        return (postProjection(assistantHidden), assistantHidden)
+    }
+
+    private func projectToLogits(_ hiddenStates: MLXArray) -> MLXArray {
+        if let maskedEmbedding {
+            return maskedEmbedding(hiddenStates, lmHeadWeight: model.embedTokens.weight)
+        }
+        if let lmHead {
+            return lmHead(hiddenStates)
+        }
+        return model.embedTokens.asLinear(hiddenStates)
+    }
+
+    private func makeMasks(
+        sharedKVStates: [String: SharedKVState],
+        queryLength: Int,
+        position: Int,
+        dtype: DType
+    ) -> [String: MLXFast.ScaledDotProductAttentionMaskMode] {
+        sharedKVStates.reduce(into: [:]) { result, pair in
+            guard pair.key == "sliding_attention" else {
+                result[pair.key] = MLXFast.ScaledDotProductAttentionMaskMode.none
+                return
+            }
+            result[pair.key] = slidingMask(
+                queryLength: queryLength,
+                position: position,
+                keyLength: pair.value.keys.shape[pair.value.keys.shape.count - 2],
+                dtype: dtype
+            )
+        }
+    }
+
+    private func slidingMask(
+        queryLength: Int,
+        position: Int,
+        keyLength: Int,
+        dtype: DType
+    ) -> MLXFast.ScaledDotProductAttentionMaskMode {
+        let localPosition = min(max(position, 0), keyLength)
+        let window = config.textConfig.slidingWindow
+        if keyLength <= window,
+            localPosition < window,
+            keyLength - (localPosition + queryLength) < window {
+            return .none
+        }
+
+        let queryPositions = MLXArray(localPosition ..< localPosition + queryLength)[
+            0..., .newAxis
+        ]
+        let keyPositions = MLXArray(0 ..< keyLength)[.newAxis, 0...]
+        let distance = queryPositions - keyPositions
+        let inside = logicalAnd(distance .> -window, distance .< window)
+        let mask = MLX.where(
+            inside,
+            MLXArray(0.0, dtype: dtype),
+            MLXArray(-Float.infinity, dtype: dtype)
+        )
+        return .array(mask[.newAxis, .newAxis, 0..., 0...])
+    }
+}
+
+internal final class Gemma4Model: Module, LLMModel, GreedyTokenModel,
+    SharedKVSpeculativeTargetModel
+{
     @ModuleInfo(key: "language_model") private var languageModel: Gemma4LanguageModel
 
     let config: Gemma4TextConfiguration
@@ -966,6 +1406,30 @@ internal final class Gemma4Model: Module, LLMModel, GreedyTokenModel {
         state: LMOutput.State?
     ) -> GreedyTokenOutput {
         languageModel.greedyToken(input, cache: cache, state: state)
+    }
+
+    func speculativePrepare(
+        _ input: LMInput,
+        cache: [KVCache],
+        windowSize: Int?
+    ) throws -> SharedKVTargetOutput {
+        try languageModel.speculativePrepare(input, cache: cache, windowSize: windowSize)
+    }
+
+    func speculativeTargetOutput(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?
+    ) -> SharedKVTargetOutput {
+        languageModel.speculativeTargetOutput(input, cache: cache, state: state)
+    }
+
+    func speculativeDraftHidden(_ hiddenStates: MLXArray) -> MLXArray {
+        languageModel.speculativeDraftHidden(hiddenStates)
+    }
+
+    func speculativeTokenEmbeddings(_ tokenIDs: MLXArray) -> MLXArray {
+        languageModel.speculativeTokenEmbeddings(tokenIDs)
     }
 
     func prepare(_ input: LMInput, cache: [KVCache], windowSize: Int?) throws -> PrepareResult {

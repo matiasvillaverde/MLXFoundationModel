@@ -91,6 +91,21 @@ internal struct MLXPromptCacheLookupSnapshot: Sendable, Equatable {
 
 internal struct MLXSpeculativeDecodingSnapshot: Sendable, Equatable {
     let numDraftTokens: Int
+    let acceptedDraftTokens: Int?
+    let rejectedDraftTokens: Int?
+    let emittedTokens: Int?
+
+    init(
+        numDraftTokens: Int,
+        acceptedDraftTokens: Int? = nil,
+        rejectedDraftTokens: Int? = nil,
+        emittedTokens: Int? = nil
+    ) {
+        self.numDraftTokens = numDraftTokens
+        self.acceptedDraftTokens = acceptedDraftTokens
+        self.rejectedDraftTokens = rejectedDraftTokens
+        self.emittedTokens = emittedTokens
+    }
 }
 
 internal struct MLXSpecPrefillPlanSnapshot: Sendable, Equatable {
@@ -531,9 +546,17 @@ internal enum MLXGenerationDiagnostics {
         recordPromptCacheObservability(promptCacheObservability.recordEviction())
     }
 
-    internal static func recordSpeculativeDecoding(numDraftTokens: Int) {
+    internal static func recordSpeculativeDecoding(
+        numDraftTokens: Int,
+        acceptedDraftTokens: Int? = nil,
+        rejectedDraftTokens: Int? = nil,
+        emittedTokens: Int? = nil
+    ) {
         store.record(.speculativeDecoding(MLXSpeculativeDecodingSnapshot(
-            numDraftTokens: numDraftTokens
+            numDraftTokens: numDraftTokens,
+            acceptedDraftTokens: acceptedDraftTokens,
+            rejectedDraftTokens: rejectedDraftTokens,
+            emittedTokens: emittedTokens
         )), runID: currentRunID)
     }
 

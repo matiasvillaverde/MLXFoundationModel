@@ -4,24 +4,31 @@ import Testing
 
 @Suite("Model runtime optimization preferences")
 struct ModelRuntimeOptimizationPreferencesTests {
-    @Test("rejects unimplemented exclusive optimization runtime paths")
-    func rejectsUnimplementedExclusiveOptimizationRuntimePaths() throws {
-        let optimizations: [MLXRuntimeOptimizationConfiguration] = [
-            .vlmMTP(draftModelID: "qwen3.5-mtp-draft"),
-            .dFlash(draftModelID: "qwen3.5-dflash-draft")
-        ]
+    @Test("rejects unimplemented DFlash runtime path")
+    func rejectsUnimplementedDFlashRuntimePath() throws {
+        let optimization = MLXRuntimeOptimizationConfiguration.dFlash(
+            draftModelID: "qwen3.5-dflash-draft"
+        )
+        let preferences = ModelRuntimePreferences(optimization: optimization)
 
-        for optimization in optimizations {
-            let preferences = ModelRuntimePreferences(optimization: optimization)
-
-            do {
-                try preferences.validate()
-                Issue.record("Expected \(optimization.mode.rawValue) to fail closed")
-            } catch LLMError.invalidConfiguration(let message) {
-                #expect(message.contains("not implemented"))
-                #expect(message.contains(optimization.mode.rawValue))
-            }
+        do {
+            try preferences.validate()
+            Issue.record("Expected \(optimization.mode.rawValue) to fail closed")
+        } catch LLMError.invalidConfiguration(let message) {
+            #expect(message.contains("not implemented"))
+            #expect(message.contains(optimization.mode.rawValue))
         }
+    }
+
+    @Test("accepts VLM MTP as a shared-KV draft runtime path")
+    func acceptsVLMMTPAsSharedKVDraftRuntimePath() throws {
+        let preferences = ModelRuntimePreferences(
+            optimization: .vlmMTP(draftModelID: "gemma-4-assistant")
+        )
+
+        try preferences.validate()
+
+        #expect(preferences.optimization.requiresExclusiveSpeculativePath)
     }
 
     @Test("accepts SpecPrefill as a scalar dense fallback runtime path")
