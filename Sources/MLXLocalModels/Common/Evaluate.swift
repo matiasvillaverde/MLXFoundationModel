@@ -1873,6 +1873,7 @@ internal struct SpeculativeTokenIterator: Sequence, IteratorProtocol {
     internal private(set) var tokenCount = 0
     internal let maxTokens: Int?
     internal let numDraftTokens: Int
+    private var adaptiveDraftTokens: Int
     internal var cacheForPromptReuse: PromptCacheReusableState {
         PromptCacheReusableState(cache: mainCache, draftCache: draftCache)
     }
@@ -1902,6 +1903,7 @@ internal struct SpeculativeTokenIterator: Sequence, IteratorProtocol {
         self.sampler = parameters.sampler()
         self.maxTokens = parameters.maxTokens
         self.numDraftTokens = Swift.max(0, numDraftTokens)
+        self.adaptiveDraftTokens = Swift.max(0, numDraftTokens)
         self.quantizeKVCache = { cache in
             maybeQuantizeKVCache(
                 cache: &cache,
@@ -1974,8 +1976,8 @@ internal struct SpeculativeTokenIterator: Sequence, IteratorProtocol {
     }
 
     private mutating func speculateRound() {
-        let remainingTokens = maxTokens.map { $0 - tokenCount } ?? numDraftTokens
-        let draftCount = Swift.min(remainingTokens, numDraftTokens)
+        let remainingTokens = maxTokens.map { $0 - tokenCount } ?? adaptiveDraftTokens
+        let draftCount = Swift.min(remainingTokens, adaptiveDraftTokens)
         guard draftCount > 0 else {
             return
         }
@@ -2050,8 +2052,16 @@ internal struct SpeculativeTokenIterator: Sequence, IteratorProtocol {
         processor?.didSample(token: finalToken)
         pendingTokens.append(mainTokenIDs[acceptedCount])
 
-        trimPromptCache(mainCache, numTokens: draftTokens.count - acceptedCount)
-        trimPromptCache(draftCache, numTokens: Swift.max(draftTokens.count - acceptedCount - 1, 0))
+        let rejectedCount = draftTokens.count - acceptedCount
+        MLXGenerationDiagnostics.recordSpeculativeDecoding(
+            numDraftTokens: draftTokens.count,
+            acceptedDraftTokens: acceptedCount,
+            rejectedDraftTokens: rejectedCount,
+            emittedTokens: acceptedCount + 1
+        )
+        updateAdaptiveDraftWindow(acceptedCount: acceptedCount, attemptedCount: draftTokens.count)
+        trimPromptCache(mainCache, numTokens: rejectedCount)
+        trimPromptCache(draftCache, numTokens: Swift.max(rejectedCount - 1, 0))
         quantizeKVCache(&mainCache)
         quantizeKVCache(&draftCache)
 
@@ -2059,6 +2069,19 @@ internal struct SpeculativeTokenIterator: Sequence, IteratorProtocol {
         draftY = .init(tokens: finalToken)
         if acceptedCount == draftTokens.count, let lastDraftToken = draftTokens.last {
             draftY = .init(tokens: concatenated([lastDraftToken.reshaped([1]), finalToken]))
+        }
+    }
+
+    private mutating func updateAdaptiveDraftWindow(acceptedCount: Int, attemptedCount: Int) {
+        guard numDraftTokens > 1, attemptedCount > 0 else {
+            return
+        }
+        if acceptedCount == attemptedCount {
+            adaptiveDraftTokens = Swift.min(numDraftTokens, adaptiveDraftTokens + 1)
+            return
+        }
+        if acceptedCount * 2 < attemptedCount {
+            adaptiveDraftTokens = Swift.max(1, adaptiveDraftTokens - 1)
         }
     }
 

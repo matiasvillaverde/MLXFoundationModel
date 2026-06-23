@@ -163,7 +163,8 @@ extension MLXSession {
 
     internal func makeSpeculativeDecodingConfigurationIfNeeded() async throws
         -> MLXSpeculativeDecodingConfiguration? {
-        if runtimePreferences.optimization.mode == .vlmMTP {
+        if runtimePreferences.optimization.mode == .externalDraft
+            || runtimePreferences.optimization.mode == .vlmMTP {
             guard let draftModelID = runtimePreferences.optimization.draftModelID,
                 !draftModelID.isEmpty else {
                 return nil

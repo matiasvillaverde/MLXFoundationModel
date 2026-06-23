@@ -4,6 +4,21 @@ import Testing
 
 @Suite("Model runtime optimization knobs")
 struct ModelRuntimeOptimizationKnobsTests {
+    @Test("ExternalDraft runtime knobs round-trip and validate")
+    func externalDraftRuntimeKnobsRoundTripAndValidate() throws {
+        let optimization = MLXRuntimeOptimizationConfiguration.externalDraft(
+            draftModelID: "Qwen3-0.6B-4bit",
+            maxContextTokens: 8_192
+        )
+
+        let decoded = try Self.roundTrip(optimization)
+
+        #expect(decoded.mode == .externalDraft)
+        #expect(decoded.draftModelID == "Qwen3-0.6B-4bit")
+        #expect(decoded.maxContextTokens == 8_192)
+        try ModelRuntimePreferences(optimization: decoded).validate()
+    }
+
     @Test("SpecPrefill runtime knobs round-trip and validate for dense fallback")
     func specPrefillRuntimeKnobsRoundTripAndValidateForDenseFallback() throws {
         let optimization = MLXRuntimeOptimizationConfiguration.specPrefill(

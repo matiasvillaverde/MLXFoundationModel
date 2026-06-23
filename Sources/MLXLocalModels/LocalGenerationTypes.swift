@@ -473,6 +473,7 @@ public enum MLXRuntimeOptimizationMode: String, Codable, CaseIterable, Sendable 
     case off
     case turboQuantKV
     case nativeMTP
+    case externalDraft
     case vlmMTP
     case specPrefill
     case dFlash
@@ -593,6 +594,10 @@ public struct MLXRuntimeOptimizationConfiguration: Codable, Equatable, Hashable,
         Self(mode: .vlmMTP, draftModelID: draftModelID, maxContextTokens: maxContextTokens)
     }
 
+    public static func externalDraft(draftModelID: String, maxContextTokens: Int? = nil) -> Self {
+        Self(mode: .externalDraft, draftModelID: draftModelID, maxContextTokens: maxContextTokens)
+    }
+
     public static func specPrefill(
         draftModelID: String,
         maxContextTokens: Int? = nil,
@@ -629,7 +634,7 @@ public struct MLXRuntimeOptimizationConfiguration: Codable, Equatable, Hashable,
 
     public var requiresExclusiveSpeculativePath: Bool {
         switch mode {
-        case .nativeMTP, .vlmMTP, .specPrefill, .dFlash:
+        case .nativeMTP, .externalDraft, .vlmMTP, .specPrefill, .dFlash:
             true
         case .off, .turboQuantKV:
             false
@@ -644,7 +649,7 @@ public struct MLXRuntimeOptimizationConfiguration: Codable, Equatable, Hashable,
             implemented in the MLXFoundationModel runtime yet.
             """
 
-        case .off, .turboQuantKV, .nativeMTP, .vlmMTP, .specPrefill:
+        case .off, .turboQuantKV, .nativeMTP, .externalDraft, .vlmMTP, .specPrefill:
             nil
         }
     }
@@ -655,7 +660,7 @@ public struct MLXRuntimeOptimizationConfiguration: Codable, Equatable, Hashable,
                 "\(mode.rawValue) cannot be combined with same-model speculative decoding."
             )
         }
-        if mode == .vlmMTP || mode == .specPrefill || mode == .dFlash {
+        if mode == .externalDraft || mode == .vlmMTP || mode == .specPrefill || mode == .dFlash {
             guard draftModelID?.isEmpty == false else {
                 throw LLMError.invalidConfiguration(
                     "\(mode.rawValue) requires a draft model identifier."

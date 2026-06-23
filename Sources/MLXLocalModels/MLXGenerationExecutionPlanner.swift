@@ -73,6 +73,9 @@ internal enum MLXGenerationExecutionPlanner {
         if speculativeDecodingMode != .off {
             return .speculativeDecodingRequiresScalar
         }
+        if optimization.mode == .externalDraft {
+            return .speculativeDecodingRequiresScalar
+        }
         if optimization.mode == .nativeMTP {
             return .nativeMTPRequiresScalar
         }

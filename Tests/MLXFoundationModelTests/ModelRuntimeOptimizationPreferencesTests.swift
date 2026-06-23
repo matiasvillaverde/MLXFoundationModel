@@ -31,6 +31,17 @@ struct ModelRuntimeOptimizationPreferencesTests {
         #expect(preferences.optimization.requiresExclusiveSpeculativePath)
     }
 
+    @Test("accepts external draft as a generic speculative runtime path")
+    func acceptsExternalDraftAsGenericSpeculativeRuntimePath() throws {
+        let preferences = ModelRuntimePreferences(
+            optimization: .externalDraft(draftModelID: "qwen3-0.6b-4bit")
+        )
+
+        try preferences.validate()
+
+        #expect(preferences.optimization.requiresExclusiveSpeculativePath)
+    }
+
     @Test("accepts SpecPrefill as a scalar dense fallback runtime path")
     func acceptsSpecPrefillAsScalarDenseFallbackRuntimePath() throws {
         let preferences = ModelRuntimePreferences(
