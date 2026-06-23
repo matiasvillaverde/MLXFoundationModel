@@ -407,8 +407,11 @@ internal struct MLXSessionLifecycleSnapshot: Sendable, Equatable {
 internal enum MLXGenerationDiagnostics {
     private static let store = MLXGenerationDiagnosticStore()
     private static let promptCacheObservability = MLXPromptCacheObservabilityTracker()
+    private static let recordsCacheSnapshotsFromEnvironment =
+        ProcessInfo.processInfo.environment["MLX_RECORD_CACHE_SNAPSHOTS"] == "1"
     @TaskLocal private static var currentRunID: UUID?
     @TaskLocal private static var adaptivePrefillController: MLXAdaptivePrefillChunkController?
+    @TaskLocal private static var recordsCacheSnapshots = false
 
     internal static func withRecording<T>(
         _ operation: () async throws -> T
@@ -425,6 +428,14 @@ internal enum MLXGenerationDiagnostics {
         } catch {
             store.reset(runID: runID)
             throw error
+        }
+    }
+
+    internal static func withCacheSnapshotRecording<T>(
+        _ operation: () async throws -> T
+    ) async rethrows -> T {
+        try await $recordsCacheSnapshots.withValue(true) {
+            try await operation()
         }
     }
 
@@ -595,6 +606,9 @@ internal enum MLXGenerationDiagnostics {
     }
 
     internal static func recordCacheSnapshot(label: String, cache: [KVCache]) {
+        guard shouldRecordCacheSnapshots else {
+            return
+        }
         let entries = cache.map { entry in
             MLXCacheEntrySnapshot(
                 typeName: String(describing: type(of: entry)),
@@ -608,6 +622,10 @@ internal enum MLXGenerationDiagnostics {
             .cacheSnapshot(MLXCacheSnapshot(label: label, entries: entries)),
             runID: currentRunID
         )
+    }
+
+    private static var shouldRecordCacheSnapshots: Bool {
+        recordsCacheSnapshots || recordsCacheSnapshotsFromEnvironment
     }
 
     internal static func recordQuantizedKVConversion(
