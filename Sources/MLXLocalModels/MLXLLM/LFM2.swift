@@ -349,7 +349,7 @@ private class LFM2ModelInner: Module {
     }
 }
 
-internal class LFM2Model: Module, LLMModel, KVCacheDimensionProvider {
+internal class LFM2Model: Module, LLMModel, KVCacheDimensionProvider, GreedyTokenModel {
     public let vocabularySize: Int
     public let kvHeads: [Int]
 
@@ -370,6 +370,15 @@ internal class LFM2Model: Module, LLMModel, KVCacheDimensionProvider {
     public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
         let out = model(inputs, cache: cache)
         return model.embedTokens.asLinear(out)
+    }
+
+    internal func greedyToken(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?
+    ) -> GreedyTokenOutput {
+        let hiddenStates = lastTokenHiddenState(model(input[text: .newAxis].tokens, cache: cache))
+        return greedyTokenOutput(logits: model.embedTokens.asLinear(hiddenStates), state: state)
     }
 
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {

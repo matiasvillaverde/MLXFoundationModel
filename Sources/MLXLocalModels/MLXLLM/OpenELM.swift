@@ -179,7 +179,7 @@ class OpenELMModelInner: Module {
     }
 }
 
-internal class OpenELMModel: Module, LLMModel, KVCacheDimensionProvider {
+internal class OpenELMModel: Module, LLMModel, KVCacheDimensionProvider, GreedyTokenModel {
     public let vocabularySize: Int
     public let kvHeads: [Int]
 
@@ -207,6 +207,20 @@ internal class OpenELMModel: Module, LLMModel, KVCacheDimensionProvider {
         }
 
         return out
+    }
+
+    internal func greedyToken(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?
+    ) -> GreedyTokenOutput {
+        var logits = lastTokenHiddenState(transformer(input[text: .newAxis].tokens, cache: cache))
+        if let lmHead {
+            logits = lmHead(logits)
+        } else {
+            logits = transformer.embedTokens.asLinear(logits)
+        }
+        return greedyTokenOutput(logits: logits, state: state)
     }
 }
 

@@ -438,7 +438,7 @@ internal class LFM2MoEModelInner: Module {
     }
 }
 
-internal class LFM2MoEModel: Module, LLMModel, KVCacheDimensionProvider {
+internal class LFM2MoEModel: Module, LLMModel, KVCacheDimensionProvider, GreedyTokenModel {
     internal let vocabularySize: Int
     internal let kvHeads: [Int]
     let configuration: LFM2MoEConfiguration
@@ -457,6 +457,15 @@ internal class LFM2MoEModel: Module, LLMModel, KVCacheDimensionProvider {
     internal func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
         let out = model(inputs, cache: cache)
         return model.embedTokens.asLinear(out)
+    }
+
+    internal func greedyToken(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?
+    ) -> GreedyTokenOutput {
+        let hiddenStates = lastTokenHiddenState(model(input[text: .newAxis].tokens, cache: cache))
+        return greedyTokenOutput(logits: model.embedTokens.asLinear(hiddenStates), state: state)
     }
 
     internal func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {

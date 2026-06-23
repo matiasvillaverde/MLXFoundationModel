@@ -460,7 +460,7 @@ private class BitnetModelInner: Module {
 
 // MARK: - Bitnet Model
 
-internal class BitnetModel: Module, LLMModel, KVCacheDimensionProvider {
+internal class BitnetModel: Module, LLMModel, KVCacheDimensionProvider, GreedyTokenModel {
     public let vocabularySize: Int
     public let kvHeads: [Int]
 
@@ -486,6 +486,18 @@ internal class BitnetModel: Module, LLMModel, KVCacheDimensionProvider {
             return lmHead(out)
         }
         return model.embedTokens.asLinear(out)
+    }
+
+    internal func greedyToken(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?
+    ) -> GreedyTokenOutput {
+        let hiddenStates = lastTokenHiddenState(model(input[text: .newAxis].tokens, cache: cache))
+        if let lmHead {
+            return greedyTokenOutput(logits: lmHead(hiddenStates), state: state)
+        }
+        return greedyTokenOutput(logits: model.embedTokens.asLinear(hiddenStates), state: state)
     }
 
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {

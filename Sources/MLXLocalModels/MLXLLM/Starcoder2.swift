@@ -150,7 +150,7 @@ private class Starcoder2ModelInner: Module {
     }
 }
 
-internal class Starcoder2Model: Module, LLMModel, KVCacheDimensionProvider {
+internal class Starcoder2Model: Module, LLMModel, KVCacheDimensionProvider, GreedyTokenModel {
     public let vocabularySize: Int
     public let kvHeads: [Int]
 
@@ -177,6 +177,18 @@ internal class Starcoder2Model: Module, LLMModel, KVCacheDimensionProvider {
         }
         out = model.embedTokens.asLinear(out)
         return out
+    }
+
+    internal func greedyToken(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?
+    ) -> GreedyTokenOutput {
+        let hiddenStates = lastTokenHiddenState(model(input[text: .newAxis].tokens, cache: cache))
+        if !tieWordEmbeddings {
+            return greedyTokenOutput(logits: lmHead(hiddenStates), state: state)
+        }
+        return greedyTokenOutput(logits: model.embedTokens.asLinear(hiddenStates), state: state)
     }
 }
 

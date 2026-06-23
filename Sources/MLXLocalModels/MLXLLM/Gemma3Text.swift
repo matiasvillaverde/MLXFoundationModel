@@ -325,7 +325,7 @@ private class Gemma3Model: Module {
     }
 }
 
-internal class Gemma3TextModel: Module, LLMModel {
+internal class Gemma3TextModel: Module, LLMModel, GreedyTokenModel {
     @ModuleInfo private var model: Gemma3Model
     @ModuleInfo(key: "lm_head") var lmHead: Linear
 
@@ -343,6 +343,15 @@ internal class Gemma3TextModel: Module, LLMModel {
         var out = model(inputs, mask: nil, cache: cache)
         out = lmHead(out)
         return out
+    }
+
+    internal func greedyToken(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?
+    ) -> GreedyTokenOutput {
+        let hiddenStates = model(input[text: .newAxis].tokens, mask: nil, cache: cache)
+        return greedyTokenOutput(logits: lmHead(lastTokenHiddenState(hiddenStates)), state: state)
     }
 
     public func sanitize(weights: [String: MLXArray])

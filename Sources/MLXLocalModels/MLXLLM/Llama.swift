@@ -282,7 +282,7 @@ private class LlamaModelInner: Module {
 }
 
 /// Model for Llama and Mistral model types.
-internal class LlamaModel: Module, LLMModel, KVCacheDimensionProvider {
+internal class LlamaModel: Module, LLMModel, KVCacheDimensionProvider, GreedyTokenModel {
     public let vocabularySize: Int
     public let kvHeads: [Int]
 
@@ -305,6 +305,20 @@ internal class LlamaModel: Module, LLMModel, KVCacheDimensionProvider {
             return lmHead(out)
         }
         return model.embedTokens.asLinear(out)
+    }
+
+    internal func greedyToken(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?
+    ) -> GreedyTokenOutput {
+        var logits = lastTokenHiddenState(model(input[text: .newAxis].tokens, cache: cache))
+        if let lmHead {
+            logits = lmHead(logits)
+        } else {
+            logits = model.embedTokens.asLinear(logits)
+        }
+        return greedyTokenOutput(logits: logits, state: state)
     }
 
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {

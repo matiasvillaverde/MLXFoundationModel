@@ -177,7 +177,7 @@ private class SmolLM3ModelInner: Module {
     }
 }
 
-internal class SmolLM3Model: Module, LLMModel, KVCacheDimensionProvider {
+internal class SmolLM3Model: Module, LLMModel, KVCacheDimensionProvider, GreedyTokenModel {
     public let vocabularySize: Int
     public let kvHeads: [Int]
 
@@ -215,6 +215,20 @@ internal class SmolLM3Model: Module, LLMModel, KVCacheDimensionProvider {
             out = model.embedTokens.asLinear(out)
         }
         return out
+    }
+
+    internal func greedyToken(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?
+    ) -> GreedyTokenOutput {
+        var logits = lastTokenHiddenState(model(input[text: .newAxis].tokens, cache: cache))
+        if let lmHead {
+            logits = lmHead(logits)
+        } else {
+            logits = model.embedTokens.asLinear(logits)
+        }
+        return greedyTokenOutput(logits: logits, state: state)
     }
 
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {

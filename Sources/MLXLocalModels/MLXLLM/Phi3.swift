@@ -188,7 +188,7 @@ private class Phi3ModelInner: Module {
     }
 }
 
-internal class Phi3Model: Module, LLMModel, KVCacheDimensionProvider {
+internal class Phi3Model: Module, LLMModel, KVCacheDimensionProvider, GreedyTokenModel {
     public let vocabularySize: Int
     public let kvHeads: [Int]
 
@@ -215,6 +215,22 @@ internal class Phi3Model: Module, LLMModel, KVCacheDimensionProvider {
         }
         if let lmHead {
             return lmHead(out)
+        }
+        fatalError(
+            "Model configuration error: Neither tied embeddings nor lm_head is available")
+    }
+
+    internal func greedyToken(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?
+    ) -> GreedyTokenOutput {
+        let hiddenStates = lastTokenHiddenState(model(input[text: .newAxis].tokens, cache: cache))
+        if args.tieWordEmbeddings {
+            return greedyTokenOutput(logits: model.embedTokens.asLinear(hiddenStates), state: state)
+        }
+        if let lmHead {
+            return greedyTokenOutput(logits: lmHead(hiddenStates), state: state)
         }
         fatalError(
             "Model configuration error: Neither tied embeddings nor lm_head is available")

@@ -177,7 +177,7 @@ private class GraniteModelInner: Module {
     }
 }
 
-internal class GraniteModel: Module, LLMModel, KVCacheDimensionProvider {
+internal class GraniteModel: Module, LLMModel, KVCacheDimensionProvider, GreedyTokenModel {
     public let vocabularySize: Int
     public let kvHeads: [Int]
     let logitsScaling: Float
@@ -209,6 +209,20 @@ internal class GraniteModel: Module, LLMModel, KVCacheDimensionProvider {
         }
 
         return out / logitsScaling
+    }
+
+    internal func greedyToken(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?
+    ) -> GreedyTokenOutput {
+        var logits = lastTokenHiddenState(model(input[text: .newAxis].tokens, cache: cache))
+        if let lmHead {
+            logits = lmHead(logits)
+        } else {
+            logits = model.embedTokens.asLinear(logits)
+        }
+        return greedyTokenOutput(logits: logits / logitsScaling, state: state)
     }
 }
 

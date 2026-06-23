@@ -324,6 +324,16 @@ internal protocol GreedyTokenModel: LanguageModel {
     ) -> GreedyTokenOutput
 }
 
+@inline(__always)
+internal func lastTokenHiddenState(_ hiddenStates: MLXArray) -> MLXArray {
+    hiddenStates[0..., -1, 0...]
+}
+
+@inline(__always)
+internal func greedyTokenOutput(logits: MLXArray, state: LMOutput.State?) -> GreedyTokenOutput {
+    GreedyTokenOutput(token: argMax(logits, axis: -1), state: state)
+}
+
 internal protocol SharedKVSpeculativeTargetModel: LanguageModel {
     func speculativePrepare(
         _ input: LMInput,
