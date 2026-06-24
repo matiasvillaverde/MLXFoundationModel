@@ -1,189 +1,247 @@
-// Copyright © 2024 Apple Inc.
-
 import Foundation
 import MLX
 import MLXNN
-import MLXOptimizers
 import MLXRandom
 
-/// Implementation of LoRA `Linear` replacement layer.
-///
-/// This layer implements the LoRA capabilities for `Linear` layers, specifically:
-///
-/// - converting `Linear` or `QuantizedLinear` layers to ``LoRALinear`` / ``QLoRALinear``
-/// - converting ``LoRALinear`` back to `Linear` or `QuantizedLinear` (``LoRAConvertToLinear``)
-/// - implementing the LoRA evaluation
-///
-/// ``QLoRALinear`` is the equivalent class for `QuantizedLinear`.
-///
-/// This is not typically used directly -- ``LoRATrain/convert(model:layers:)`` is used to
-/// add the adapter layers to a given model.
-///
-/// ### See Also
-/// - [LoRA: Low-Rank Adaptation of Large Language Models](https://arxiv.org/abs/2106.09685)
-/// - [QLoRA: Efficient Finetuning of Quantized LLMs](https://arxiv.org/abs/2305.14314)
-/// - ``QLoRALinear``
-/// - ``LoRATrain/convert(model:layers:)``
-/// - ``LoRATrain/fuse(model:layers:deQuantize:)``
-internal class LoRALinear: Linear, LoRALayer {
+private enum LoRAParameterKey {
+    static let inputAdapter = "lora_a"
+    static let outputAdapter = "lora_b"
 
-    let scale: Float
-
-    @ParameterInfo(key: "lora_a") var loraA: MLXArray
-    @ParameterInfo(key: "lora_b") var loraB: MLXArray
-
-    required public init(
-        _ inputDimensions: Int, _ outputDimensions: Int, rank: Int = 8, bias: Bool = false,
-        scale: Float = 20.0, linear: Linear
-    ) {
-        // Scale for low-rank update
-        self.scale = scale
-
-        // Low rank lora weights
-        let loraScale = 1 / sqrt(Float(inputDimensions))
-        self._loraA.wrappedValue = MLXRandom.uniform(
-            low: -loraScale, high: loraScale, [inputDimensions, rank])
-        self._loraB.wrappedValue = MLXArray.zeros([rank, outputDimensions])
-
-        super.init(weight: linear.weight, bias: linear.bias)
-
-        freeze()
-    }
-
-    /// Freeze all parameters except the lora parameters
-    public override func freeze(recursive: Bool = true, keys: [String]? = nil, strict: Bool = false)
-        throws
-    {
-        // realize the keys and omit the lora parameters
-        let keys =
-            (keys ?? self.filterMap(filter: Self.filterLocalParameters).flattened().map { $0.0 })
-            .filter {
-                $0 != "lora_a" && $0 != "lora_b"
-            }
-        try super.freeze(recursive: recursive, keys: keys, strict: strict)
-    }
-
-    /// Convert a `Linear` or `QuantizedLinear` layer into a new `Linear` layer
-    /// that implements the `LoRA` adapter.
-    ///
-    /// This is typically called via ``LoRATrain/convert(model:layers:)``.
-    ///
-    /// ### See Also
-    /// - ``LoRATrain/convert(model:layers:)``
-    /// - ``QLoRALinear/from(linear:rank:)``
-    internal static func from(linear: Linear, rank: Int = 8, scale: Float = 20.0) -> LoRALayer {
-        if let linear = linear as? QuantizedLinear {
-            return QLoRALinear.from(linear: linear, rank: rank, scale: scale)
-        }
-        let (outputDimensions, inputDimensions) = linear.shape
-        return LoRALinear(
-            inputDimensions, outputDimensions, rank: rank, scale: scale, linear: linear)
-    }
-
-    /// Convert back into a fused `Linear` layer.
-    ///
-    /// This is typically called via ``LoRATrain/fuse(model:layers:deQuantize:)``.
-    ///
-    /// ### See Also
-    /// - ``LoRATrain/fuse(model:layers:deQuantize:)``
-    /// - ``LoRAConvertToLinear``
-    /// - ``QLoRALinear/toLinear(deQuantize:)``
-    internal func fused() -> Module {
-        let dtype = weight.dtype
-        let loraB = (scale * loraB.T).asType(dtype)
-        let loraA = loraA.T.asType(dtype)
-        return Linear(weight: weight + matmul(loraB, loraA), bias: bias)
-    }
-
-    public override func callAsFunction(_ x: MLXArray) -> MLXArray {
-        let y = super.callAsFunction(x.asType(weight.dtype))
-        let z = matmul(matmul(x, self.loraA), self.loraB)
-        return y + scale * z
-    }
+    static let trainable: Set<String> = [
+        inputAdapter,
+        outputAdapter
+    ]
 }
 
-/// Implementation of LoRA `QuantizedLinear` replacement layer.
-///
-/// See ``LoRALinear`` (equivalent class for `Linear` layers) for more information.
-internal class QLoRALinear: QuantizedLinear, LoRALayer {
+private struct LoRAAdapterWeights {
+    let input: MLXArray
+    let output: MLXArray
+}
 
+private func makeLoRAAdapterWeights(
+    inputDimensions: Int,
+    outputDimensions: Int,
+    rank: Int
+) -> LoRAAdapterWeights {
+    precondition(inputDimensions > 0, "LoRA input dimension must be positive")
+    precondition(outputDimensions > 0, "LoRA output dimension must be positive")
+    precondition(rank > 0, "LoRA rank must be positive")
+
+    let bound = 1 / sqrt(Float(inputDimensions))
+    return LoRAAdapterWeights(
+        input: MLXRandom.uniform(
+            low: -bound,
+            high: bound,
+            [inputDimensions, rank]
+        ),
+        output: MLXArray.zeros([rank, outputDimensions])
+    )
+}
+
+private func freezeKeys(
+    for module: Module,
+    requestedKeys: [String]?
+) -> [String] {
+    let localKeys =
+        requestedKeys
+        ?? module.filterMap(filter: type(of: module).filterLocalParameters)
+            .flattened()
+            .map { $0.0 }
+    return localKeys.filter { !LoRAParameterKey.trainable.contains($0) }
+}
+
+private func lowRankWeightDelta(
+    inputAdapter: MLXArray,
+    outputAdapter: MLXArray,
+    scale: Float,
+    dtype: DType
+) -> MLXArray {
+    let output = (scale * outputAdapter.T).asType(dtype)
+    let input = inputAdapter.T.asType(dtype)
+    return matmul(output, input)
+}
+
+private func lowRankActivationDelta(
+    input: MLXArray,
+    inputAdapter: MLXArray,
+    outputAdapter: MLXArray,
+    scale: Float,
+    dtype: DType
+) -> MLXArray {
+    let delta = matmul(matmul(input, inputAdapter), outputAdapter)
+    return (scale * delta).asType(dtype)
+}
+
+/// Linear layer with a trainable LoRA adapter over frozen base weights.
+internal class LoRALinear: Linear, LoRALayer {
     let scale: Float
 
-    @ParameterInfo(key: "lora_a") var loraA: MLXArray
-    @ParameterInfo(key: "lora_b") var loraB: MLXArray
+    @ParameterInfo(key: LoRAParameterKey.inputAdapter) var loraA: MLXArray
+    @ParameterInfo(key: LoRAParameterKey.outputAdapter) var loraB: MLXArray
 
     required public init(
-        _ inputDimensions: Int, _ outputDimensions: Int, rank: Int = 8, bias: Bool = false,
-        scale: Float = 20.0, linear: QuantizedLinear
+        _ inputDimensions: Int,
+        _ outputDimensions: Int,
+        rank: Int = 8,
+        bias: Bool = false,
+        scale: Float = 20.0,
+        linear: Linear
     ) {
-
-        // Scale for low-rank update
         self.scale = scale
+        let adapter = makeLoRAAdapterWeights(
+            inputDimensions: inputDimensions,
+            outputDimensions: outputDimensions,
+            rank: rank
+        )
+        _loraA.wrappedValue = adapter.input
+        _loraB.wrappedValue = adapter.output
 
-        // Low rank lora weights
-        let loraScale = 1 / sqrt(Float(inputDimensions))
-        self._loraA.wrappedValue = MLXRandom.uniform(
-            low: -loraScale, high: loraScale, [inputDimensions, rank])
-        self._loraB.wrappedValue = MLXArray.zeros([rank, outputDimensions])
-
-        super.init(
-            weight: linear.weight, bias: linear.bias, scales: linear.scales, biases: linear.biases,
-            groupSize: linear.groupSize, bits: linear.bits)
-
-        // start frozen except for the lora keys
+        super.init(weight: linear.weight, bias: linear.bias)
         freeze()
     }
 
-    /// Freeze all parameters except the lora parameters
-    public override func freeze(recursive: Bool = true, keys: [String]? = nil, strict: Bool = false)
-        throws
-    {
-        // realize the keys and omit the lora parameters
-        let keys =
-            (keys ?? self.filterMap(filter: Self.filterLocalParameters).flattened().map { $0.0 })
-            .filter {
-                $0 != "lora_a" && $0 != "lora_b"
-            }
-        try super.freeze(recursive: recursive, keys: keys, strict: strict)
-    }
+    internal static func from(
+        linear: Linear,
+        rank: Int = 8,
+        scale: Float = 20.0
+    ) -> LoRALayer {
+        if let quantized = linear as? QuantizedLinear {
+            return QLoRALinear.from(linear: quantized, rank: rank, scale: scale)
+        }
 
-    /// Convert a `QuantizedLinear` layer into a new `Linear` layer
-    /// that implements the `LoRA` adapter.
-    ///
-    /// This is typically called via ``LoRATrain/convert(model:layers:)``.
-    ///
-    /// ### See Also
-    /// - ``LoRATrain/convert(model:layers:)``
-    /// - ``LoRALinear/from(linear:rank:)``
-    internal static func from(linear: QuantizedLinear, rank: Int = 8, scale: Float = 20.0)
-        -> LoRALayer
-    {
         let (outputDimensions, inputDimensions) = linear.shape
-        return QLoRALinear(
-            inputDimensions, outputDimensions, rank: rank, scale: scale, linear: linear)
+        return LoRALinear(
+            inputDimensions,
+            outputDimensions,
+            rank: rank,
+            scale: scale,
+            linear: linear
+        )
     }
 
-    /// Convert back into a fused `QuantizedLinear` layer.
-    ///
-    /// This is typically called via ``LoRATrain/fuse(model:layers:deQuantize:)``.
-    ///
-    /// ### See Also
-    /// - ``LoRATrain/fuse(model:layers:deQuantize:)``
+    public override func freeze(
+        recursive: Bool = true,
+        keys: [String]? = nil,
+        strict: Bool = false
+    ) throws {
+        try super.freeze(
+            recursive: recursive,
+            keys: freezeKeys(for: self, requestedKeys: keys),
+            strict: strict
+        )
+    }
+
     internal func fused() -> Module {
-        let weight = dequantizedWeight
-        let loraB = (scale * loraB.T).asType(.float16)
-        let loraA = loraA.T.asType(.float16)
-        return QuantizedLinear(
-            weight: weight + matmul(loraB, loraA),
-            bias: bias,
-            groupSize: groupSize,
-            bits: bits
+        Linear(
+            weight: weight + lowRankWeightDelta(
+                inputAdapter: loraA,
+                outputAdapter: loraB,
+                scale: scale,
+                dtype: weight.dtype
+            ),
+            bias: bias
         )
     }
 
     public override func callAsFunction(_ x: MLXArray) -> MLXArray {
-        let y = super.callAsFunction(x.asType(scales.dtype))
-        let z = matmul(matmul(x, self.loraA), self.loraB)
-        return y + scale * z
+        let base = super.callAsFunction(x.asType(weight.dtype))
+        return base + lowRankActivationDelta(
+            input: x,
+            inputAdapter: loraA,
+            outputAdapter: loraB,
+            scale: scale,
+            dtype: base.dtype
+        )
+    }
+}
+
+/// Quantized linear layer with a trainable LoRA adapter over frozen base weights.
+internal class QLoRALinear: QuantizedLinear, LoRALayer {
+    let scale: Float
+
+    @ParameterInfo(key: LoRAParameterKey.inputAdapter) var loraA: MLXArray
+    @ParameterInfo(key: LoRAParameterKey.outputAdapter) var loraB: MLXArray
+
+    required public init(
+        _ inputDimensions: Int,
+        _ outputDimensions: Int,
+        rank: Int = 8,
+        bias: Bool = false,
+        scale: Float = 20.0,
+        linear: QuantizedLinear
+    ) {
+        self.scale = scale
+        let adapter = makeLoRAAdapterWeights(
+            inputDimensions: inputDimensions,
+            outputDimensions: outputDimensions,
+            rank: rank
+        )
+        _loraA.wrappedValue = adapter.input
+        _loraB.wrappedValue = adapter.output
+
+        super.init(
+            weight: linear.weight,
+            bias: linear.bias,
+            scales: linear.scales,
+            biases: linear.biases,
+            groupSize: linear.groupSize,
+            bits: linear.bits,
+            mode: linear.mode
+        )
+        freeze()
+    }
+
+    internal static func from(
+        linear: QuantizedLinear,
+        rank: Int = 8,
+        scale: Float = 20.0
+    ) -> LoRALayer {
+        let (outputDimensions, inputDimensions) = linear.shape
+        return QLoRALinear(
+            inputDimensions,
+            outputDimensions,
+            rank: rank,
+            scale: scale,
+            linear: linear
+        )
+    }
+
+    public override func freeze(
+        recursive: Bool = true,
+        keys: [String]? = nil,
+        strict: Bool = false
+    ) throws {
+        try super.freeze(
+            recursive: recursive,
+            keys: freezeKeys(for: self, requestedKeys: keys),
+            strict: strict
+        )
+    }
+
+    internal func fused() -> Module {
+        let baseWeight = dequantizedWeight
+        return QuantizedLinear(
+            weight: baseWeight + lowRankWeightDelta(
+                inputAdapter: loraA,
+                outputAdapter: loraB,
+                scale: scale,
+                dtype: baseWeight.dtype
+            ),
+            bias: bias,
+            groupSize: groupSize,
+            bits: bits,
+            mode: mode
+        )
+    }
+
+    public override func callAsFunction(_ x: MLXArray) -> MLXArray {
+        let base = super.callAsFunction(x.asType(scales.dtype))
+        return base + lowRankActivationDelta(
+            input: x,
+            inputAdapter: loraA,
+            outputAdapter: loraB,
+            scale: scale,
+            dtype: base.dtype
+        )
     }
 }
