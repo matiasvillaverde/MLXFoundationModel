@@ -39,7 +39,7 @@ enum FoundationModelsPlayground {
         print([
             "FoundationModelsPlayground",
             "",
-            "Run Apple-style requests against a local MLX model.",
+            "Run local MLX model examples.",
             "",
             "Usage:",
             "  swift run FoundationModelsPlayground \\",

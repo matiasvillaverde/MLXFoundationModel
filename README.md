@@ -1,14 +1,15 @@
 # MLXFoundationModel
 
-Apple interfaces for local MLX models.
+Local MLX models through Apple APIs.
 
-`MLXFoundationModel` runs open-source MLX language models from Swift and maps
-them to the interfaces Apple apps expect: streaming text, tool calls, structured
-output, and `LanguageModelSession` when the Foundation Models provider API is
-available.
+`MLXFoundationModel` is a Swift package for running open-source MLX language
+models locally and using them through the same shape as Apple's Foundation
+Models APIs: streaming text, tool calls, structured output, and
+`LanguageModelSession` when the provider API is available.
 
-Models stay local. Tests run against real weights. The goal is broad MLX model
-coverage behind Apple-native APIs.
+Nothing is uploaded. Real-model tests are part of the repo. The goal is
+practical: app code can use Apple APIs while model support comes from open MLX
+weights.
 
 > Alpha. Direct MLX generation works on current SDKs. The
 > `LanguageModelSession(model:)` provider path requires Xcode 27 and an OS 27
@@ -45,7 +46,7 @@ make test-main-architectures  # serialized across representative models
 
 Use `MLX_TEST_MODELS_DIR=/path/to/models` to reuse shared model storage.
 
-## Add The Package
+## Add Package
 
 ```swift
 .package(
@@ -58,7 +59,7 @@ Use `MLX_TEST_MODELS_DIR=/path/to/models` to reuse shared model storage.
 .product(name: "MLXFoundationModel", package: "MLXFoundationModel")
 ```
 
-## Use The Apple Interface
+## Use LanguageModelSession
 
 ```swift
 import Foundation
@@ -71,7 +72,7 @@ let model = try MLXLanguageModel(
 )
 
 let session = LanguageModelSession(model: model)
-let response = try await session.respond(to: "Write one sentence about local AI.")
+let response = try await session.respond(to: "Write one sentence about local inference.")
 print(response.content)
 ```
 
@@ -82,19 +83,19 @@ swift build -Xswiftc -DFOUNDATION_MODELS_PROVIDER_API
 make test-provider
 ```
 
-## What It Covers
+## Works Today
 
 - MLX-backed text generation on Apple silicon.
-- Apple-style request rendering.
-- Streaming response translation.
+- Request rendering for the Foundation Models shape.
+- Streaming text translation.
 - Tool-call parsing and schema normalization.
 - JSON Schema, JSON, EBNF, regex, and finite-choice constraints.
-- Prompt caching, memory guards, model pooling, and real-model benchmarks.
-- Central metrics, logs, and Instruments signposts.
+- Prompt caching, memory guards, model pooling, and real-model timing.
+- Metrics, logs, and Instruments signposts.
 
-## Project Shape
+## Layout
 
-- `Sources/MLXFoundationModel`: public Apple-facing bridge.
+- `Sources/MLXFoundationModel`: public bridge.
 - `Sources/MLXLocalModels`: MLX runtime, model registry, generation, caching.
 - `Examples/FoundationModelsPlayground`: runnable examples.
 - `Tests/MLXFoundationModelTests`: unit tests without real weights.
