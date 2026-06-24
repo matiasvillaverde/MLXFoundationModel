@@ -8,6 +8,8 @@ struct PreparedGenerationTokenizer: Tokenizer {
         "ST": 20,
         "OP hidden": 21,
         "<unk>": 0,
+        "\u{fffd}": 12,
+        "\n": 13,
         "<eos>": 99,
         "<extra>": 100
     ]
@@ -17,6 +19,8 @@ struct PreparedGenerationTokenizer: Tokenizer {
         2: "B",
         10: "hello",
         11: "world",
+        12: "\u{fffd}",
+        13: "\n",
         20: "ST",
         21: "OP hidden",
         99: "<eos>",

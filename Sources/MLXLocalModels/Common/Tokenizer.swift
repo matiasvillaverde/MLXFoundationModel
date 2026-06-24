@@ -1,113 +1,155 @@
-// Copyright © 2024 Apple Inc.
-
 import Foundation
 import Hub
 import Tokenizers
 
-struct TokenizerError: Error {
-    let message: String
+internal struct TokenizerError: Error, Equatable, CustomStringConvertible {
+    internal let message: String
+
+    internal var description: String {
+        message
+    }
 }
 
-internal func loadTokenizer(configuration: ModelConfiguration, hub: HubApi) async throws -> Tokenizer
-{
-    let (tokenizerConfig, tokenizerData) = try await loadTokenizerConfig(
-        configuration: configuration, hub: hub)
-
+internal func loadTokenizer(configuration: ModelConfiguration, hub: HubApi) async throws -> Tokenizer {
+    let files = try await TokenizerConfigLoader(configuration: configuration, hub: hub).load()
     return try PreTrainedTokenizer(
-        tokenizerConfig: tokenizerConfig, tokenizerData: tokenizerData)
+        tokenizerConfig: files.tokenizerConfig,
+        tokenizerData: files.tokenizerData
+    )
 }
 
 internal func loadTokenizerConfig(configuration: ModelConfiguration, hub: HubApi) async throws -> (
     Config, Config
 ) {
-    // from AutoTokenizer.from() -- this lets us override parts of the configuration
-    let config: LanguageModelConfigurationFromHub
+    let files = try await TokenizerConfigLoader(configuration: configuration, hub: hub).load()
+    return (files.tokenizerConfig, files.tokenizerData)
+}
 
-    switch configuration.id {
-    case .id(let id, let revision):
+private struct TokenizerConfigFiles {
+    let tokenizerConfig: Config
+    let tokenizerData: Config
+}
+
+private struct TokenizerConfigLoader {
+    let configuration: ModelConfiguration
+    let hub: HubApi
+
+    func load() async throws -> TokenizerConfigFiles {
+        let source = try await tokenizerSource()
+        let tokenizerConfig = try await source.requiredTokenizerConfig()
+        let tokenizerData = try await source.tokenizerData
+        let rewriter = TokenizerConfigurationRewriter(registry: replacementTokenizers)
+
+        return TokenizerConfigFiles(
+            tokenizerConfig: rewriter.rewrite(tokenizerConfig),
+            tokenizerData: tokenizerData
+        )
+    }
+
+    private func tokenizerSource() async throws -> LanguageModelConfigurationFromHub {
+        switch configuration.id {
+        case .directory(let directory):
+            return localTokenizerSource(directory: directory)
+        case .id(let id, let revision):
+            return try await remoteTokenizerSource(modelID: id, revision: revision)
+        }
+    }
+
+    private func remoteTokenizerSource(
+        modelID: String,
+        revision: String
+    ) async throws -> LanguageModelConfigurationFromHub {
+        let tokenizerID = configuration.tokenizerId ?? modelID
+        let source = LanguageModelConfigurationFromHub(
+            modelName: tokenizerID,
+            revision: revision,
+            hubApi: hub
+        )
+
         do {
-            // the load can fail (async when we try to use it)
-            let loaded = LanguageModelConfigurationFromHub(
-                modelName: configuration.tokenizerId ?? id, revision: revision, hubApi: hub)
-            _ = try await loaded.tokenizerConfig
-            config = loaded
+            _ = try await source.requiredTokenizerConfig()
+            return source
+        } catch where isOfflineError(error) {
+            return localTokenizerSource(directory: configuration.modelDirectory(hub: hub))
         } catch {
-            let nserror = error as NSError
-            if nserror.domain == NSURLErrorDomain
-                && nserror.code == NSURLErrorNotConnectedToInternet
-            {
-                // Internet connection appears to be offline -- fall back to loading from
-                // the local directory
-                config = LanguageModelConfigurationFromHub(
-                    modelFolder: configuration.modelDirectory(hub: hub), hubApi: hub)
-            } else {
-                throw error
-            }
-        }
-    case .directory(let directory):
-        config = LanguageModelConfigurationFromHub(modelFolder: directory, hubApi: hub)
-    }
-
-    guard var tokenizerConfig = try await config.tokenizerConfig else {
-        throw TokenizerError(message: "missing config")
-    }
-    let tokenizerData = try await config.tokenizerData
-
-    tokenizerConfig = updateTokenizerConfig(tokenizerConfig)
-
-    return (tokenizerConfig, tokenizerData)
-}
-
-private func updateTokenizerConfig(_ tokenizerConfig: Config) -> Config {
-    // Workaround: replacement tokenizers for unhandled values in swift-transformers
-    if let tokenizerClass = tokenizerConfig.tokenizerClass?.string(),
-        let replacement = replacementTokenizers[tokenizerClass]
-    {
-        if var dictionary = tokenizerConfig.dictionary() {
-            dictionary["tokenizer_class"] = .init(replacement)
-            return Config(dictionary)
+            throw error
         }
     }
-    return tokenizerConfig
+
+    private func localTokenizerSource(directory: URL) -> LanguageModelConfigurationFromHub {
+        LanguageModelConfigurationFromHub(modelFolder: directory, hubApi: hub)
+    }
+
+    private func isOfflineError(_ error: any Error) -> Bool {
+        let nsError = error as NSError
+        return nsError.domain == NSURLErrorDomain
+            && nsError.code == NSURLErrorNotConnectedToInternet
+    }
 }
 
-/// Thread-safe registry for tokenizer class replacements
-///
-/// This class is marked `@unchecked Sendable` because:
-/// - It contains mutable state (`replacementTokenizers` dictionary) protected by explicit synchronization (`NSLock`)
-/// - All mutations are guarded by lock-protected critical sections
-/// - The lock ensures that all dictionary accesses are properly serialized
-///
-/// Safety guarantees:
-/// - Atomic operations: All reads and writes are protected by NSLock
-/// - Thread-safe access: Multiple threads can safely query and modify replacements
-/// - No data races: The lock serializes all access to the mutable dictionary
-/// - Small critical sections: Lock contention is minimal due to short operations
-internal class TokenizerReplacementRegistry: @unchecked Sendable {
+private extension LanguageModelConfigurationFromHub {
+    func requiredTokenizerConfig() async throws -> Config {
+        guard let tokenizerConfig = try await tokenizerConfig else {
+            throw TokenizerError(message: "missing tokenizer config")
+        }
+        return tokenizerConfig
+    }
+}
 
-    // Note: using NSLock as we have very small (just dictionary get/set)
-    // critical sections and expect no contention. this allows the methods
-    // to remain synchronous.
-    private let lock = NSLock()
+internal struct TokenizerConfigurationRewriter: Sendable {
+    private let registry: TokenizerReplacementRegistry
 
-    /// overrides for TokenizerModel/knownTokenizers
-    private var replacementTokenizers = [
+    internal init(registry: TokenizerReplacementRegistry) {
+        self.registry = registry
+    }
+
+    internal func rewrite(_ tokenizerConfig: Config) -> Config {
+        guard let tokenizerClass = tokenizerConfig.tokenizerClass?.string(),
+              let replacement = registry.replacement(for: tokenizerClass),
+              replacement != tokenizerClass,
+              var dictionary = tokenizerConfig.dictionary()
+        else {
+            return tokenizerConfig
+        }
+
+        dictionary["tokenizer_class"] = Config(replacement)
+        return Config(dictionary)
+    }
+}
+
+internal final class TokenizerReplacementRegistry: @unchecked Sendable {
+    private static let defaultReplacements = [
         "InternLM2Tokenizer": "PreTrainedTokenizer",
         "Qwen2Tokenizer": "PreTrainedTokenizer",
         "Qwen3Tokenizer": "PreTrainedTokenizer",
         "CohereTokenizer": "PreTrainedTokenizer",
     ]
 
-    public subscript(key: String) -> String? {
+    private let lock = NSLock()
+    private var replacements: [String: String]
+
+    internal init() {
+        self.replacements = Self.defaultReplacements
+    }
+
+    internal init(replacements: [String: String]) {
+        self.replacements = replacements
+    }
+
+    internal subscript(key: String) -> String? {
         get {
-            lock.withLock {
-                replacementTokenizers[key]
-            }
+            replacement(for: key)
         }
         set {
             lock.withLock {
-                replacementTokenizers[key] = newValue
+                replacements[key] = newValue
             }
+        }
+    }
+
+    internal func replacement(for tokenizerClass: String) -> String? {
+        lock.withLock {
+            replacements[tokenizerClass]
         }
     }
 }
@@ -115,53 +157,53 @@ internal class TokenizerReplacementRegistry: @unchecked Sendable {
 internal let replacementTokenizers = TokenizerReplacementRegistry()
 
 internal protocol StreamingDetokenizer: IteratorProtocol<String> {
-
     mutating func append(token: Int)
-
 }
 
 internal struct NaiveStreamingDetokenizer: StreamingDetokenizer {
-    let tokenizer: Tokenizer
-
-    var segmentTokens = [Int]()
-    var segment = ""
+    private let tokenizer: Tokenizer
+    private var segmentTokens: [Int] = []
+    private var emittedSegment = ""
 
     internal init(tokenizer: Tokenizer) {
         self.tokenizer = tokenizer
     }
 
-    mutating internal func append(token: Int) {
+    internal mutating func append(token: Int) {
         segmentTokens.append(token)
     }
 
-    mutating func startNewSegment() {
-        let lastToken = segmentTokens.last
-        segmentTokens.removeAll()
-        if let lastToken {
-            segmentTokens.append(lastToken)
-            segment = tokenizer.decode(tokens: segmentTokens)
-        } else {
-            segment = ""
-        }
-    }
+    internal mutating func next() -> String? {
+        let decodedSegment = tokenizer.decode(tokens: segmentTokens)
+        let newText = newSuffix(in: decodedSegment)
 
-    public mutating func next() -> String? {
-        let newSegment = tokenizer.decode(tokens: segmentTokens)
-        let new = newSegment.suffix(newSegment.count - segment.count)
-
-        // if the new segment ends with REPLACEMENT CHARACTER this means
-        // that the token didn't produce a complete unicode character
-        if new.last == "\u{fffd}" {
+        guard newText.last != "\u{fffd}" else {
             return nil
         }
 
-        if new.hasSuffix("\n") {
+        if decodedSegment.hasSuffix("\n") {
             startNewSegment()
         } else {
-            self.segment = newSegment
+            emittedSegment = decodedSegment
         }
 
-        return String(new)
+        return String(newText)
     }
 
+    private func newSuffix(in decodedSegment: String) -> Substring {
+        guard decodedSegment.hasPrefix(emittedSegment) else {
+            return decodedSegment[...]
+        }
+        return decodedSegment.dropFirst(emittedSegment.count)
+    }
+
+    private mutating func startNewSegment() {
+        guard let lastToken = segmentTokens.last else {
+            emittedSegment = ""
+            return
+        }
+
+        segmentTokens = [lastToken]
+        emittedSegment = tokenizer.decode(tokens: segmentTokens)
+    }
 }
