@@ -1,51 +1,35 @@
-// Copyright © 2024 Apple Inc.
-
 import Foundation
 
-/// Thread-safe registry for managing language model type creators (Llama, Phi, Gemma, etc.)
-///
-/// This class is marked `@unchecked Sendable` because:
-/// - It contains mutable state (`creators` dictionary) that is protected by explicit synchronization (`NSLock`)
-/// - All mutations are guarded by lock-protected critical sections
-/// - The lock ensures that all dictionary accesses are properly serialized
-///
-/// Safety guarantees:
-/// - Atomic operations: All reads and writes to `creators` are protected by NSLock
-/// - Thread-safe registration: Multiple threads can safely register model creators
-/// - Thread-safe creation: Model instantiation from the registry is thread-safe
-/// - No data races: The lock serializes all access to the mutable dictionary
-/// - Small critical sections: Lock contention is minimal due to short operations
+/// Maps a `config.json` model type to a model constructor.
 internal class ModelTypeRegistry: @unchecked Sendable {
+    internal typealias Creator = @Sendable (URL) throws -> any LanguageModel
 
-    /// Creates an empty registry.
     internal init() {
-        self.creators = [:]
+        self.creatorsByType = [:]
     }
 
-    /// Creates a registry with given creators.
-    internal init(creators: [String: @Sendable (URL) throws -> any LanguageModel]) {
-        self.creators = creators
+    internal init(creators: [String: Creator]) {
+        self.creatorsByType = creators
     }
 
-    // Note: using NSLock as we have very small (just dictionary get/set)
-    // critical sections and expect no contention. this allows the methods
-    // to remain synchronous.
     private let lock = NSLock()
-    private var creators: [String: @Sendable (URL) throws -> any LanguageModel]
+    private var creatorsByType: [String: Creator]
 
-    /// Add a new model to the type registry.
     internal func registerModelType(
-        _ type: String, creator: @Sendable @escaping (URL) throws -> any LanguageModel
+        _ type: String,
+        creator: @escaping Creator
     ) {
         lock.withLock {
-            creators[type] = creator
+            creatorsByType[type] = creator
         }
     }
 
-    /// Given a `modelType` and configuration file instantiate a new `LanguageModel`.
-    internal func createModel(configuration: URL, modelType: String) throws -> LanguageModel {
+    internal func createModel(
+        configuration: URL,
+        modelType: String
+    ) throws -> any LanguageModel {
         let creator = lock.withLock {
-            creators[modelType]
+            creatorsByType[modelType]
         }
         guard let creator else {
             throw ModelFactoryError.unsupportedModelType(modelType)
@@ -55,7 +39,7 @@ internal class ModelTypeRegistry: @unchecked Sendable {
 
     internal func registeredModelTypes() -> [String] {
         lock.withLock {
-            creators.keys.sorted()
+            creatorsByType.keys.sorted()
         }
     }
 }
