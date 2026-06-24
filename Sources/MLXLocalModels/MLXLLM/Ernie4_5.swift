@@ -1,18 +1,272 @@
-//
-//  Ernie4_5.swift
-//  mlx-swift-examples
-//
-//  Created by Sachin Desai on 7/3/25.
-//
-
 import Foundation
 import MLX
-
 import MLXNN
 
-// Port of https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/models/ernie4_5.py
+internal struct Ernie45AttentionLayout: Equatable, Sendable {
+    internal let hiddenSize: Int
+    internal let queryHeads: Int
+    internal let keyValueHeads: Int
+    internal let headSize: Int
+    internal let queryProjectionSize: Int
+    internal let keyValueProjectionSize: Int
+    internal let attentionScale: Float
 
-internal struct Ernie45Configuration: Codable {
+    internal init(_ config: Ernie45Configuration) {
+        precondition(config.hiddenSize > 0, "hidden_size must be positive")
+        precondition(config.numAttentionHeads > 0, "num_attention_heads must be positive")
+        precondition(config.numKeyValueHeads > 0, "num_key_value_heads must be positive")
+
+        let headSize = Self.resolveHeadSize(config)
+        self.hiddenSize = config.hiddenSize
+        self.queryHeads = config.numAttentionHeads
+        self.keyValueHeads = config.numKeyValueHeads
+        self.headSize = headSize
+        self.queryProjectionSize = queryHeads * headSize
+        self.keyValueProjectionSize = keyValueHeads * headSize
+        self.attentionScale = 1 / Float(headSize).squareRoot()
+    }
+
+    private static func resolveHeadSize(_ config: Ernie45Configuration) -> Int {
+        if let headDim = config.headDim {
+            precondition(headDim > 0, "head_dim must be positive")
+            return headDim
+        }
+
+        precondition(
+            config.hiddenSize % config.numAttentionHeads == 0,
+            "hidden_size must be divisible by num_attention_heads when head_dim is absent"
+        )
+        return config.hiddenSize / config.numAttentionHeads
+    }
+}
+
+private final class Ernie45Attention: Module {
+    private let layout: Ernie45AttentionLayout
+    private let rope: RoPE
+
+    @ModuleInfo(key: "q_proj") private var queryProjection: Linear
+    @ModuleInfo(key: "k_proj") private var keyProjection: Linear
+    @ModuleInfo(key: "v_proj") private var valueProjection: Linear
+    @ModuleInfo(key: "o_proj") private var outputProjection: Linear
+
+    init(_ config: Ernie45Configuration) {
+        let layout = Ernie45AttentionLayout(config)
+        self.layout = layout
+        self.rope = RoPE(
+            dimensions: layout.headSize,
+            traditional: true,
+            base: config.ropeTheta
+        )
+
+        self._queryProjection.wrappedValue = Linear(
+            layout.hiddenSize,
+            layout.queryProjectionSize,
+            bias: config.useBias
+        )
+        self._keyProjection.wrappedValue = Linear(
+            layout.hiddenSize,
+            layout.keyValueProjectionSize,
+            bias: config.useBias
+        )
+        self._valueProjection.wrappedValue = Linear(
+            layout.hiddenSize,
+            layout.keyValueProjectionSize,
+            bias: config.useBias
+        )
+        self._outputProjection.wrappedValue = Linear(
+            layout.queryProjectionSize,
+            layout.hiddenSize,
+            bias: config.useBias
+        )
+    }
+
+    func callAsFunction(
+        _ input: MLXArray,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode,
+        cache: KVCache?
+    ) -> MLXArray {
+        let batchSize = input.dim(0)
+        let tokenCount = input.dim(1)
+
+        var queries = queryProjection(input)
+            .reshaped(batchSize, tokenCount, layout.queryHeads, layout.headSize)
+            .transposed(0, 2, 1, 3)
+        var keys = keyProjection(input)
+            .reshaped(batchSize, tokenCount, layout.keyValueHeads, layout.headSize)
+            .transposed(0, 2, 1, 3)
+        let values = valueProjection(input)
+            .reshaped(batchSize, tokenCount, layout.keyValueHeads, layout.headSize)
+            .transposed(0, 2, 1, 3)
+
+        let offset = cache?.offset ?? 0
+        queries = rope(queries, offset: offset)
+        keys = rope(keys, offset: offset)
+
+        return outputProjection(
+            attentionWithCacheUpdate(
+                queries: queries,
+                keys: keys,
+                values: values,
+                cache: cache,
+                scale: layout.attentionScale,
+                mask: mask
+            )
+            .transposed(0, 2, 1, 3)
+            .reshaped(batchSize, tokenCount, layout.queryProjectionSize)
+        )
+    }
+}
+
+private final class Ernie45FeedForward: Module, UnaryLayer {
+    @ModuleInfo(key: "gate_proj") private var gateProjection: Linear
+    @ModuleInfo(key: "down_proj") private var downProjection: Linear
+    @ModuleInfo(key: "up_proj") private var upProjection: Linear
+
+    init(_ config: Ernie45Configuration) {
+        self._gateProjection.wrappedValue = Linear(
+            config.hiddenSize,
+            config.intermediateSize,
+            bias: config.useBias
+        )
+        self._downProjection.wrappedValue = Linear(
+            config.intermediateSize,
+            config.hiddenSize,
+            bias: config.useBias
+        )
+        self._upProjection.wrappedValue = Linear(
+            config.hiddenSize,
+            config.intermediateSize,
+            bias: config.useBias
+        )
+    }
+
+    func callAsFunction(_ input: MLXArray) -> MLXArray {
+        downProjection(silu(gateProjection(input)) * upProjection(input))
+    }
+}
+
+private final class Ernie45Block: Module {
+    @ModuleInfo(key: "self_attn") fileprivate var attention: Ernie45Attention
+    @ModuleInfo(key: "mlp") private var feedForward: Ernie45FeedForward
+    @ModuleInfo(key: "input_layernorm") private var inputLayerNorm: RMSNorm
+    @ModuleInfo(key: "post_attention_layernorm") private var postAttentionLayerNorm: RMSNorm
+
+    init(_ config: Ernie45Configuration) {
+        self._attention.wrappedValue = Ernie45Attention(config)
+        self._feedForward.wrappedValue = Ernie45FeedForward(config)
+        self._inputLayerNorm.wrappedValue = RMSNorm(
+            dimensions: config.hiddenSize,
+            eps: config.rmsNormEps
+        )
+        self._postAttentionLayerNorm.wrappedValue = RMSNorm(
+            dimensions: config.hiddenSize,
+            eps: config.rmsNormEps
+        )
+    }
+
+    func callAsFunction(
+        _ input: MLXArray,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode,
+        cache: KVCache?
+    ) -> MLXArray {
+        let attentionOutput = attention(
+            inputLayerNorm(input),
+            mask: mask,
+            cache: cache
+        )
+        let afterAttention = input + attentionOutput
+        return afterAttention + feedForward(postAttentionLayerNorm(afterAttention))
+    }
+}
+
+private final class Ernie45Backbone: Module {
+    @ModuleInfo(key: "embed_tokens") fileprivate var embeddings: Embedding
+    @ModuleInfo fileprivate var layers: [Ernie45Block]
+    @ModuleInfo(key: "norm") private var norm: RMSNorm
+
+    init(_ config: Ernie45Configuration) {
+        precondition(config.vocabularySize > 0, "vocab_size must be positive")
+
+        self._embeddings.wrappedValue = Embedding(
+            embeddingCount: config.vocabularySize,
+            dimensions: config.hiddenSize
+        )
+        self.layers = (0 ..< config.numHiddenLayers).map { _ in
+            Ernie45Block(config)
+        }
+        self._norm.wrappedValue = RMSNorm(
+            dimensions: config.hiddenSize,
+            eps: config.rmsNormEps
+        )
+    }
+
+    func callAsFunction(_ tokens: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
+        var hiddenStates = embeddings(tokens)
+        let mask = createAttentionMask(h: hiddenStates, cache: cache)
+
+        for (index, layer) in layers.enumerated() {
+            hiddenStates = layer(
+                hiddenStates,
+                mask: mask,
+                cache: cache?[index]
+            )
+        }
+
+        return norm(hiddenStates)
+    }
+}
+
+internal final class Ernie45Model: Module, LLMModel, KVCacheDimensionProvider,
+    GreedyTokenModel {
+    public let vocabularySize: Int
+    public let kvHeads: [Int]
+
+    @ModuleInfo(key: "model") private var model: Ernie45Backbone
+    @ModuleInfo(key: "lm_head") private var lmHead: Linear?
+
+    public init(_ config: Ernie45Configuration) {
+        self.vocabularySize = config.vocabularySize
+        self.kvHeads = Array(
+            repeating: config.numKeyValueHeads,
+            count: config.numHiddenLayers
+        )
+        self._model.wrappedValue = Ernie45Backbone(config)
+
+        if !config.tieWordEmbeddings {
+            self._lmHead.wrappedValue = Linear(
+                config.hiddenSize,
+                config.vocabularySize,
+                bias: false
+            )
+        }
+    }
+
+    public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
+        logits(from: model(inputs, cache: cache))
+    }
+
+    internal func greedyToken(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?
+    ) -> GreedyTokenOutput {
+        greedyTokenOutput(
+            logits: logits(
+                from: lastTokenHiddenState(
+                    model(input[text: .newAxis].tokens, cache: cache)
+                )
+            ),
+            state: state
+        )
+    }
+
+    private func logits(from hiddenStates: MLXArray) -> MLXArray {
+        lmHead.map { $0(hiddenStates) }
+            ?? model.embeddings.asLinear(hiddenStates)
+    }
+}
+
+internal struct Ernie45Configuration: Codable, Sendable, Equatable {
     var hiddenSize: Int
     var intermediateSize: Int
     var maxPositionEmbeddings: Int
@@ -25,6 +279,34 @@ internal struct Ernie45Configuration: Codable {
     var ropeTheta: Float
     var useBias: Bool
     var tieWordEmbeddings: Bool
+
+    internal init(
+        hiddenSize: Int = 1_024,
+        intermediateSize: Int = 3_072,
+        maxPositionEmbeddings: Int = 131_072,
+        numAttentionHeads: Int = 16,
+        numKeyValueHeads: Int = 2,
+        headDim: Int? = nil,
+        numHiddenLayers: Int = 18,
+        rmsNormEps: Float = 1e-5,
+        vocabularySize: Int = 103_424,
+        ropeTheta: Float = 500_000,
+        useBias: Bool = false,
+        tieWordEmbeddings: Bool = true
+    ) {
+        self.hiddenSize = hiddenSize
+        self.intermediateSize = intermediateSize
+        self.maxPositionEmbeddings = maxPositionEmbeddings
+        self.numAttentionHeads = numAttentionHeads
+        self.numKeyValueHeads = numKeyValueHeads
+        self.headDim = headDim
+        self.numHiddenLayers = numHiddenLayers
+        self.rmsNormEps = rmsNormEps
+        self.vocabularySize = vocabularySize
+        self.ropeTheta = ropeTheta
+        self.useBias = useBias
+        self.tieWordEmbeddings = tieWordEmbeddings
+    }
 
     enum CodingKeys: String, CodingKey {
         case hiddenSize = "hidden_size"
@@ -41,204 +323,47 @@ internal struct Ernie45Configuration: Codable {
         case tieWordEmbeddings = "tie_word_embeddings"
     }
 
-    public init(from decoder: Decoder) throws {
-        let container: KeyedDecodingContainer<Self.CodingKeys> =
-            try decoder.container(keyedBy: Self.CodingKeys.self)
-
-        self.hiddenSize = try container.decode(Int.self, forKey: .hiddenSize)
-        self.intermediateSize = try container.decode(Int.self, forKey: .intermediateSize)
-        self.maxPositionEmbeddings = try container.decode(Int.self, forKey: .maxPositionEmbeddings)
-        self.numAttentionHeads = try container.decode(Int.self, forKey: .numAttentionHeads)
-        self.numKeyValueHeads = try container.decode(Int.self, forKey: .numKeyValueHeads)
-        self.headDim = try container.decode(Int.self, forKey: .headDim)
-        self.numHiddenLayers = try container.decode(Int.self, forKey: .numHiddenLayers)
-        self.rmsNormEps = try container.decode(Float.self, forKey: .rmsNormEps)
-        self.vocabularySize = try container.decode(Int.self, forKey: .vocabularySize)
-        self.ropeTheta = try container.decode(Float.self, forKey: .ropeTheta)
-        self.useBias = try container.decode(Bool.self, forKey: .useBias)
-        self.tieWordEmbeddings = try container.decode(Bool.self, forKey: .tieWordEmbeddings)
-    }
-}
-
-private class Attention: Module {
-    let nHeads: Int
-    let nKVHeads: Int
-    let headDim: Int
-    let scale: Float
-
-    @ModuleInfo(key: "q_proj") var qProj: Linear
-    @ModuleInfo(key: "k_proj") var kProj: Linear
-    @ModuleInfo(key: "v_proj") var vProj: Linear
-    @ModuleInfo(key: "o_proj") var oProj: Linear
-
-    let rope: RoPE
-
-    init(_ args: Ernie45Configuration) {
-        let dim = args.hiddenSize
-        self.nHeads = args.numAttentionHeads
-        self.nKVHeads = args.numKeyValueHeads
-        self.headDim = args.headDim ?? (dim / args.numAttentionHeads)
-        self.scale = pow(Float(headDim), -0.5)
-
-        self._qProj.wrappedValue = Linear(dim, nHeads * headDim, bias: args.useBias)
-        self._kProj.wrappedValue = Linear(dim, nKVHeads * headDim, bias: args.useBias)
-        self._vProj.wrappedValue = Linear(dim, nKVHeads * headDim, bias: args.useBias)
-        self._oProj.wrappedValue = Linear(nHeads * headDim, dim, bias: args.useBias)
-
-        self.rope = RoPE(
-            dimensions: headDim,
-            traditional: true,
-            base: args.ropeTheta
+    internal init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self.init(
+            hiddenSize: try container.decodeIfPresent(Int.self, forKey: .hiddenSize) ?? 1_024,
+            intermediateSize: try container.decodeIfPresent(
+                Int.self,
+                forKey: .intermediateSize
+            ) ?? 3_072,
+            maxPositionEmbeddings: try container.decodeIfPresent(
+                Int.self,
+                forKey: .maxPositionEmbeddings
+            ) ?? 131_072,
+            numAttentionHeads: try container.decodeIfPresent(
+                Int.self,
+                forKey: .numAttentionHeads
+            ) ?? 16,
+            numKeyValueHeads: try container.decodeIfPresent(
+                Int.self,
+                forKey: .numKeyValueHeads
+            ) ?? 2,
+            headDim: try container.decodeIfPresent(Int.self, forKey: .headDim),
+            numHiddenLayers: try container.decodeIfPresent(
+                Int.self,
+                forKey: .numHiddenLayers
+            ) ?? 18,
+            rmsNormEps: try container.decodeIfPresent(Float.self, forKey: .rmsNormEps)
+                ?? 1e-5,
+            vocabularySize: try container.decodeIfPresent(
+                Int.self,
+                forKey: .vocabularySize
+            ) ?? 103_424,
+            ropeTheta: try container.decodeIfPresent(Float.self, forKey: .ropeTheta)
+                ?? 500_000,
+            useBias: try container.decodeIfPresent(Bool.self, forKey: .useBias) ?? false,
+            tieWordEmbeddings: try container.decodeIfPresent(
+                Bool.self,
+                forKey: .tieWordEmbeddings
+            ) ?? true
         )
     }
-
-    func callAsFunction(
-        _ x: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode, cache: KVCache?
-    ) -> MLXArray {
-        let (B, L) = (x.dim(0), x.dim(1))
-
-        var queries = qProj(x)
-        var keys = kProj(x)
-        var values = vProj(x)
-
-        queries = queries.reshaped(B, L, nHeads, -1).transposed(0, 2, 1, 3)
-        keys = keys.reshaped(B, L, nKVHeads, -1).transposed(0, 2, 1, 3)
-        values = values.reshaped(B, L, nKVHeads, -1).transposed(0, 2, 1, 3)
-
-        if let cache {
-            queries = rope(queries, offset: cache.offset)
-            keys = rope(keys, offset: cache.offset)
-        } else {
-            queries = rope(queries)
-            keys = rope(keys)
-        }
-
-        let output = attentionWithCacheUpdate(
-            queries: queries,
-            keys: keys,
-            values: values,
-            cache: cache,
-            scale: scale,
-            mask: mask
-        )
-        .transposed(0, 2, 1, 3)
-        .reshaped(B, L, -1)
-
-        return oProj(output)
-    }
 }
-
-private class MLP: Module, UnaryLayer {
-    @ModuleInfo(key: "gate_proj") var gateProj: Linear
-    @ModuleInfo(key: "down_proj") var downProj: Linear
-    @ModuleInfo(key: "up_proj") var upProj: Linear
-
-    init(dim: Int, hiddenDim: Int, useBias: Bool = false) {
-        self._gateProj.wrappedValue = Linear(dim, hiddenDim, bias: useBias)
-        self._downProj.wrappedValue = Linear(hiddenDim, dim, bias: useBias)
-        self._upProj.wrappedValue = Linear(dim, hiddenDim, bias: useBias)
-    }
-
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
-        downProj(silu(gateProj(x)) * upProj(x))
-    }
-}
-
-private class DecoderLayer: Module {
-    @ModuleInfo(key: "self_attn") var attention: Attention
-    let mlp: MLP
-
-    @ModuleInfo(key: "input_layernorm") var inputLayernorm: RMSNorm
-    @ModuleInfo(key: "post_attention_layernorm") var postAttentionLayernorm: RMSNorm
-
-    init(_ args: Ernie45Configuration) {
-        self._attention.wrappedValue = Attention(args)
-        self.mlp = MLP(
-            dim: args.hiddenSize, hiddenDim: args.intermediateSize, useBias: args.useBias)
-        self._inputLayernorm.wrappedValue = RMSNorm(
-            dimensions: args.hiddenSize, eps: args.rmsNormEps)
-        self._postAttentionLayernorm.wrappedValue = RMSNorm(
-            dimensions: args.hiddenSize, eps: args.rmsNormEps)
-    }
-
-    func callAsFunction(
-        _ x: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode, cache: KVCache?
-    ) -> MLXArray {
-        var r = attention(inputLayernorm(x), mask: mask, cache: cache)
-        let h = x + r
-        r = mlp(postAttentionLayernorm(h))
-        return h + r
-    }
-}
-
-private class Ernie45ModelInner: Module {
-    @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding
-    let layers: [DecoderLayer]
-    let norm: RMSNorm
-
-    init(_ args: Ernie45Configuration) {
-        self._embedTokens.wrappedValue = Embedding(
-            embeddingCount: args.vocabularySize, dimensions: args.hiddenSize
-        )
-        self.layers = (0 ..< args.numHiddenLayers).map { _ in
-            DecoderLayer(args)
-        }
-        self.norm = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
-    }
-
-    func callAsFunction(_ inputs: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
-        var h = embedTokens(inputs)
-
-        let mask = createAttentionMask(h: h, cache: cache)
-
-        for (i, layer) in layers.enumerated() {
-            h = layer(h, mask: mask, cache: cache?[i])
-        }
-
-        return norm(h)
-    }
-}
-
-internal class Ernie45Model: Module, LLMModel, KVCacheDimensionProvider, GreedyTokenModel {
-    public let vocabularySize: Int
-    public let kvHeads: [Int]
-
-    private let model: Ernie45ModelInner
-    @ModuleInfo(key: "lm_head") var lmHead: Linear?
-
-    public init(_ args: Ernie45Configuration) {
-        self.vocabularySize = args.vocabularySize
-        self.kvHeads = Array(repeating: args.numKeyValueHeads, count: args.numHiddenLayers)
-        self.model = Ernie45ModelInner(args)
-
-        if !args.tieWordEmbeddings {
-            self._lmHead.wrappedValue = Linear(args.hiddenSize, args.vocabularySize, bias: false)
-        }
-    }
-
-    public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
-        let out = model(inputs, cache: cache)
-
-        if let lmHead {
-            return lmHead(out)
-        }
-        return model.embedTokens.asLinear(out)
-    }
-
-    internal func greedyToken(
-        _ input: LMInput.Text,
-        cache: [KVCache]?,
-        state: LMOutput.State?
-    ) -> GreedyTokenOutput {
-        let hiddenStates = lastTokenHiddenState(model(input[text: .newAxis].tokens, cache: cache))
-        if let lmHead {
-            return greedyTokenOutput(logits: lmHead(hiddenStates), state: state)
-        }
-        return greedyTokenOutput(logits: model.embedTokens.asLinear(hiddenStates), state: state)
-    }
-}
-
-// MARK: - LoRA
 
 extension Ernie45Model: LoRAModel {
     public func loraLinearLayers() -> LoRALinearLayers {
