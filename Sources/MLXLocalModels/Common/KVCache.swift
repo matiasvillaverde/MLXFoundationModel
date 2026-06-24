@@ -1,38 +1,8 @@
-// Copyright © 2024 Apple Inc.
-
 import Foundation
 import MLX
 import MLXNN
 
-/// Implementation of KV cache functionality for MLX Swift
-///
-///
-/// ## Quantized Cache Usage
-///
-/// **Standard caches:**
-/// ```swift
-/// let cache = KVCacheSimple()
-/// let (keys, values) = cache.update(keys: keys, values: values)
-/// let output = MLXFast.scaledDotProductAttention(queries: q, keys: keys, values: values, ...)
-/// ```
-///
-/// **Quantized cache:**
-/// ```swift
-/// let quantizedCache = QuantizedKVCache(groupSize: 64, bits: 4)
-/// let (qKeys, qValues) = quantizedCache.updateQuantized(keys: keys, values: values)
-///
-/// let output = quantizedScaledDotProductAttention(
-///     queries: queries,
-///     quantizedKeys: qKeys,
-///     quantizedValues: qValues,
-///     scale: scale,
-///     mask: mask,
-///     groupSize: quantizedCache.groupSize,
-///     bits: quantizedCache.bits
-/// )
-/// ```
-///
-/// Interface for Key/Value cache for LLMs.
+/// Interface for attention key/value caches used during autoregressive decoding.
 ///
 /// See ``LanguageModel/newCache(parameters:)``
 internal protocol KVCache: Evaluatable {
@@ -115,7 +85,228 @@ internal protocol QuantizedKVCacheProtocol: KVCache {
 
 internal typealias QuantizedKVStorage = (MLXArray, MLXArray, MLXArray?)
 
-/// Base cache implementation providing default behaviors
+private struct QuantizedKVState {
+    var weights: MLXArray
+    var scales: MLXArray
+    var biases: MLXArray?
+
+    init(_ storage: QuantizedKVStorage) {
+        self.weights = storage.0
+        self.scales = storage.1
+        self.biases = storage.2
+    }
+
+    init(weights: MLXArray, scales: MLXArray, biases: MLXArray?) {
+        self.weights = weights
+        self.scales = scales
+        self.biases = biases
+    }
+
+    var storage: QuantizedKVStorage {
+        (weights, scales, biases)
+    }
+
+    var arrays: [MLXArray] {
+        [weights, scales, biases].compactMap { $0 }
+    }
+
+    var tokenCapacity: Int {
+        weights.dim(-2)
+    }
+
+    func map(_ transform: (MLXArray) -> MLXArray) -> QuantizedKVState {
+        QuantizedKVState(
+            weights: transform(weights),
+            scales: transform(scales),
+            biases: biases.map(transform)
+        )
+    }
+
+    func prefix(upTo end: Int) -> QuantizedKVState {
+        map { $0[.ellipsis, ..<end, 0...] }
+    }
+
+    func range(_ range: Range<Int>) -> QuantizedKVState {
+        map { $0[.ellipsis, range, 0...] }
+    }
+
+    mutating func write(_ source: QuantizedKVState, range: Range<Int>) {
+        weights[.ellipsis, range, 0...] = source.weights
+        scales[.ellipsis, range, 0...] = source.scales
+        if source.biases != nil {
+            guard let sourceBiases = source.biases, let targetBiases = biases else {
+                fatalError("Quantized KV bias layout mismatch")
+            }
+            targetBiases[.ellipsis, range, 0...] = sourceBiases
+        }
+    }
+
+    static func quantizing(
+        _ array: MLXArray,
+        groupSize: Int,
+        bits: Int,
+        mode: QuantizationMode
+    ) -> QuantizedKVState {
+        let quantizedArray = quantized(array, groupSize: groupSize, bits: bits, mode: mode)
+        return QuantizedKVState(
+            weights: quantizedArray.wq,
+            scales: quantizedArray.scales,
+            biases: quantizedArray.biases
+        )
+    }
+
+    static func zeros(
+        shape: [Int],
+        headDimension: Int,
+        dtype: DType,
+        groupSize: Int,
+        bits: Int,
+        mode: QuantizationMode
+    ) -> QuantizedKVState {
+        quantizing(
+            MLXArray.zeros(shape + [headDimension], dtype: dtype),
+            groupSize: groupSize,
+            bits: bits,
+            mode: mode
+        )
+    }
+
+    static func concatenated(_ states: [QuantizedKVState]) -> QuantizedKVState {
+        guard let first = states.first else {
+            fatalError("Cannot concatenate an empty quantized KV state")
+        }
+        guard states.count > 1 else { return first }
+
+        return QuantizedKVState(
+            weights: MLX.concatenated(states.map(\.weights), axis: -2),
+            scales: MLX.concatenated(states.map(\.scales), axis: -2),
+            biases: first.biases == nil
+                ? nil
+                : MLX.concatenated(states.compactMap(\.biases), axis: -2)
+        )
+    }
+}
+
+internal struct KVCacheAppendPlan: Equatable, Sendable {
+    internal let writeRange: Range<Int>
+    internal let retainedLength: Int
+    internal let additionalCapacity: Int
+
+    internal init(
+        offset: Int,
+        baseOffset: Int = 0,
+        incomingTokenCount: Int,
+        currentCapacity: Int?,
+        step: Int
+    ) {
+        precondition(step > 0, "cache growth step must be positive")
+        precondition(incomingTokenCount >= 0, "incomingTokenCount cannot be negative")
+
+        let localOffset = max(0, offset - baseOffset)
+        let requiredCapacity = localOffset + incomingTokenCount
+        self.writeRange = localOffset ..< requiredCapacity
+        self.retainedLength = min(localOffset, currentCapacity ?? 0)
+
+        guard let currentCapacity, requiredCapacity <= currentCapacity else {
+            let existingCapacity = currentCapacity ?? 0
+            let targetCapacity = Self.roundUp(requiredCapacity, step: step)
+            self.additionalCapacity = max(0, targetCapacity - existingCapacity)
+            return
+        }
+
+        self.additionalCapacity = 0
+    }
+
+    internal var needsGrowth: Bool {
+        additionalCapacity > 0
+    }
+
+    private static func roundUp(_ value: Int, step: Int) -> Int {
+        guard value > 0 else { return step }
+        return ((value + step - 1) / step) * step
+    }
+}
+
+private struct DenseKVStorage {
+    var keys: MLXArray
+    var values: MLXArray
+
+    var capacity: Int {
+        keys.dim(2)
+    }
+
+    func state(offset: Int) -> [MLXArray] {
+        guard offset < capacity else {
+            return [keys, values]
+        }
+        return [
+            keys[.ellipsis, ..<offset, 0...],
+            values[.ellipsis, ..<offset, 0...]
+        ]
+    }
+
+    func prefix(_ length: Int) -> DenseKVStorage {
+        DenseKVStorage(
+            keys: keys[.ellipsis, ..<length, 0...],
+            values: values[.ellipsis, ..<length, 0...]
+        )
+    }
+
+    mutating func write(keys newKeys: MLXArray, values newValues: MLXArray, range: Range<Int>) {
+        keys[.ellipsis, range, 0...] = newKeys
+        values[.ellipsis, range, 0...] = newValues
+    }
+}
+
+private func makeDenseKVStorage(
+    batchSize: Int,
+    headCount: Int,
+    capacity: Int,
+    keyHeadDimension: Int,
+    valueHeadDimension: Int,
+    keyDType: DType,
+    valueDType: DType
+) -> DenseKVStorage {
+    DenseKVStorage(
+        keys: MLXArray.zeros(
+            [batchSize, headCount, capacity, keyHeadDimension],
+            dtype: keyDType
+        ),
+        values: MLXArray.zeros(
+            [batchSize, headCount, capacity, valueHeadDimension],
+            dtype: valueDType
+        )
+    )
+}
+
+private func appendDenseCapacity(
+    to storage: DenseKVStorage?,
+    plan: KVCacheAppendPlan,
+    keys: MLXArray,
+    values: MLXArray
+) -> DenseKVStorage {
+    let allocation = makeDenseKVStorage(
+        batchSize: keys.dim(0),
+        headCount: keys.dim(1),
+        capacity: plan.additionalCapacity,
+        keyHeadDimension: keys.dim(3),
+        valueHeadDimension: values.dim(3),
+        keyDType: keys.dtype,
+        valueDType: values.dtype
+    )
+
+    guard let storage else {
+        return allocation
+    }
+
+    let retained = storage.prefix(plan.retainedLength)
+    return DenseKVStorage(
+        keys: concatenated([retained.keys, allocation.keys], axis: 2),
+        values: concatenated([retained.values, allocation.values], axis: 2)
+    )
+}
+
+/// Base cache implementation providing default behaviors.
 open class BaseKVCache: KVCache {
     internal var offset: Int = 0
     internal var maxSize: Int? { nil }
@@ -154,8 +345,6 @@ open class BaseKVCache: KVCache {
 
     open var metaState: [String] {
         get {
-            // Python base class returns empty string, but we return empty array for Swift compatibility
-            // This is handled in the save/load functions
             []
         }
         set {
@@ -254,85 +443,70 @@ internal func createSSMMask(h: MLXArray, cache: MambaCache?) -> MLXArray? {
     cache?.makeMask(N: h.dim(1))
 }
 
-/// Standard KV cache implementation based on Python's KVCache
-/// See https://github.com/ml-explore/mlx-examples/blob/main/llms/mlx_lm/models/base.py#L11
+/// Growable full-context KV cache used by normal attention layers.
 internal class KVCacheSimple: BaseKVCache, CustomDebugStringConvertible {
-    internal var keys: MLXArray?
-    internal var values: MLXArray?
+    private var storage: DenseKVStorage?
     internal var step = 256
+
+    internal var keys: MLXArray? {
+        get { storage?.keys }
+        set {
+            storage = Self.storage(keys: newValue, values: values)
+        }
+    }
+
+    internal var values: MLXArray? {
+        get { storage?.values }
+        set {
+            storage = Self.storage(keys: keys, values: newValue)
+        }
+    }
 
     public override init() {
         super.init()
     }
 
     public override func innerState() -> [MLXArray] {
-        [self.keys, self.values].compactMap { $0 }
+        [keys, values].compactMap { $0 }
     }
 
     public override func update(keys: MLXArray, values: MLXArray) -> (MLXArray, MLXArray) {
-        let previous = self.offset
+        var storage = self.storage
+        let plan = KVCacheAppendPlan(
+            offset: offset,
+            incomingTokenCount: keys.dim(2),
+            currentCapacity: storage?.capacity,
+            step: step
+        )
 
-        let reset =
-            if let currentKeys = self.keys, (previous + keys.dim(2)) > currentKeys.dim(2) {
-                true
-            } else {
-                self.keys == nil
-            }
-        if reset {
-            let B = keys.dim(0)
-            let kvHeads = keys.dim(1)
-            let kHeadDim = keys.dim(3)
-            let vHeadDim = values.dim(3)
-
-            let nSteps = (step + keys.dim(2) - 1) / step
-            let kShape = [B, kvHeads, nSteps * step, kHeadDim]
-            let vShape = [B, kvHeads, nSteps * step, vHeadDim]
-            let newK = MLXArray.zeros(kShape, dtype: keys.dtype)
-            let newV = MLXArray.zeros(vShape, dtype: values.dtype)
-
-            if var currentKeys = self.keys, var currentValues = self.values {
-                if previous % step != 0 {
-                    currentKeys = currentKeys[.ellipsis, ..<previous, 0...]
-                    currentValues = currentValues[.ellipsis, ..<previous, 0...]
-                }
-                self.keys = concatenated([currentKeys, newK], axis: 2)
-                self.values = concatenated([currentValues, newV], axis: 2)
-            } else {
-                self.keys = newK
-                self.values = newV
-            }
+        if plan.needsGrowth {
+            storage = appendDenseCapacity(to: storage, plan: plan, keys: keys, values: values)
         }
 
-        self.offset += keys.dim(2)
+        guard var storage else {
+            fatalError("KV cache storage was not initialized")
+        }
 
-        self.keys?[.ellipsis, previous ..< self.offset, 0...] = keys
-        self.values?[.ellipsis, previous ..< self.offset, 0...] = values
+        storage.write(keys: keys, values: values, range: plan.writeRange)
+        self.storage = storage
+        offset = plan.writeRange.upperBound
 
-        let returnedKeys = self.keys![.ellipsis, ..<self.offset, 0...]
-        let returnedValues = self.values![.ellipsis, ..<self.offset, 0...]
-
-        return (returnedKeys, returnedValues)
+        return (
+            storage.keys[.ellipsis, ..<offset, 0...],
+            storage.values[.ellipsis, ..<offset, 0...]
+        )
     }
 
     public override var state: [MLXArray] {
         get {
-            guard let keys = self.keys, let values = self.values else { return [] }
-            if offset == keys.dim(2) {
-                return [keys, values]
-            } else {
-                return [
-                    keys[.ellipsis, ..<offset, 0...],
-                    values[.ellipsis, ..<offset, 0...],
-                ]
-            }
+            storage?.state(offset: offset) ?? []
         }
         set {
             guard newValue.count == 2 else {
                 fatalError("KVCacheSimple state must have exactly 2 arrays (keys, values)")
             }
-            self.keys = newValue[0]
-            self.values = newValue[1]
-            self.offset = self.keys!.dim(2)
+            storage = DenseKVStorage(keys: newValue[0], values: newValue[1])
+            offset = newValue[0].dim(2)
         }
     }
 
@@ -375,7 +549,6 @@ internal class KVCacheSimple: BaseKVCache, CustomDebugStringConvertible {
         quantizedCache.offset = self.offset
 
         if let keys = self.keys, let values = self.values {
-            // Quantize the current keys and values
             let currentKeys = keys[.ellipsis, ..<offset, 0...]
             let currentValues = values[.ellipsis, ..<offset, 0...]
 
@@ -392,7 +565,6 @@ internal class KVCacheSimple: BaseKVCache, CustomDebugStringConvertible {
                 mode: mode
             )
 
-            // Set the quantized state
             quantizedCache.state = [
                 quantizedKeys.wq, quantizedKeys.scales, quantizedKeys.biases,
                 quantizedValues.wq, quantizedValues.scales, quantizedValues.biases,
@@ -404,6 +576,17 @@ internal class KVCacheSimple: BaseKVCache, CustomDebugStringConvertible {
 
     internal var debugDescription: String {
         "\(String(describing: Self.self)) \(Unmanaged.passUnretained(self).toOpaque()), offset: \(offset), step: \(step), keys: \(keys?.shape.description ?? "-"), values: \(values?.shape.description ?? "-")"
+    }
+
+    fileprivate static func storage(keys: MLXArray?, values: MLXArray?) -> DenseKVStorage? {
+        guard let keys, let values else {
+            return nil
+        }
+        return DenseKVStorage(keys: keys, values: values)
+    }
+
+    fileprivate func replaceStorage(_ storage: DenseKVStorage?) {
+        self.storage = storage
     }
 }
 
@@ -1119,8 +1302,8 @@ internal class QuantizedRotatingKVCache: BaseKVCache, QuantizedKVCacheProtocol {
 
 /// Quantized KV cache for memory efficiency using MLX quantization
 internal class QuantizedKVCache: BaseKVCache, QuantizedKVCacheProtocol {
-    private var keys: (MLXArray, MLXArray, MLXArray?)?
-    private var values: (MLXArray, MLXArray, MLXArray?)?
+    private var keys: QuantizedKVState?
+    private var values: QuantizedKVState?
     private let step: Int
     internal let groupSize: Int
     internal let bits: Int
@@ -1137,53 +1320,12 @@ internal class QuantizedKVCache: BaseKVCache, QuantizedKVCacheProtocol {
     public override func innerState() -> [MLXArray] {
         var arrays: [MLXArray] = []
         if let keys = keys {
-            arrays.append(contentsOf: [keys.0, keys.1, keys.2].compactMap { $0 })
+            arrays.append(contentsOf: keys.arrays)
         }
         if let values = values {
-            arrays.append(contentsOf: [values.0, values.1, values.2].compactMap { $0 })
+            arrays.append(contentsOf: values.arrays)
         }
         return arrays
-    }
-
-    /// Tree map equivalent for applying function to tuple elements
-    private func treeMap<T>(
-        _ transform: (MLXArray) -> T,
-        _ tuple: (MLXArray, MLXArray, MLXArray?)
-    ) -> (T, T, T?)
-    {
-        if let biases = tuple.2 {
-            return (transform(tuple.0), transform(tuple.1), transform(biases))
-        }
-        return (transform(tuple.0), transform(tuple.1), nil)
-    }
-
-    /// Tree map for two tuples (like Python's tree_map over (keys, values))
-    private func treeMapPair<T>(
-        _ transform: (MLXArray) -> T,
-        _ tuple1: (MLXArray, MLXArray, MLXArray?),
-        _ tuple2: (MLXArray, MLXArray, MLXArray?)
-    ) -> ((T, T, T?), (T, T, T?)) {
-        return (treeMap(transform, tuple1), treeMap(transform, tuple2))
-    }
-
-    /// Create initial quantized tuples (like Python's init_quant)
-    private func initQuant(dim: Int, shape: [Int], dtype: DType) -> (MLXArray, MLXArray, MLXArray?) {
-        // Create temporary zero arrays and quantize them using native MLX Swift
-        let tempArray = MLXArray.zeros(shape + [dim], dtype: dtype)
-        let quantized = quantized(tempArray, groupSize: groupSize, bits: bits, mode: mode)
-
-        return (quantized.wq, quantized.scales, quantized.biases)
-    }
-
-    /// Expand quantized tuple
-    private func expandQuant(_ quantTuple: (MLXArray, MLXArray, MLXArray?), newShape: [Int]) -> (
-        MLXArray, MLXArray, MLXArray?
-    ) {
-        return treeMap(
-            { array in
-                let newArray = MLXArray.zeros(newShape + [array.dim(-1)], dtype: array.dtype)
-                return concatenated([array, newArray], axis: -2)
-            }, quantTuple)
     }
 
     /// Get current quantized keys and values as tuples (efficient access)
@@ -1193,92 +1335,79 @@ internal class QuantizedKVCache: BaseKVCache, QuantizedKVCacheProtocol {
     )? {
         guard let keys = keys, let values = values else { return nil }
 
-        let trimmedKeys = treeMap({ $0[.ellipsis, ..<offset, 0...] }, keys)
-        let trimmedValues = treeMap({ $0[.ellipsis, ..<offset, 0...] }, values)
-
-        return (trimmedKeys, trimmedValues)
+        return (
+            keys.prefix(upTo: offset).storage,
+            values.prefix(upTo: offset).storage
+        )
     }
 
-    /// Update cache and return quantized tuples (Python's update_and_fetch)
-    /// This is needed because `update` in Swift must return `(MLXArray, MLXArray)`
-    ///
-    /// - Parameters:
-    ///   - keys: New key data to add to cache
-    ///   - values: New value data to add to cache
-    /// - Returns: Quantized tuples (keys, values) as ((weight, scales, biases), (weight, scales, biases))
     internal func updateQuantized(keys: MLXArray, values: MLXArray) -> (
         (MLXArray, MLXArray, MLXArray?), (MLXArray, MLXArray, MLXArray?)
     ) {
-        let B = keys.dim(0)
-        let nKVHeads = keys.dim(1)
-        let numSteps = keys.dim(2)
-        let kHeadDim = keys.dim(3)
-        let vHeadDim = values.dim(3)
-        let prev = offset
+        var currentKeys = self.keys
+        var currentValues = self.values
+        let plan = KVCacheAppendPlan(
+            offset: offset,
+            incomingTokenCount: keys.dim(2),
+            currentCapacity: currentKeys?.tokenCapacity,
+            step: step
+        )
 
-        // Check if we need to expand the cache
-        if self.keys == nil || (prev + numSteps) > self.keys!.0.dim(-2) {
-            let newSteps = ((step + numSteps - 1) / step) * step
-            let shape = [B, nKVHeads, newSteps]
+        if plan.needsGrowth {
+            let shape = [keys.dim(0), keys.dim(1), plan.additionalCapacity]
+            let emptyKeys = QuantizedKVState.zeros(
+                shape: shape,
+                headDimension: keys.dim(3),
+                dtype: keys.dtype,
+                groupSize: groupSize,
+                bits: bits,
+                mode: mode
+            )
+            let emptyValues = QuantizedKVState.zeros(
+                shape: shape,
+                headDimension: values.dim(3),
+                dtype: values.dtype,
+                groupSize: groupSize,
+                bits: bits,
+                mode: mode
+            )
 
-            if let existingKeys = self.keys, let existingValues = self.values {
-                // Trim if needed
-                if prev % step != 0 {
-                    // Use tree_map equivalent to trim both keys and values
-                    let (trimmedKeys, trimmedValues) = treeMapPair(
-                        { array in
-                            array[.ellipsis, ..<prev, 0...]
-                        }, existingKeys, existingValues)
-
-                    self.keys = trimmedKeys
-                    self.values = trimmedValues
-                }
-
-                // Expand using tree_map equivalent (Python's tree_map(expand_quant, ...))
-                self.keys = expandQuant(self.keys!, newShape: shape)
-                self.values = expandQuant(self.values!, newShape: shape)
+            if let existingKeys = currentKeys, let existingValues = currentValues {
+                currentKeys = QuantizedKVState.concatenated([
+                    existingKeys.prefix(upTo: plan.retainedLength),
+                    emptyKeys
+                ])
+                currentValues = QuantizedKVState.concatenated([
+                    existingValues.prefix(upTo: plan.retainedLength),
+                    emptyValues
+                ])
             } else {
-                // Initialize new quantized cache
-                self.keys = initQuant(dim: kHeadDim, shape: shape, dtype: keys.dtype)
-                self.values = initQuant(dim: vHeadDim, shape: shape, dtype: keys.dtype)
+                currentKeys = emptyKeys
+                currentValues = emptyValues
             }
         }
 
-        offset += numSteps
-
-        let quantizedKeys = quantized(keys, groupSize: groupSize, bits: bits, mode: mode)
-        let quantizedValues = quantized(values, groupSize: groupSize, bits: bits, mode: mode)
-
-        // Convert named tuples to positional tuples
-        let qKeys = (quantizedKeys.wq, quantizedKeys.scales, quantizedKeys.biases)
-        let qValues = (quantizedValues.wq, quantizedValues.scales, quantizedValues.biases)
-
-        // Assign to storage
-        guard let currentKeys = self.keys, let currentValues = self.values else {
+        guard var writableKeys = currentKeys, var writableValues = currentValues else {
             fatalError("Quantized cache not properly initialized")
         }
 
-        // Update each component of the quantized tuples
-        currentKeys.0[.ellipsis, prev ..< offset, 0...] = qKeys.0
-        currentKeys.1[.ellipsis, prev ..< offset, 0...] = qKeys.1
-        if let qKeysBiases = qKeys.2 {
-            currentKeys.2![.ellipsis, prev ..< offset, 0...] = qKeysBiases
-        }
+        writableKeys.write(
+            QuantizedKVState.quantizing(keys, groupSize: groupSize, bits: bits, mode: mode),
+            range: plan.writeRange
+        )
+        writableValues.write(
+            QuantizedKVState.quantizing(values, groupSize: groupSize, bits: bits, mode: mode),
+            range: plan.writeRange
+        )
 
-        currentValues.0[.ellipsis, prev ..< offset, 0...] = qValues.0
-        currentValues.1[.ellipsis, prev ..< offset, 0...] = qValues.1
-        if let qValuesBiases = qValues.2 {
-            currentValues.2![.ellipsis, prev ..< offset, 0...] = qValuesBiases
-        }
+        offset = plan.writeRange.upperBound
+        self.keys = writableKeys
+        self.values = writableValues
 
-        self.keys = currentKeys
-        self.values = currentValues
-
-        // Return quantized tuples
-        let trimmedKeys = treeMap({ $0[.ellipsis, ..<offset, 0...] }, currentKeys)
-        let trimmedValues = treeMap({ $0[.ellipsis, ..<offset, 0...] }, currentValues)
-
-        return (trimmedKeys, trimmedValues)
+        return (
+            writableKeys.prefix(upTo: offset).storage,
+            writableValues.prefix(upTo: offset).storage
+        )
     }
 
     /// This method is required by the KVCache protocol, but it is not intended to be used with QuantizedKVCache.
@@ -1293,28 +1422,29 @@ internal class QuantizedKVCache: BaseKVCache, QuantizedKVCacheProtocol {
         get {
             guard let keys = keys, let values = values else { return [] }
 
-            if offset < keys.0.dim(2) {
-                // Trim to current offset using tree_map
-                let trimmedKeys = treeMap({ $0[.ellipsis, ..<offset, 0...] }, keys)
-                let trimmedValues = treeMap({ $0[.ellipsis, ..<offset, 0...] }, values)
-                // Flatten tuples to array for serialization
-                return [
-                    trimmedKeys.0, trimmedKeys.1, trimmedKeys.2, trimmedValues.0, trimmedValues.1,
-                    trimmedValues.2,
-                ].compactMap { $0 }
-            } else {
-                // Flatten tuples to array for serialization
-                return [keys.0, keys.1, keys.2, values.0, values.1, values.2].compactMap { $0 }
+            guard offset < keys.tokenCapacity else {
+                return keys.arrays + values.arrays
             }
+            let trimmedKeys = keys.prefix(upTo: offset)
+            let trimmedValues = values.prefix(upTo: offset)
+            return trimmedKeys.arrays + trimmedValues.arrays
         }
         set {
             switch newValue.count {
             case 4:
-                keys = (newValue[0], newValue[1], nil)
-                values = (newValue[2], newValue[3], nil)
+                keys = QuantizedKVState(weights: newValue[0], scales: newValue[1], biases: nil)
+                values = QuantizedKVState(weights: newValue[2], scales: newValue[3], biases: nil)
             case 6:
-                keys = (newValue[0], newValue[1], newValue[2])
-                values = (newValue[3], newValue[4], newValue[5])
+                keys = QuantizedKVState(
+                    weights: newValue[0],
+                    scales: newValue[1],
+                    biases: newValue[2]
+                )
+                values = QuantizedKVState(
+                    weights: newValue[3],
+                    scales: newValue[4],
+                    biases: newValue[5]
+                )
             default:
                 fatalError(
                     "QuantizedKVCache state must have exactly 6 or 4 arrays (3/2 for keys, 3/2 for values)"
@@ -1371,9 +1501,8 @@ internal class QuantizedKVCache: BaseKVCache, QuantizedKVCacheProtocol {
         simpleCache.offset = self.offset
 
         if let keys = keys, let values = values {
-            // Dequantize the current state using tree_map approach
-            let currentKeys = treeMap({ $0[.ellipsis, ..<offset, 0...] }, keys)
-            let currentValues = treeMap({ $0[.ellipsis, ..<offset, 0...] }, values)
+            let currentKeys = keys.prefix(upTo: offset).storage
+            let currentValues = values.prefix(upTo: offset).storage
 
             let dequantizedKeys = dequantized(
                 currentKeys.0, scales: currentKeys.1, biases: currentKeys.2,
@@ -1382,7 +1511,6 @@ internal class QuantizedKVCache: BaseKVCache, QuantizedKVCacheProtocol {
                 currentValues.0, scales: currentValues.1, biases: currentValues.2,
                 groupSize: groupSize, bits: bits, mode: mode)
 
-            // Set the unquantized state
             simpleCache.state = [dequantizedKeys, dequantizedValues]
         }
 
@@ -1403,48 +1531,48 @@ internal class ChunkedKVCache: KVCacheSimple {
     internal func maybeTrimFront() {
         guard let keys = self.keys,
             let chunkSize = chunkSize,
-            keys.dim(2) >= chunkSize
+            offset - startPosition >= chunkSize
         else { return }
 
-        startPosition += keys.dim(2) - chunkSize
-        self.keys = keys[.ellipsis, (-chunkSize)..., 0...]
-        self.values = values?[.ellipsis, (-chunkSize)..., 0...]
+        let activeLength = offset - startPosition
+        let trimCount = activeLength - chunkSize
+        startPosition += trimCount
+        guard let values else {
+            replaceStorage(nil)
+            return
+        }
+        replaceStorage(
+            DenseKVStorage(
+                keys: keys[.ellipsis, trimCount ..< activeLength, 0...],
+                values: values[.ellipsis, trimCount ..< activeLength, 0...]
+            )
+        )
     }
 
     public override func update(keys: MLXArray, values: MLXArray) -> (MLXArray, MLXArray) {
-        let prev = offset - startPosition
+        var storage = Self.storage(keys: self.keys, values: self.values)
+        let plan = KVCacheAppendPlan(
+            offset: offset,
+            baseOffset: startPosition,
+            incomingTokenCount: keys.dim(2),
+            currentCapacity: storage?.capacity,
+            step: step
+        )
 
-        if self.keys == nil || (prev + keys.dim(2)) > self.keys!.dim(2) {
-            let B = keys.dim(0)
-            let kvHeads = keys.dim(1)
-            let kHeadDim = keys.dim(3)
-            let vHeadDim = values.dim(3)
-
-            let nSteps = (step + keys.dim(2) - 1) / step
-            let kShape = [B, kvHeads, nSteps * step, kHeadDim]
-            let vShape = [B, kvHeads, nSteps * step, vHeadDim]
-            let newK = MLXArray.zeros(kShape, dtype: keys.dtype)
-            let newV = MLXArray.zeros(vShape, dtype: values.dtype)
-
-            if var currentKeys = self.keys, var currentValues = self.values {
-                if prev % step != 0 {
-                    currentKeys = currentKeys[.ellipsis, ..<prev, 0...]
-                    currentValues = currentValues[.ellipsis, ..<prev, 0...]
-                }
-                self.keys = concatenated([currentKeys, newK], axis: 2)
-                self.values = concatenated([currentValues, newV], axis: 2)
-            } else {
-                self.keys = newK
-                self.values = newV
-            }
+        if plan.needsGrowth {
+            storage = appendDenseCapacity(to: storage, plan: plan, keys: keys, values: values)
         }
 
+        guard var storage else {
+            fatalError("Chunked KV cache storage was not initialized")
+        }
+
+        storage.write(keys: keys, values: values, range: plan.writeRange)
+        replaceStorage(storage)
         offset += keys.dim(2)
         let end = offset - startPosition
-        self.keys![.ellipsis, prev ..< end, 0...] = keys
-        self.values![.ellipsis, prev ..< end, 0...] = values
 
-        return (self.keys![.ellipsis, ..<end, 0...], self.values![.ellipsis, ..<end, 0...])
+        return (storage.keys[.ellipsis, ..<end, 0...], storage.values[.ellipsis, ..<end, 0...])
     }
 
     @discardableResult
@@ -1511,14 +1639,12 @@ internal class MambaCache: BaseKVCache {
 
     public override var state: [MLXArray] {
         get {
-            // Need to preserve the structure including nils, similar to Python version
-            // Use empty arrays as placeholders for nil values
+            // Empty arrays preserve nil slots without adding separate metadata.
             var result: [MLXArray] = []
             for item in cache {
                 if let array = item {
                     result.append(array)
                 } else {
-                    // Use an empty array as placeholder for nil (this shape should never occur naturally)
                     result.append(MLXArray.zeros([0], dtype: .float32))
                 }
             }
@@ -1658,7 +1784,7 @@ internal func savePromptCache(
     let cacheClasses = cache.map(cacheClassName)
     let cacheLayouts = cache.map(cacheLayoutDescriptor)
 
-    // Flatten cache data using tree_flatten compatible structure: "i.j" format
+    // Flatten cache data using the stable "i.j" tensor-key format.
     var flattenedData: [String: MLXArray] = [:]
     for (i, arrays) in cacheData.enumerated() {
         for (j, array) in arrays.enumerated() {
@@ -1666,7 +1792,7 @@ internal func savePromptCache(
         }
     }
 
-    // Create cache_metadata structure compatible with Python: [cache_info, metadata, cache_classes]
+    // cache_metadata is stored as [cache_info, user_metadata, cache_classes].
     var flattenedMetadata: [String: String] = [:]
 
     // Flatten cache_info as "0.i.j" (first element of cache_metadata)
@@ -1687,7 +1813,7 @@ internal func savePromptCache(
     }
 
     // Recursive layout metadata lets Swift round-trip composite caches while
-    // preserving the existing Python-compatible top-level arrays/classes.
+    // preserving the existing top-level arrays/classes.
     for (i, layout) in cacheLayouts.enumerated() {
         let layoutData = try JSONEncoder().encode(layout)
         flattenedMetadata["3.\(i)"] = layoutData.base64EncodedString()
@@ -1720,10 +1846,10 @@ private func loadPromptCache(
     arrays: [String: MLXArray],
     metadata: [String: String]
 ) throws -> ([KVCache], [String: String]?) {
-    // Unflatten arrays using tree_unflatten compatible logic
+    // Rebuild per-layer arrays from the flat tensor-key map.
     let cacheData = unflattenArrays(arrays)
 
-    // Unflatten metadata using tree_unflatten compatible logic
+    // Rebuild cache metadata from the flat metadata-key map.
     let unflattenedMetadata = unflattenMetadata(metadata)
 
     // Extract cache_info, user_metadata, and cache_classes from unflattened structure
@@ -1765,7 +1891,7 @@ private func loadPromptCache(
 }
 
 private func cacheClassName(_ cache: KVCache) -> String {
-    // Use Python-compatible class names for cross-platform compatibility.
+    // Keep stable class names so persisted caches survive implementation changes.
     switch cache {
     case is MiniMaxM3BatchKVCache:
         return "MiniMaxM3BatchKVCache"
@@ -1971,7 +2097,7 @@ private func makeEmptyLeafCache(
     }
 }
 
-/// Unflatten arrays from tree_flatten format (e.g., "0.1", "1.0") to nested structure
+/// Unflatten arrays from the persisted key format, e.g. "0.1" or "1.0".
 private func unflattenArrays(_ flatArrays: [String: MLXArray]) -> [[MLXArray]] {
     var arrayMap: [Int: [Int: MLXArray]] = [:]
 
@@ -2011,7 +2137,7 @@ private func unflattenArrays(_ flatArrays: [String: MLXArray]) -> [[MLXArray]] {
     return result
 }
 
-/// Unflatten metadata from tree_flatten format to nested structure
+/// Unflatten metadata from the persisted key format.
 private func unflattenMetadata(_ flatMetadata: [String: String]) -> [Any] {
     var cacheInfo: [[String]] = []
     var userMetadata: [String: String] = [:]
