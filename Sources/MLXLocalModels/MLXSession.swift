@@ -330,7 +330,7 @@ internal actor MLXSession: LLMSession {
                 prepared.state.stopReason = .timeout
                 break
             }
-            if isStopToken(token, context: genContext.modelContext) {
+            if isStopToken(token, tokenContext: prepared.tokenContext) {
                 prepared.state.stopReason = .endOfSequence
                 break
             }

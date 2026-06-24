@@ -9,12 +9,7 @@ extension MLXSession {
 
         tokenContext.state.allTokens.append(token)
         tokenContext.state.generatedTokenCount += 1
-        let tokenText = tokenContext.context.tokenizer.decode(tokens: [token])
-        MLXGenerationDiagnostics.recordGeneratedToken(
-            tokenID: token,
-            tokenText: tokenText,
-            index: tokenContext.state.generatedTokenCount
-        )
+        let diagnosticText = recordGeneratedTokenIfNeeded(token, tokenContext: tokenContext)
 
         if var detokenizer = tokenContext.state.detokenizer {
             detokenizer.append(token: token)
@@ -25,7 +20,10 @@ extension MLXSession {
                 return .stop
             }
         } else {
-            yieldText(tokenText, tokenContext: tokenContext)
+            yieldText(
+                diagnosticText ?? tokenContext.context.tokenizer.decode(tokens: [token]),
+                tokenContext: tokenContext
+            )
         }
 
         if tokenContext.state.generatedTokenCount >= tokenContext.input.limits.maxTokens {
@@ -34,6 +32,22 @@ extension MLXSession {
         }
 
         return .more
+    }
+
+    nonisolated private func recordGeneratedTokenIfNeeded(
+        _ token: Int,
+        tokenContext: TokenContext
+    ) -> String? {
+        guard MLXGenerationDiagnostics.recordsGeneratedTokens else {
+            return nil
+        }
+        let tokenText = tokenContext.context.tokenizer.decode(tokens: [token])
+        MLXGenerationDiagnostics.recordGeneratedToken(
+            tokenID: token,
+            tokenText: tokenText,
+            index: tokenContext.state.generatedTokenCount
+        )
+        return tokenText
     }
 
     nonisolated func processGeneratedText(
@@ -66,19 +80,7 @@ extension MLXSession {
         )
     }
 
-    nonisolated func isStopToken(_ token: Int, context: ModelContext) -> Bool {
-        if token == context.tokenizer.unknownTokenId || token == context.tokenizer.eosTokenId {
-            return true
-        }
-        if context.configuration.eosTokenIds.contains(token) {
-            return true
-        }
-
-        let additionalEOSTokenIds = Set(
-            context.configuration.extraEOSTokens.compactMap { eosToken in
-                context.tokenizer.convertTokenToId(eosToken)
-            }
-        )
-        return additionalEOSTokenIds.contains(token)
+    nonisolated func isStopToken(_ token: Int, tokenContext: TokenContext) -> Bool {
+        tokenContext.stopTokenIDs.contains(token)
     }
 }

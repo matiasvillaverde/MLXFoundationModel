@@ -127,7 +127,8 @@ struct MLXPreparedGenerationTests {
             context: genContext.modelContext,
             input: genContext.input,
             continuation: genContext.continuation,
-            clock: genContext.clock
+            clock: genContext.clock,
+            stopTokenIDs: []
         )
         state.stopDetector = StopSequenceDetector(sequences: stopSequences)
         state.detokenizer = NaiveStreamingDetokenizer(tokenizer: genContext.modelContext.tokenizer)

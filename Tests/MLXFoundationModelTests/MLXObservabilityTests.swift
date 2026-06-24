@@ -55,25 +55,34 @@ struct MLXObservabilityTests {
     @Test("generated token diagnostics are not exported to public observability")
     func generatedTokenDiagnosticsAreRedactedFromPublicObservability() async throws {
         let sink = RecordingObservabilitySink()
+        let tokenID = 9_876_543
+        let tokenText = "secret-model-output"
         MLXObservability.reset()
         MLXObservability.configure(Self.testConfiguration, sink: sink)
         defer { MLXObservability.reset() }
 
         _ = try await MLXGenerationDiagnostics.withRecording {
             MLXGenerationDiagnostics.recordGeneratedToken(
-                tokenID: 42,
-                tokenText: "secret-model-output",
+                tokenID: tokenID,
+                tokenText: tokenText,
                 index: 0
             )
         }
 
-        let eventText = sink.events()
-            .map { event in
-                event.name + event.attributes.values.joined() + event.measurements.keys.joined()
+        let publicEvents = sink.events() + MLXObservability.snapshot().recentEvents
+        var eventText = ""
+        for event in publicEvents {
+            eventText += event.name
+            eventText += event.attributes.keys.joined()
+            eventText += event.attributes.values.joined()
+            eventText += event.measurements.keys.joined()
+            for value in event.measurements.values {
+                eventText += String(value)
             }
-            .joined()
-        #expect(!eventText.contains("secret-model-output"))
-        #expect(MLXObservability.snapshot().recentEvents.isEmpty)
+        }
+        #expect(!eventText.contains(tokenText))
+        #expect(!eventText.contains(String(tokenID)))
+        #expect(!publicEvents.contains { $0.name.contains("generated_token") })
     }
 
     @Test("disabled observability does not update in-memory metrics")

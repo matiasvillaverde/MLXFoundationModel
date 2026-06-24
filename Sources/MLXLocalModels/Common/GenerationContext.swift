@@ -447,6 +447,10 @@ internal enum MLXGenerationDiagnostics {
         store.events(runID: currentRunID)
     }
 
+    internal static var recordsGeneratedTokens: Bool {
+        currentRunID != nil
+    }
+
     internal static var currentAdaptivePrefillController: MLXAdaptivePrefillChunkController? {
         adaptivePrefillController
     }
@@ -771,6 +775,7 @@ internal struct TokenContext {
     let input: LLMInput
     let continuation: AsyncThrowingStream<LLMStreamChunk, Error>.Continuation
     let clock: ContinuousClock
+    let stopTokenIDs: Set<Int>
 }
 
 /// Context for generation operations

@@ -253,7 +253,8 @@ extension MLXSession {
             context: genContext.modelContext,
             input: genContext.input,
             continuation: genContext.continuation,
-            clock: genContext.clock
+            clock: genContext.clock,
+            stopTokenIDs: stopTokenIDs(for: genContext.modelContext)
         )
         state.stopDetector = StopSequenceDetector(sequences: genContext.input.sampling.stopSequences)
         state.detokenizer = NaiveStreamingDetokenizer(tokenizer: genContext.modelContext.tokenizer)
@@ -306,5 +307,21 @@ extension MLXSession {
             return
         }
         logger.warning("Slow tokenization: \(duration) for \(tokenCount) tokens")
+    }
+
+    nonisolated private func stopTokenIDs(for context: ModelContext) -> Set<Int> {
+        var tokenIDs = context.configuration.eosTokenIds
+        if let unknownTokenID = context.tokenizer.unknownTokenId {
+            tokenIDs.insert(unknownTokenID)
+        }
+        if let eosTokenID = context.tokenizer.eosTokenId {
+            tokenIDs.insert(eosTokenID)
+        }
+        tokenIDs.formUnion(
+            context.configuration.extraEOSTokens.compactMap { eosToken in
+                context.tokenizer.convertTokenToId(eosToken)
+            }
+        )
+        return tokenIDs
     }
 }
