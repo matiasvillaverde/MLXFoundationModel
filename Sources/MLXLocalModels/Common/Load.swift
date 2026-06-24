@@ -1,26 +1,88 @@
-// Copyright © 2024 Apple Inc.
-
 import Foundation
 import Hub
 import MLX
 import MLXNN
 import OSLog
-import Tokenizers
 
-/// Download the model using the `HubApi`.
-///
-/// This will download `*.safetensors` and `*.json` if the ``ModelConfiguration``
-/// represents a Hub id, e.g. `mlx-community/gemma-2-2b-it-4bit`.
-///
-/// This is typically called via ``ModelFactory/load(hub:configuration:progressHandler:)``
-///
-/// - Parameters:
-///   - hub: HubApi instance
-///   - configuration: the model identifier
-///   - progressHandler: callback for progress
-/// - Returns: URL for the directory containing downloaded files
+internal enum ModelLoadError: LocalizedError, Equatable {
+    case cannotEnumerateWeights(URL)
+
+    internal var errorDescription: String? {
+        switch self {
+        case .cannotEnumerateWeights(let directory):
+            "Could not enumerate model weights in '\(directory.path())'."
+        }
+    }
+}
+
+internal enum ModelArtifactMatcher {
+    internal static let snapshotPatterns = [
+        "*.safetensors",
+        "*.json",
+        "*.jinja",
+        "merges.txt",
+        "tokenizer.model",
+        "vocab.*"
+    ]
+}
+
+internal enum SafetensorFileDiscovery {
+    internal static func safetensorURLs(
+        in directory: URL,
+        fileManager: FileManager = .default
+    ) throws -> [URL] {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: directory.path(), isDirectory: &isDirectory),
+            isDirectory.boolValue
+        else {
+            throw ModelLoadError.cannotEnumerateWeights(directory)
+        }
+
+        guard let enumerator = fileManager.enumerator(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            throw ModelLoadError.cannotEnumerateWeights(directory)
+        }
+
+        var urls: [URL] = []
+        for case let url as URL in enumerator
+        where url.pathExtension.lowercased() == "safetensors" {
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey])
+            if values.isRegularFile == true {
+                urls.append(url)
+            }
+        }
+
+        return urls.sorted { lhs, rhs in
+            lhs.path < rhs.path
+        }
+    }
+}
+
+private struct LoadedWeights {
+    var arrays: [String: MLXArray] = [:]
+    var metadata: [String: String] = [:]
+    var fileCount = 0
+
+    mutating func mergeFile(
+        arrays newArrays: [String: MLXArray],
+        dtypeMetadata: [String: String],
+        fileMetadata: [String: String]
+    ) {
+        for (key, value) in newArrays {
+            arrays[key] = value
+        }
+        metadata.merge(dtypeMetadata) { current, _ in current }
+        metadata.merge(fileMetadata) { current, _ in current }
+        fileCount += 1
+    }
+}
+
 internal func downloadModel(
-    hub: HubApi, configuration: ModelConfiguration,
+    hub: HubApi,
+    configuration: ModelConfiguration,
     progressHandler: @Sendable @escaping (Progress) -> Void
 ) async throws -> URL {
     let logger = MLXObservability.logger(for: .modelLoad)
@@ -29,119 +91,91 @@ internal func downloadModel(
         switch configuration.id {
         case .id(let id, let revision):
             logger.info("Downloading model: \(id) (revision: \(revision))")
-            // download the model weights
-            let repo = Hub.Repo(id: id)
-            let modelFiles = [
-                "*.safetensors",
-                "*.json",
-                "*.jinja",
-                "merges.txt",
-                "tokenizer.model",
-                "vocab.*"
-            ]
             let url = try await hub.snapshot(
-                from: repo,
+                from: Hub.Repo(id: id),
                 revision: revision,
-                matching: modelFiles,
+                matching: ModelArtifactMatcher.snapshotPatterns,
                 progressHandler: progressHandler
             )
             logger.info("Model downloaded successfully to: \(url.path)")
             return url
+
         case .directory(let directory):
             logger.debug("Using local model directory: \(directory.path)")
             return directory
         }
-
     } catch Hub.HubClientError.authorizationRequired {
-        // an authorizationRequired means (typically) that the named repo doesn't exist on
-        // on the server so retry with local only configuration
         logger.warning("Authorization required or model not found, falling back to local directory")
         return configuration.modelDirectory(hub: hub)
-
     } catch {
-        let nserror = error as NSError
-        if nserror.domain == NSURLErrorDomain && nserror.code == NSURLErrorNotConnectedToInternet {
-            // Error Domain=NSURLErrorDomain Code=-1009 "The Internet connection appears to be offline."
-            // fall back to the local directory
-            logger.warning("No internet connection, using local model directory")
-            return configuration.modelDirectory(hub: hub)
-        } else {
+        guard ModelDownloadFallback.shouldUseLocalDirectory(for: error) else {
             logger.error("Failed to download model: \(error.localizedDescription)")
             throw error
         }
+
+        logger.warning("No internet connection, using local model directory")
+        return configuration.modelDirectory(hub: hub)
     }
 }
 
-/// Load model weights.
-///
-/// This is typically called via ``ModelFactory/load(hub:configuration:progressHandler:)``.
-/// This function loads all `safetensor` files in the given `modelDirectory`,
-/// calls ``LanguageModel/sanitize(weights:)``, applies optional quantization, and
-/// updates the model with the weights.
+private enum ModelDownloadFallback {
+    static func shouldUseLocalDirectory(for error: Error) -> Bool {
+        let nsError = error as NSError
+        return nsError.domain == NSURLErrorDomain
+            && nsError.code == NSURLErrorNotConnectedToInternet
+    }
+}
+
 internal func loadWeights(
-    modelDirectory: URL, model: LanguageModel,
+    modelDirectory: URL,
+    model: LanguageModel,
     quantization: BaseConfiguration.Quantization? = nil,
     perLayerQuantization: BaseConfiguration.PerLayerQuantization? = nil
 ) throws {
     let logger = MLXObservability.logger(for: .modelLoad)
     logger.info("Loading model weights from: \(modelDirectory.path)")
 
-    // load the weights
-    var weights = [String: MLXArray]()
-    var metadata = [String: String]()
-    var fileCount = 0
-    let enumerator = FileManager.default.enumerator(
-        at: modelDirectory, includingPropertiesForKeys: nil)!
-    for case let url as URL in enumerator {
-        if url.pathExtension == "safetensors" {
-            logger.debug("Loading weights from: \(url.lastPathComponent)")
-            let (w, fileMetadata) = try loadArraysAndMetadata(url: url)
-            for (key, value) in w {
-                weights[key] = value
-            }
-            metadata.merge(
-                MLXSafetensorsTensorMetadata.encodedDTypeMetadata(at: url)
-            ) { current, _ in current }
-            metadata.merge(fileMetadata) { current, _ in current }
-            fileCount += 1
-        }
-    }
-    logger.debug("Loaded \(fileCount) safetensor files with \(weights.count) total weights")
+    let loadedWeights = try loadSafetensorWeights(from: modelDirectory, logger: logger)
+    logger.debug(
+        "Loaded \(loadedWeights.fileCount) safetensor files with \(loadedWeights.arrays.count) total weights"
+    )
 
     let packedScaleResult = MLXQuantizedWeightSanitizer.sanitizePackedScalePairs(
-        weights,
-        metadata: metadata
+        loadedWeights.arrays,
+        metadata: loadedWeights.metadata
     )
     if packedScaleResult.report.packedScaleCount > 0 {
         logger.info(
             "Dequantized \(packedScaleResult.report.packedScaleCount) FP8 packed scale pairs"
         )
     }
-    weights = packedScaleResult.weights
 
-    // per-model cleanup
-    weights = model.sanitize(weights: weights, metadata: metadata)
-
-    // quantize if needed
+    let weights = model.sanitize(weights: packedScaleResult.weights, metadata: loadedWeights.metadata)
     if quantization != nil || perLayerQuantization != nil {
         logger.debug("Applying quantization to model")
-        quantize(model: model) { path, module in
-            if weights["\(path).scales"] != nil {
-                if let perLayerQuantization {
-                    return perLayerQuantization.quantization(layer: path)?.asTuple
-                } else {
-                    return quantization?.asTuple
-                }
-            } else {
+        quantize(model: model) { path, _ in
+            guard weights["\(path).scales"] != nil else {
                 return nil
             }
+            return perLayerQuantization?.quantization(layer: path)?.asTuple ?? quantization?.asTuple
         }
     }
 
-    // apply the loaded weights
-    let parameters = ModuleParameters.unflattened(weights)
-    try model.update(parameters: parameters, verify: [.all])
-
+    try model.update(parameters: ModuleParameters.unflattened(weights), verify: [.all])
     eval(model)
     logger.info("Model weights loaded successfully")
+}
+
+private func loadSafetensorWeights(from directory: URL, logger: Logger) throws -> LoadedWeights {
+    var loadedWeights = LoadedWeights()
+    for url in try SafetensorFileDiscovery.safetensorURLs(in: directory) {
+        logger.debug("Loading weights from: \(url.lastPathComponent)")
+        let (arrays, fileMetadata) = try loadArraysAndMetadata(url: url)
+        loadedWeights.mergeFile(
+            arrays: arrays,
+            dtypeMetadata: MLXSafetensorsTensorMetadata.encodedDTypeMetadata(at: url),
+            fileMetadata: fileMetadata
+        )
+    }
+    return loadedWeights
 }
