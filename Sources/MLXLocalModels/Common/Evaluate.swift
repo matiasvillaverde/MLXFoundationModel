@@ -1,60 +1,28 @@
-// Copyright © 2024 Apple Inc.
-
 import Foundation
 @preconcurrency import MLX
 import MLXNN
 import Tokenizers
 
-/// Namespace for text generation functions to avoid naming conflicts
+/// Namespace for text generation entry points.
 internal enum TextGenerator {}
 
-/// A `LogitSampler` is responsible for sampling `logits` produced by
-/// a ``LanguageModel`` to produce a token.
-///
-/// See also: ``LogitProcessor``
+/// Selects one token from a model logits row.
 internal protocol LogitSampler: Sendable {
 
-    /// Given `logits` produce a new `MLXArray` with the token.
     func sample(logits: MLXArray) -> MLXArray
 }
 
-/// A `LogitProcessor` is an optional visitor of `logits`.
-///
-/// The ``LogitProcessor`` is called with the input (prompt) before generating tokens:
-///
-/// ```swift
-/// processor?.prompt(input.text.tokens)
-/// ```
-///
-/// Then for each token generated it has a chance to adjust the logits:
-///
-/// ```swift
-/// logits = processor?.process(logits: logits) ?? logits
-/// let y = sampler.sample(logits: logits)
-/// processor?.didSample(token: y)
-/// ```
-///
-/// See also: ``LogitSampler``
+/// Stateful hook that can observe prompts, adjust logits, and track sampled tokens.
 internal protocol LogitProcessor: Sendable {
 
-    /// called before token generation starts with the text tokens of the prompt
     mutating func prompt(_ prompt: MLXArray)
 
-    /// called to visit and possibly modify the logits
     mutating func process(logits: MLXArray) -> MLXArray
 
-    /// called to provide the sampled token
     mutating func didSample(token: MLXArray)
 }
 
-/// Parameters for text generation, see ``TokenIterator``.
-///
-/// This produces:
-///
-/// - ``LogitSampler``
-/// - ``LogitProcessor``
-///
-/// for the `TokenIterator`.
+/// User and runtime controls for token generation.
 internal struct GenerateParameters: Sendable {
 
     /// Step size for processing the prompt
@@ -201,23 +169,23 @@ internal struct GenerateParameters: Sendable {
         prefillStepSize: Int = GenerationConstants.defaultPrefillStepSize,
         promptCacheReuseAlignment: PromptCacheReuseAlignment = .exact
     ) {
-        self.maxTokens = maxTokens
-        self.maxKVSize = maxKVSize
+        self.maxTokens = maxTokens.map { max(0, $0) }
+        self.maxKVSize = maxKVSize.map { max(1, $0) }
         self.kvBits = kvBits
-        self.kvGroupSize = kvGroupSize
+        self.kvGroupSize = max(1, kvGroupSize)
         self.quantizedKVStart = quantizedKVStart
         self.quantizedKVSkipLastLayer = quantizedKVSkipLastLayer
         self.indexCacheFrequency = indexCacheFrequency
         self.temperature = temperature
         self.topP = topP
-        self.topK = topK
+        self.topK = max(0, topK)
         self.minP = minP
         self.typicalP = typicalP.map(Self.normalizedProbability) ?? 1.0
         self.topNSigma = Self.normalizedTopNSigma(topNSigma)
         self.xtcProbability = Self.normalizedProbability(xtcProbability)
         self.xtcThreshold = Self.normalizedXTCThreshold(xtcThreshold)
         self.xtcMinKeep = max(1, xtcMinKeep)
-        self.xtcProtectedTokenIds = xtcProtectedTokenIds
+        self.xtcProtectedTokenIds = Self.normalizedTokenIdSet(xtcProtectedTokenIds)
         self.mirostat = Self.normalizedMirostat(mirostat)
         self.dry = Self.normalizedDry(dry)
         self.drySequenceBreakerTokenIds = Self.normalizedSequenceBreakers(
@@ -232,11 +200,11 @@ internal struct GenerateParameters: Sendable {
         self.frequencyContextSize = frequencyContextSize
         self.seed = seed
         self.grammar = grammar
-        self.logitBias = logitBias
+        self.logitBias = Self.normalizedLogitBias(logitBias)
         self.reasoningBudgetTokens = reasoningBudgetTokens.map { max(1, $0) }
         self.reasoningEndTokenIds = Self.normalizedTokenIds(reasoningEndTokenIds)
-        self.suppressTokenIds = suppressTokenIds
-        self.prefillStepSize = prefillStepSize
+        self.suppressTokenIds = Self.normalizedTokenIdSet(suppressTokenIds)
+        self.prefillStepSize = max(1, prefillStepSize)
         self.promptCacheReuseAlignment = promptCacheReuseAlignment
     }
 
@@ -299,15 +267,91 @@ internal struct GenerateParameters: Sendable {
         values.filter { $0 >= 0 }
     }
 
+    private static func normalizedTokenIdSet(_ values: Set<Int>) -> Set<Int> {
+        Set(values.filter { $0 >= 0 })
+    }
+
+    private static func normalizedLogitBias(_ values: [Int: Float]) -> [Int: Float] {
+        values.filter { key, _ in key >= 0 }
+    }
+
     internal var usesMirostatSampler: Bool {
-        mirostat != nil && temperature > 0
+        samplerPlan.usesMirostatSampler
     }
 
     internal var usesAdaptivePSampler: Bool {
-        adaptiveP != nil && temperature > 0
+        samplerPlan.usesAdaptivePSampler
     }
 
     internal func sampler() -> LogitSampler {
+        samplerPlan.makeSampler()
+    }
+
+    internal func processor(
+        grammarCompiler: GrammarConstraintCompiler? = nil
+    ) throws -> LogitProcessor? {
+        try LogitProcessorPlan(parameters: self, grammarCompiler: grammarCompiler)
+            .makeProcessor()
+    }
+
+    private var samplerPlan: LogitSamplerPlan {
+        LogitSamplerPlan(parameters: self)
+    }
+}
+
+private struct LogitSamplerPlan {
+    let temperature: Float
+    let topP: Float
+    let topK: Int
+    let minP: Float
+    let typicalP: Float
+    let topNSigma: Float?
+    let xtcProbability: Float
+    let xtcThreshold: Float
+    let xtcMinKeep: Int
+    let xtcProtectedTokenIds: Set<Int>
+    let mirostat: MirostatSamplingConfiguration?
+    let adaptiveP: AdaptivePSamplingConfiguration?
+    let seed: Int?
+
+    init(parameters: GenerateParameters) {
+        self.temperature = parameters.temperature
+        self.topP = parameters.topP
+        self.topK = parameters.topK
+        self.minP = parameters.minP
+        self.typicalP = parameters.typicalP
+        self.topNSigma = parameters.topNSigma
+        self.xtcProbability = parameters.xtcProbability
+        self.xtcThreshold = parameters.xtcThreshold
+        self.xtcMinKeep = parameters.xtcMinKeep
+        self.xtcProtectedTokenIds = parameters.xtcProtectedTokenIds
+        self.mirostat = parameters.mirostat
+        self.adaptiveP = parameters.adaptiveP
+        self.seed = parameters.seed
+    }
+
+    var usesMirostatSampler: Bool {
+        mirostat != nil && temperature > 0
+    }
+
+    var usesAdaptivePSampler: Bool {
+        adaptiveP != nil && temperature > 0
+    }
+
+    private var usesProbabilityFilters: Bool {
+        (topP > 0 && topP < 1)
+            || topK > 0
+            || minP > 0
+            || (typicalP > 0 && typicalP < 1)
+            || topNSigma != nil
+            || xtcProbability > 0
+    }
+
+    func makeSampler() -> LogitSampler {
+        if temperature == 0 {
+            return ArgMaxSampler()
+        }
+
         if let mirostat, usesMirostatSampler {
             return MirostatSampler(configuration: mirostat, temperature: temperature, seed: seed)
         }
@@ -329,16 +373,7 @@ internal struct GenerateParameters: Sendable {
             )
         }
 
-        let usesTopP = topP > 0 && topP < 1
-        let usesTopK = topK > 0
-        let usesMinP = minP > 0
-        let usesTypicalP = typicalP > 0 && typicalP < 1
-        let usesTopNSigma = topNSigma != nil
-        let usesXTC = xtcProbability > 0
-
-        if temperature == 0 {
-            return ArgMaxSampler()
-        } else if usesTopP || usesTopK || usesMinP || usesTypicalP || usesTopNSigma || usesXTC {
+        if usesProbabilityFilters {
             return TopPSampler(
                 temperature: temperature,
                 topP: topP,
@@ -352,92 +387,53 @@ internal struct GenerateParameters: Sendable {
                 xtcProtectedTokenIds: xtcProtectedTokenIds,
                 seed: seed
             )
-        } else {
-            return CategoricalSampler(temperature: temperature, seed: seed)
         }
+
+        return CategoricalSampler(temperature: temperature, seed: seed)
+    }
+}
+
+private struct LogitProcessorPlan {
+    var logitBiasContext: LogitBiasProcessor?
+    var suppressTokenContext: SuppressTokensProcessor?
+    var reasoningBudgetContext: ReasoningBudgetProcessor?
+    var repetitionContext: RepetitionContext?
+    var presenceContext: PresencePenaltyContext?
+    var frequencyContext: FrequencyPenaltyContext?
+    var dryContext: DryPenaltyContext?
+    var grammarContext: GrammarConstrainedLogitProcessor?
+
+    init(
+        parameters: GenerateParameters,
+        grammarCompiler: GrammarConstraintCompiler?
+    ) throws {
+        self.logitBiasContext = parameters.logitBias.isEmpty
+            ? nil
+            : LogitBiasProcessor(logitBias: parameters.logitBias)
+        self.suppressTokenContext = parameters.suppressTokenIds.isEmpty
+            ? nil
+            : SuppressTokensProcessor(tokenIds: parameters.suppressTokenIds)
+        self.reasoningBudgetContext = Self.reasoningBudgetContext(parameters)
+        self.repetitionContext = Self.repetitionContext(parameters)
+        self.presenceContext = Self.presenceContext(parameters)
+        self.frequencyContext = Self.frequencyContext(parameters)
+        self.dryContext = Self.dryContext(parameters)
+        self.grammarContext = try Self.grammarContext(parameters, compiler: grammarCompiler)
     }
 
-    internal func processor(
-        grammarCompiler: GrammarConstraintCompiler? = nil
-    ) throws -> LogitProcessor? {
-        let repetitionContext: RepetitionContext?
-        if let repetitionPenalty, repetitionPenalty != 0, repetitionPenalty != 1,
-           repetitionContextSize > 0
-        {
-            repetitionContext = RepetitionContext(
-                repetitionPenalty: repetitionPenalty,
-                repetitionContextSize: repetitionContextSize
-            )
-        } else {
-            repetitionContext = nil
-        }
+    var isEmpty: Bool {
+        logitBiasContext == nil
+            && suppressTokenContext == nil
+            && reasoningBudgetContext == nil
+            && repetitionContext == nil
+            && presenceContext == nil
+            && frequencyContext == nil
+            && dryContext == nil
+            && grammarContext == nil
+    }
 
-        let presenceContext: PresencePenaltyContext?
-        if let presencePenalty, presencePenalty != 0, presenceContextSize > 0 {
-            presenceContext = PresencePenaltyContext(
-                presencePenalty: presencePenalty,
-                presenceContextSize: presenceContextSize
-            )
-        } else {
-            presenceContext = nil
-        }
-
-        let frequencyContext: FrequencyPenaltyContext?
-        if let frequencyPenalty, frequencyPenalty != 0, frequencyContextSize > 0 {
-            frequencyContext = FrequencyPenaltyContext(
-                frequencyPenalty: frequencyPenalty,
-                frequencyContextSize: frequencyContextSize
-            )
-        } else {
-            frequencyContext = nil
-        }
-
-        let dryContext: DryPenaltyContext?
-        if let dry {
-            dryContext = DryPenaltyContext(
-                configuration: dry,
-                totalContextSize: max(maxKVSize ?? Int.max, 1),
-                sequenceBreakers: drySequenceBreakerTokenIds
-            )
-        } else {
-            dryContext = nil
-        }
-
-        let logitBiasContext = logitBias.isEmpty ? nil : LogitBiasProcessor(logitBias: logitBias)
-        let suppressTokenContext = suppressTokenIds.isEmpty
-            ? nil
-            : SuppressTokensProcessor(tokenIds: suppressTokenIds)
-        let reasoningBudgetContext: ReasoningBudgetProcessor?
-        if let reasoningBudgetTokens,
-           reasoningBudgetTokens > 0,
-           !reasoningEndTokenIds.isEmpty
-        {
-            reasoningBudgetContext = ReasoningBudgetProcessor(
-                maximumReasoningTokens: reasoningBudgetTokens,
-                endTokenIds: reasoningEndTokenIds
-            )
-        } else {
-            reasoningBudgetContext = nil
-        }
-        let grammarContext: GrammarConstrainedLogitProcessor?
-        if let grammar {
-            guard let grammarCompiler else {
-                throw GrammarConstraintError.missingGrammarCompiler
-            }
-            grammarContext = try GrammarConstrainedLogitProcessor(
-                matcher: grammarCompiler.makeMatcher(for: grammar)
-            )
-        } else {
-            grammarContext = nil
-        }
-
-        if repetitionContext == nil && presenceContext == nil && frequencyContext == nil
-            && dryContext == nil && logitBiasContext == nil && suppressTokenContext == nil
-            && reasoningBudgetContext == nil && grammarContext == nil
-        {
-            return nil
-        }
-
+    func makeProcessor() -> LogitProcessor? {
+        guard !isEmpty else { return nil }
         return PenaltyProcessor(
             logitBiasContext: logitBiasContext,
             suppressTokenContext: suppressTokenContext,
@@ -447,6 +443,89 @@ internal struct GenerateParameters: Sendable {
             frequencyContext: frequencyContext,
             dryContext: dryContext,
             grammarContext: grammarContext
+        )
+    }
+
+    private static func repetitionContext(_ parameters: GenerateParameters) -> RepetitionContext? {
+        guard let penalty = parameters.repetitionPenalty,
+              penalty != 0,
+              penalty != 1,
+              parameters.repetitionContextSize > 0
+        else {
+            return nil
+        }
+        return RepetitionContext(
+            repetitionPenalty: penalty,
+            repetitionContextSize: parameters.repetitionContextSize
+        )
+    }
+
+    private static func presenceContext(
+        _ parameters: GenerateParameters
+    ) -> PresencePenaltyContext? {
+        guard let penalty = parameters.presencePenalty,
+              penalty != 0,
+              parameters.presenceContextSize > 0
+        else {
+            return nil
+        }
+        return PresencePenaltyContext(
+            presencePenalty: penalty,
+            presenceContextSize: parameters.presenceContextSize
+        )
+    }
+
+    private static func frequencyContext(
+        _ parameters: GenerateParameters
+    ) -> FrequencyPenaltyContext? {
+        guard let penalty = parameters.frequencyPenalty,
+              penalty != 0,
+              parameters.frequencyContextSize > 0
+        else {
+            return nil
+        }
+        return FrequencyPenaltyContext(
+            frequencyPenalty: penalty,
+            frequencyContextSize: parameters.frequencyContextSize
+        )
+    }
+
+    private static func dryContext(_ parameters: GenerateParameters) -> DryPenaltyContext? {
+        guard let dry = parameters.dry else { return nil }
+        return DryPenaltyContext(
+            configuration: dry,
+            totalContextSize: max(parameters.maxKVSize ?? Int.max, 1),
+            sequenceBreakers: parameters.drySequenceBreakerTokenIds
+        )
+    }
+
+    private static func reasoningBudgetContext(
+        _ parameters: GenerateParameters
+    ) -> ReasoningBudgetProcessor? {
+        guard let budget = parameters.reasoningBudgetTokens,
+              budget > 0,
+              !parameters.reasoningEndTokenIds.isEmpty
+        else {
+            return nil
+        }
+        return ReasoningBudgetProcessor(
+            maximumReasoningTokens: budget,
+            endTokenIds: parameters.reasoningEndTokenIds
+        )
+    }
+
+    private static func grammarContext(
+        _ parameters: GenerateParameters,
+        compiler: GrammarConstraintCompiler?
+    ) throws -> GrammarConstrainedLogitProcessor? {
+        guard let grammar = parameters.grammar else {
+            return nil
+        }
+        guard let compiler else {
+            throw GrammarConstraintError.missingGrammarCompiler
+        }
+        return try GrammarConstrainedLogitProcessor(
+            matcher: compiler.makeMatcher(for: grammar)
         )
     }
 }
@@ -1549,7 +1628,7 @@ internal struct ReasoningBudgetProcessor: LogitProcessor, @unchecked Sendable {
     }
 }
 
-/// Composes active penalty processors in the same order as Python mlx-lm.
+/// Composes active logit processors in a deterministic order.
 internal struct PenaltyProcessor: LogitProcessor, @unchecked Sendable {
     var logitBiasContext: LogitBiasProcessor?
     var suppressTokenContext: SuppressTokensProcessor?
@@ -1617,29 +1696,7 @@ internal struct PenaltyProcessor: LogitProcessor, @unchecked Sendable {
     }
 }
 
-/// Generator of tokens.
-///
-/// This is typically used via a call to ``generate(input:parameters:context:didGenerate:)``.
-///
-/// To use it directly:
-///
-/// ```swift
-/// let generateParameters: GenerateParameters
-/// let input: LMInput
-/// let model: LanguageModel
-///
-/// let iterator = try TokenIterator(input: input, model: model, parameters: parameters)
-///
-/// for token in iterator {
-///     ...
-/// }
-/// ```
-///
-/// Tokens are integers that can be passed through a `Tokenizer` or ``StreamingDetokenizer`` to produce Strings.
-///
-/// Port of `generate_step()` from https://github.com/ml-explore/mlx-examples/blob/main/llms/mlx_lm/utils.py
-///
-/// Note: this uses `asyncEval()` and there may be an async evaluation running after a call to `next()`.
+/// Pull-based token generator used by the synchronous and streaming generation entry points.
 internal struct TokenIterator: Sequence, IteratorProtocol {
     let model: any LanguageModel
     var state: LMOutput.State?
