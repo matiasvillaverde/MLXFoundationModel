@@ -49,14 +49,41 @@ internal func attentionWithCacheUpdate(
     scale: Float,
     mask: MLXFast.ScaledDotProductAttentionMaskMode = .none
 ) -> MLXArray {
-    attentionWithCacheUpdateReturningKV(
+    guard let cache else {
+        return MLXFast.scaledDotProductAttention(
+            queries: queries,
+            keys: keys,
+            values: values,
+            scale: scale,
+            mask: mask
+        )
+    }
+
+    if let quantizedKVCache = cache as? QuantizedKVCacheProtocol {
+        let (quantizedKeys, quantizedValues) = quantizedKVCache.updateQuantized(
+            keys: keys,
+            values: values
+        )
+        return quantizedScaledDotProductAttention(
+            queries: queries,
+            quantizedKeys: quantizedKeys,
+            quantizedValues: quantizedValues,
+            scale: scale,
+            mask: mask,
+            groupSize: quantizedKVCache.groupSize,
+            bits: quantizedKVCache.bits,
+            mode: quantizedKVCache.mode
+        )
+    }
+
+    let (cachedKeys, cachedValues) = cache.update(keys: keys, values: values)
+    return MLXFast.scaledDotProductAttention(
         queries: queries,
-        keys: keys,
-        values: values,
-        cache: cache,
+        keys: cachedKeys,
+        values: cachedValues,
         scale: scale,
         mask: mask
-    ).output
+    )
 }
 
 internal func attentionWithCacheUpdateReturningKV(
