@@ -1,24 +1,33 @@
-// Copyright © 2024 Apple Inc.
-
 import MLXNN
 
 extension Module {
-
-    /// Compute the number of parameters in a possibly quantized model
+    /// Returns the logical parameter count, expanding quantized layer storage back to weight count.
     public func numParameters() -> Int {
-        return leafModules().flattenedValues().map {
-            mod -> Int in
-            if let qlin = mod as? QuantizedLinear {
-                return qlin.scales.size * qlin.groupSize
-            } else if let qemb = mod as? QuantizedEmbedding {
-                return qemb.scales.size * qemb.groupSize
-            } else {
-                return mod.parameters().flattenedValues().reduce(
-                    0,
-                    {
-                        $0 + $1.size
-                    })
-            }
-        }.reduce(0, +)
+        var total = 0
+
+        for module in leafModules().flattenedValues() {
+            total += module.logicalParameterCount
+        }
+
+        return total
+    }
+}
+
+private extension Module {
+    @inline(__always)
+    var logicalParameterCount: Int {
+        if let layer = self as? QuantizedLinear {
+            return layer.scales.size * layer.groupSize
+        }
+
+        if let layer = self as? QuantizedEmbedding {
+            return layer.scales.size * layer.groupSize
+        }
+
+        var total = 0
+        for parameter in parameters().flattenedValues() {
+            total += parameter.size
+        }
+        return total
     }
 }
