@@ -1,223 +1,317 @@
-// Copyright © 2024 Apple Inc.
-
-import Foundation
 import MLX
-
+import MLXFast
 import MLXNN
 
-private class Attention: Module {
-    let args: Phi3Configuration
-    let scale: Float
+internal struct Phi3AttentionLayout: Equatable, Sendable {
+    internal let hiddenSize: Int
+    internal let queryHeads: Int
+    internal let keyValueHeads: Int
+    internal let headSize: Int
+    internal let rotaryDimensions: Int
+    internal let queryProjectionSize: Int
+    internal let keyValueProjectionSize: Int
+    internal let packedProjectionSize: Int
+    internal let keySplitIndex: Int
+    internal let valueSplitIndex: Int
+    internal let attentionScale: Float
 
-    let heads: Int
-    let kvHeads: Int
-    let headDim: Int
-    let ropeDim: Int
+    internal init(_ config: Phi3Configuration) {
+        precondition(config.hiddenSize > 0, "hidden_size must be positive")
+        precondition(config.attentionHeads > 0, "num_attention_heads must be positive")
+        precondition(config.kvHeads > 0, "num_key_value_heads must be positive")
+        precondition(
+            config.hiddenSize.isMultiple(of: config.attentionHeads),
+            "hidden_size must be divisible by num_attention_heads"
+        )
+        precondition(
+            config.attentionHeads.isMultiple(of: config.kvHeads),
+            "num_attention_heads must be divisible by num_key_value_heads"
+        )
+        precondition(config.partialRotaryFactor > 0, "partial_rotary_factor must be positive")
 
-    @ModuleInfo(key: "qkv_proj") var wqkv: Linear
-    @ModuleInfo(key: "o_proj") var wo: Linear
+        self.hiddenSize = config.hiddenSize
+        self.queryHeads = config.attentionHeads
+        self.keyValueHeads = config.kvHeads
+        self.headSize = config.hiddenSize / config.attentionHeads
+        self.rotaryDimensions = min(
+            headSize,
+            max(1, Int(Float(headSize) * config.partialRotaryFactor))
+        )
+        self.queryProjectionSize = queryHeads * headSize
+        self.keyValueProjectionSize = keyValueHeads * headSize
+        self.packedProjectionSize = queryProjectionSize + 2 * keyValueProjectionSize
+        self.keySplitIndex = queryProjectionSize
+        self.valueSplitIndex = queryProjectionSize + keyValueProjectionSize
+        self.attentionScale = 1 / Float(headSize).squareRoot()
+    }
+}
 
-    enum PositionalEncoding {
-        case rope(RoPE)
-        case suScaledRotaryEmbedding(SuScaledRotaryEmbedding)
+internal struct Phi3RotaryPlan: Equatable, Sendable {
+    internal enum Kind: Equatable, Sendable {
+        case rope(scale: Float)
+        case longRoPE(longFactor: [Float])
+    }
 
-        func applyEncoding(_ x: MLXArray, offset: Int = 0) -> MLXArray {
-            switch self {
-            case .rope(let rope):
-                return rope.callAsFunction(x, offset: offset)
+    internal let dimensions: Int
+    internal let base: Float
+    internal let traditional: Bool
+    internal let maxPositionEmbeddings: Int
+    internal let originalMaxPositionEmbeddings: Int
+    internal let kind: Kind
 
-            case .suScaledRotaryEmbedding(let suScaledRotaryEmbedding):
-                return suScaledRotaryEmbedding.callAsFunction(x, offset: offset)
+    internal init(_ config: Phi3Configuration, layout: Phi3AttentionLayout) {
+        precondition(config.maxPositionEmbeddings > 0, "max_position_embeddings must be positive")
+        precondition(
+            config.originalMaxPositionEmbeddings > 0,
+            "original_max_position_embeddings must be positive"
+        )
+
+        self.dimensions = layout.rotaryDimensions
+        self.base = config.ropeTheta
+        self.traditional = config.ropeTraditional
+        self.maxPositionEmbeddings = config.maxPositionEmbeddings
+        self.originalMaxPositionEmbeddings = config.originalMaxPositionEmbeddings
+
+        if let scaling = config.ropeScaling,
+           scaling.usesLongRoPE,
+           let longFactor = scaling.longFactor,
+           !longFactor.isEmpty {
+            self.kind = .longRoPE(longFactor: longFactor)
+        } else {
+            let scale: Float
+            if config.ropeScaling?.type == "linear",
+               let factor = config.ropeScaling?.factor,
+               factor > 0 {
+                scale = 1 / factor
+            } else {
+                scale = 1
             }
+            self.kind = .rope(scale: scale)
+        }
+    }
+}
+
+private enum Phi3RotaryEmbedding {
+    case rope(RoPE)
+    case longRoPE(SuScaledRotaryEmbedding)
+
+    init(_ plan: Phi3RotaryPlan) {
+        switch plan.kind {
+        case .rope(let scale):
+            self = .rope(
+                RoPE(
+                    dimensions: plan.dimensions,
+                    traditional: plan.traditional,
+                    base: plan.base,
+                    scale: scale
+                )
+            )
+        case .longRoPE(let longFactor):
+            self = .longRoPE(
+                SuScaledRotaryEmbedding(
+                    dimensions: plan.dimensions,
+                    base: plan.base,
+                    maxPositionEmbeddings: plan.maxPositionEmbeddings,
+                    originalMaxPositionEmbeddings: plan.originalMaxPositionEmbeddings,
+                    longFactor: longFactor
+                )
+            )
         }
     }
 
-    let rope: PositionalEncoding
-
-    init(_ args: Phi3Configuration) {
-        self.args = args
-
-        let dim = args.hiddenSize
-        self.heads = args.attentionHeads
-        self.kvHeads = args.kvHeads
-
-        self.headDim = args.hiddenSize / heads
-        self.ropeDim = Int(Float(headDim) * args.partialRotaryFactor)
-        self.scale = pow(Float(headDim), -0.5)
-
-        self._wqkv.wrappedValue = Linear(dim, (heads + 2 * kvHeads) * headDim, bias: false)
-        self._wo.wrappedValue = Linear(heads * headDim, dim, bias: false)
-
-        let ropeScale: Float
-
-        if let ropeScaling = args.ropeScaling, ropeScaling.type == "linear",
-            let factor = ropeScaling.factor {
-            ropeScale = 1 / factor
-        } else {
-            ropeScale = 1
+    func apply(to hiddenStates: MLXArray, offset: Int = 0) -> MLXArray {
+        switch self {
+        case .rope(let rope):
+            rope(hiddenStates, offset: offset)
+        case .longRoPE(let rope):
+            rope(hiddenStates, offset: offset)
         }
+    }
+}
 
-        if let ropeScaling = args.ropeScaling,
-            ropeScaling.type == "su" || ropeScaling.type == "longrope",
-            let _ = ropeScaling.shortFactor, let longFactor = ropeScaling.longFactor {
-            self.rope = .suScaledRotaryEmbedding(
-                SuScaledRotaryEmbedding(
-                    dimensions: ropeDim, base: args.ropeTheta,
-                    maxPositionEmbeddings: args.maxPositionEmbeddings,
-                    originalMaxPositionEmbeddings: args.originalMaxPositionEmbeddings,
-                    longFactor: longFactor))
-        } else {
-            self.rope = .rope(
-                RoPE(
-                    dimensions: ropeDim, traditional: args.ropeTraditional, base: args.ropeTheta,
-                    scale: ropeScale))
-        }
+private final class Phi3PackedAttention: Module {
+    private let layout: Phi3AttentionLayout
+
+    @ModuleInfo(key: "qkv_proj") private var queryKeyValueProjection: Linear
+    @ModuleInfo(key: "o_proj") private var outputProjection: Linear
+
+    private let rotaryEmbedding: Phi3RotaryEmbedding
+
+    init(_ config: Phi3Configuration) {
+        let layout = Phi3AttentionLayout(config)
+        self.layout = layout
+        self._queryKeyValueProjection.wrappedValue = Linear(
+            layout.hiddenSize,
+            layout.packedProjectionSize,
+            bias: false
+        )
+        self._outputProjection.wrappedValue = Linear(
+            layout.queryProjectionSize,
+            layout.hiddenSize,
+            bias: false
+        )
+        self.rotaryEmbedding = Phi3RotaryEmbedding(Phi3RotaryPlan(config, layout: layout))
     }
 
     func callAsFunction(
-        _ x: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode, cache: KVCache?
+        _ hiddenStates: MLXArray,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode,
+        cache: KVCache?
     ) -> MLXArray {
-        let (B, L) = (x.dim(0), x.dim(1))
+        let batchSize = hiddenStates.dim(0)
+        let tokenCount = hiddenStates.dim(1)
 
-        let queryPos = heads * headDim
-        let qkv = split(wqkv(x), indices: [queryPos, queryPos + kvHeads * headDim], axis: -1)
-        var queries = qkv[0]
-        var keys = qkv[1]
-        var values = qkv[2]
-
-        // prepare the queries, keys and values for the attention computation
-        queries = queries.reshaped(B, L, args.attentionHeads, -1).transposed(0, 2, 1, 3)
-        keys = keys.reshaped(B, L, args.kvHeads, -1).transposed(0, 2, 1, 3)
-        values = values.reshaped(B, L, args.kvHeads, -1).transposed(0, 2, 1, 3)
+        let packed = split(
+            queryKeyValueProjection(hiddenStates),
+            indices: [layout.keySplitIndex, layout.valueSplitIndex],
+            axis: -1
+        )
+        var queries = packed[0]
+            .reshaped(batchSize, tokenCount, layout.queryHeads, layout.headSize)
+            .transposed(0, 2, 1, 3)
+        var keys = packed[1]
+            .reshaped(batchSize, tokenCount, layout.keyValueHeads, layout.headSize)
+            .transposed(0, 2, 1, 3)
+        let values = packed[2]
+            .reshaped(batchSize, tokenCount, layout.keyValueHeads, layout.headSize)
+            .transposed(0, 2, 1, 3)
 
         if let cache {
-            queries = rope.applyEncoding(queries, offset: cache.offset)
-            keys = rope.applyEncoding(keys, offset: cache.offset)
+            queries = rotaryEmbedding.apply(to: queries, offset: cache.offset)
+            keys = rotaryEmbedding.apply(to: keys, offset: cache.offset)
         } else {
-            queries = rope.applyEncoding(queries)
-            keys = rope.applyEncoding(keys)
+            queries = rotaryEmbedding.apply(to: queries)
+            keys = rotaryEmbedding.apply(to: keys)
         }
 
-        let output = attentionWithCacheUpdate(
+        let attentionOutput = attentionWithCacheUpdate(
             queries: queries,
             keys: keys,
             values: values,
             cache: cache,
-            scale: scale,
+            scale: layout.attentionScale,
             mask: mask
         )
         .transposed(0, 2, 1, 3)
-        .reshaped(B, L, -1)
+        .reshaped(batchSize, tokenCount, -1)
 
-        return wo(output)
+        return outputProjection(attentionOutput)
     }
 }
 
-private class MLP: Module, UnaryLayer {
-    @ModuleInfo(key: "gate_up_proj") var gate_up: Linear
-    @ModuleInfo(key: "down_proj") var down: Linear
+private final class Phi3FeedForward: Module, UnaryLayer {
+    @ModuleInfo(key: "gate_up_proj") private var gateUpProjection: Linear
+    @ModuleInfo(key: "down_proj") private var downProjection: Linear
 
-    init(dimensions: Int, hiddenDimensions: Int) {
-        self._gate_up.wrappedValue = Linear(dimensions, 2 * hiddenDimensions, bias: false)
-        self._down.wrappedValue = Linear(hiddenDimensions, dimensions, bias: false)
+    init(_ config: Phi3Configuration) {
+        self._gateUpProjection.wrappedValue = Linear(
+            config.hiddenSize,
+            2 * config.intermediateSize,
+            bias: false
+        )
+        self._downProjection.wrappedValue = Linear(
+            config.intermediateSize,
+            config.hiddenSize,
+            bias: false
+        )
     }
 
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
-        let gu = split(gate_up(x), parts: 2, axis: -1)
-        return down(silu(gu[0]) * gu[1])
+    func callAsFunction(_ hiddenStates: MLXArray) -> MLXArray {
+        let splitStates = split(gateUpProjection(hiddenStates), parts: 2, axis: -1)
+        return downProjection(silu(splitStates[0]) * splitStates[1])
     }
 }
 
-private class TransformerBlock: Module {
-    @ModuleInfo(key: "self_attn") var attention: Attention
-    let mlp: MLP
+private final class Phi3TransformerBlock: Module {
+    @ModuleInfo(key: "self_attn") var selfAttention: Phi3PackedAttention
+    @ModuleInfo(key: "mlp") private var feedForward: Phi3FeedForward
+    @ModuleInfo(key: "input_layernorm") private var inputLayerNorm: RMSNorm
+    @ModuleInfo(key: "post_attention_layernorm") private var postAttentionLayerNorm: RMSNorm
 
-    @ModuleInfo(key: "input_layernorm") var inputLayerNorm: RMSNorm
-    @ModuleInfo(key: "post_attention_layernorm") var postAttentionLayerNorm: RMSNorm
-
-    init(_ args: Phi3Configuration) {
-        self._attention.wrappedValue = Attention(args)
-        self.mlp = MLP(dimensions: args.hiddenSize, hiddenDimensions: args.intermediateSize)
+    init(_ config: Phi3Configuration) {
+        self._selfAttention.wrappedValue = Phi3PackedAttention(config)
+        self._feedForward.wrappedValue = Phi3FeedForward(config)
         self._inputLayerNorm.wrappedValue = RMSNorm(
-            dimensions: args.hiddenSize, eps: args.rmsNormEps)
+            dimensions: config.hiddenSize,
+            eps: config.rmsNormEps
+        )
         self._postAttentionLayerNorm.wrappedValue = RMSNorm(
-            dimensions: args.hiddenSize, eps: args.rmsNormEps)
+            dimensions: config.hiddenSize,
+            eps: config.rmsNormEps
+        )
     }
 
     func callAsFunction(
-        _ x: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode, cache: KVCache?
+        _ hiddenStates: MLXArray,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode,
+        cache: KVCache?
     ) -> MLXArray {
-        var r = attention(inputLayerNorm(x), mask: mask, cache: cache)
-        let h = x + r
-        r = mlp(postAttentionLayerNorm(h))
-        return h + r
+        let afterAttention = hiddenStates
+            + selfAttention(inputLayerNorm(hiddenStates), mask: mask, cache: cache)
+        return afterAttention + feedForward(postAttentionLayerNorm(afterAttention))
     }
 }
 
-private class Phi3ModelInner: Module {
-    @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding
+private final class Phi3Backbone: Module {
+    @ModuleInfo(key: "embed_tokens") var tokenEmbeddings: Embedding
+    @ModuleInfo var layers: [Phi3TransformerBlock]
+    @ModuleInfo(key: "norm") private var finalNorm: RMSNorm
 
-    fileprivate let layers: [TransformerBlock]
-    let norm: RMSNorm
-    let args: Phi3Configuration
+    init(_ config: Phi3Configuration) {
+        precondition(config.vocabularySize > 0, "vocab_size must be positive")
 
-    init(_ args: Phi3Configuration) {
-        precondition(args.vocabularySize > 0)
-        self.args = args
-
-        self._embedTokens.wrappedValue = Embedding(
-            embeddingCount: args.vocabularySize, dimensions: args.hiddenSize)
-
-        self.layers = (0 ..< args.hiddenLayers)
-            .map { _ in
-                TransformerBlock(args)
-            }
-        self.norm = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
+        self._tokenEmbeddings.wrappedValue = Embedding(
+            embeddingCount: config.vocabularySize,
+            dimensions: config.hiddenSize
+        )
+        self.layers = (0 ..< config.hiddenLayers).map { _ in
+            Phi3TransformerBlock(config)
+        }
+        self._finalNorm.wrappedValue = RMSNorm(
+            dimensions: config.hiddenSize,
+            eps: config.rmsNormEps
+        )
     }
 
-    func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
-        var h = embedTokens(inputs)
+    func callAsFunction(_ tokens: MLXArray, cache: [KVCache]?) -> MLXArray {
+        var hiddenStates = tokenEmbeddings(tokens)
+        let mask = createAttentionMask(h: tokens, cache: cache)
 
-        let mask = createAttentionMask(h: h, cache: cache)
-
-        for (i, layer) in layers.enumerated() {
-            h = layer(h, mask: mask, cache: cache?[i])
+        for (layerIndex, layer) in layers.enumerated() {
+            hiddenStates = layer(hiddenStates, mask: mask, cache: cache?[layerIndex])
         }
 
-        return norm(h)
+        return finalNorm(hiddenStates)
     }
 }
 
-internal class Phi3Model: Module, LLMModel, KVCacheDimensionProvider, GreedyTokenModel {
+internal final class Phi3Model: Module, LLMModel, KVCacheDimensionProvider,
+    GreedyTokenModel {
     public let vocabularySize: Int
     public let kvHeads: [Int]
 
-    private let model: Phi3ModelInner
-    private let args: Phi3Configuration
+    fileprivate let model: Phi3Backbone
+    private let tieWordEmbeddings: Bool
 
-    @ModuleInfo(key: "lm_head") var lmHead: Linear?
+    @ModuleInfo(key: "lm_head") private var lmHead: Linear?
 
-    public init(_ args: Phi3Configuration) {
-        self.vocabularySize = args.vocabularySize
-        self.kvHeads = (0 ..< args.hiddenLayers).map { _ in args.kvHeads }
-        self.model = Phi3ModelInner(args)
-        self.args = args
+    public init(_ config: Phi3Configuration) {
+        self.vocabularySize = config.vocabularySize
+        self.kvHeads = Array(repeating: config.kvHeads, count: config.hiddenLayers)
+        self.model = Phi3Backbone(config)
+        self.tieWordEmbeddings = config.tieWordEmbeddings
 
-        if !args.tieWordEmbeddings {
-            self._lmHead.wrappedValue = Linear(args.hiddenSize, args.vocabularySize, bias: false)
+        if !config.tieWordEmbeddings {
+            self._lmHead.wrappedValue = Linear(
+                config.hiddenSize,
+                config.vocabularySize,
+                bias: false
+            )
         }
     }
 
-    public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
-        let out = model(inputs, cache: cache)
-        if args.tieWordEmbeddings {
-            return model.embedTokens.asLinear(out)
-        }
-        if let lmHead {
-            return lmHead(out)
-        }
-        fatalError(
-            "Model configuration error: Neither tied embeddings nor lm_head is available")
+    public func callAsFunction(_ tokens: MLXArray, cache: [KVCache]?) -> MLXArray {
+        logits(from: model(tokens, cache: cache))
     }
 
     internal func greedyToken(
@@ -226,24 +320,31 @@ internal class Phi3Model: Module, LLMModel, KVCacheDimensionProvider, GreedyToke
         state: LMOutput.State?
     ) -> GreedyTokenOutput {
         let hiddenStates = lastTokenHiddenState(model(input[text: .newAxis].tokens, cache: cache))
-        if args.tieWordEmbeddings {
-            return greedyTokenOutput(logits: model.embedTokens.asLinear(hiddenStates), state: state)
+        return greedyTokenOutput(logits: logits(from: hiddenStates), state: state)
+    }
+
+    private func logits(from hiddenStates: MLXArray) -> MLXArray {
+        if tieWordEmbeddings {
+            return model.tokenEmbeddings.asLinear(hiddenStates)
         }
-        if let lmHead {
-            return greedyTokenOutput(logits: lmHead(hiddenStates), state: state)
+        guard let lmHead else {
+            fatalError("Phi3 requires either tied embeddings or lm_head weights")
         }
-        fatalError(
-            "Model configuration error: Neither tied embeddings nor lm_head is available")
+        return lmHead(hiddenStates)
     }
 }
 
-struct RopeScalingWithFactorArrays: Codable {
+internal struct Phi3RoPEScaling: Codable, Sendable, Equatable {
     let longFactor: [Float]?
     let shortFactor: [Float]?
     let factor: Float?
     let type: String?
     let longMScale: Float?
     let shortMScale: Float?
+
+    var usesLongRoPE: Bool {
+        type == "su" || type == "longrope"
+    }
 
     enum CodingKeys: String, CodingKey {
         case type
@@ -255,7 +356,9 @@ struct RopeScalingWithFactorArrays: Codable {
     }
 }
 
-internal struct Phi3Configuration: Codable, Sendable {
+internal typealias RopeScalingWithFactorArrays = Phi3RoPEScaling
+
+internal struct Phi3Configuration: Codable, Sendable, Equatable {
     var hiddenSize: Int
     var hiddenLayers: Int
     var intermediateSize: Int
@@ -263,13 +366,46 @@ internal struct Phi3Configuration: Codable, Sendable {
     var rmsNormEps: Float
     var vocabularySize: Int
     var kvHeads: Int
-    var ropeTheta: Float = 10_000
-    var ropeTraditional: Bool = false
-    var ropeScaling: RopeScalingWithFactorArrays?
-    var partialRotaryFactor: Float = 1.0
+    var ropeTheta: Float
+    var ropeTraditional: Bool
+    var ropeScaling: Phi3RoPEScaling?
+    var partialRotaryFactor: Float
     var maxPositionEmbeddings: Int
     var originalMaxPositionEmbeddings: Int
-    var tieWordEmbeddings: Bool = false
+    var tieWordEmbeddings: Bool
+
+    internal init(
+        hiddenSize: Int = 3_072,
+        hiddenLayers: Int = 32,
+        intermediateSize: Int = 8_192,
+        attentionHeads: Int = 32,
+        rmsNormEps: Float = 1e-5,
+        vocabularySize: Int = 32_064,
+        kvHeads: Int? = nil,
+        ropeTheta: Float = 10_000,
+        ropeTraditional: Bool = false,
+        ropeScaling: Phi3RoPEScaling? = nil,
+        partialRotaryFactor: Float = 1,
+        maxPositionEmbeddings: Int = 4_096,
+        originalMaxPositionEmbeddings: Int? = nil,
+        tieWordEmbeddings: Bool = false
+    ) {
+        self.hiddenSize = hiddenSize
+        self.hiddenLayers = hiddenLayers
+        self.intermediateSize = intermediateSize
+        self.attentionHeads = attentionHeads
+        self.rmsNormEps = rmsNormEps
+        self.vocabularySize = vocabularySize
+        self.kvHeads = kvHeads ?? attentionHeads
+        self.ropeTheta = ropeTheta
+        self.ropeTraditional = ropeTraditional
+        self.ropeScaling = ropeScaling
+        self.partialRotaryFactor = partialRotaryFactor
+        self.maxPositionEmbeddings = maxPositionEmbeddings
+        self.originalMaxPositionEmbeddings = originalMaxPositionEmbeddings
+            ?? maxPositionEmbeddings
+        self.tieWordEmbeddings = tieWordEmbeddings
+    }
 
     enum CodingKeys: String, CodingKey {
         case hiddenSize = "hidden_size"
@@ -288,47 +424,56 @@ internal struct Phi3Configuration: Codable, Sendable {
         case tieWordEmbeddings = "tie_word_embeddings"
     }
 
-    public init(from decoder: Decoder) throws {
-        // custom implementation to handle optional keys with required values
-        let container: KeyedDecodingContainer<Self.CodingKeys> = try decoder.container(
-            keyedBy: Self.CodingKeys.self)
+    internal init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: Self.CodingKeys.self)
+        let attentionHeads = try container.decodeIfPresent(
+            Int.self,
+            forKey: .attentionHeads
+        ) ?? 32
+        let maxPositionEmbeddings = try container.decodeIfPresent(
+            Int.self,
+            forKey: .maxPositionEmbeddings
+        ) ?? 4_096
 
-        hiddenSize = try container.decode(Int.self, forKey: Self.CodingKeys.hiddenSize)
-        hiddenLayers = try container.decode(
-            Int.self, forKey: Self.CodingKeys.hiddenLayers)
-        intermediateSize = try container.decode(
-            Int.self, forKey: Self.CodingKeys.intermediateSize)
-        attentionHeads = try container.decode(
-            Int.self, forKey: Self.CodingKeys.attentionHeads)
-        rmsNormEps = try container.decode(
-            Float.self, forKey: Self.CodingKeys.rmsNormEps)
-        vocabularySize = try container.decode(
-            Int.self, forKey: Self.CodingKeys.vocabularySize)
-        kvHeads = try container.decode(Int.self, forKey: Self.CodingKeys.kvHeads)
-        ropeTheta =
-            try container.decodeIfPresent(
-                Float.self, forKey: Self.CodingKeys.ropeTheta) ?? 10_000
-        ropeTraditional =
-            try container.decodeIfPresent(
-                Bool.self, forKey: Self.CodingKeys.ropeTraditional) ?? false
-        ropeScaling = try container.decodeIfPresent(
-            RopeScalingWithFactorArrays.self, forKey: .ropeScaling)
-        partialRotaryFactor =
-            try container.decodeIfPresent(
-                Float.self, forKey: .partialRotaryFactor) ?? 1.0
-        maxPositionEmbeddings = try container.decode(Int.self, forKey: .maxPositionEmbeddings)
-        originalMaxPositionEmbeddings = try container.decode(
-            Int.self, forKey: .originalMaxPositionEmbeddings)
-        tieWordEmbeddings =
-            try container.decodeIfPresent(
-                Bool.self, forKey: .tieWordEmbeddings) ?? false
+        self.init(
+            hiddenSize: try container.decodeIfPresent(Int.self, forKey: .hiddenSize) ?? 3_072,
+            hiddenLayers: try container.decodeIfPresent(Int.self, forKey: .hiddenLayers) ?? 32,
+            intermediateSize: try container.decodeIfPresent(
+                Int.self,
+                forKey: .intermediateSize
+            ) ?? 8_192,
+            attentionHeads: attentionHeads,
+            rmsNormEps: try container.decodeIfPresent(Float.self, forKey: .rmsNormEps) ?? 1e-5,
+            vocabularySize: try container.decodeIfPresent(
+                Int.self,
+                forKey: .vocabularySize
+            ) ?? 32_064,
+            kvHeads: try container.decodeIfPresent(Int.self, forKey: .kvHeads),
+            ropeTheta: try container.decodeIfPresent(Float.self, forKey: .ropeTheta) ?? 10_000,
+            ropeTraditional: try container.decodeIfPresent(
+                Bool.self,
+                forKey: .ropeTraditional
+            ) ?? false,
+            ropeScaling: try container.decodeIfPresent(Phi3RoPEScaling.self, forKey: .ropeScaling),
+            partialRotaryFactor: try container.decodeIfPresent(
+                Float.self,
+                forKey: .partialRotaryFactor
+            ) ?? 1,
+            maxPositionEmbeddings: maxPositionEmbeddings,
+            originalMaxPositionEmbeddings: try container.decodeIfPresent(
+                Int.self,
+                forKey: .originalMaxPositionEmbeddings
+            ),
+            tieWordEmbeddings: try container.decodeIfPresent(
+                Bool.self,
+                forKey: .tieWordEmbeddings
+            ) ?? false
+        )
     }
 }
 
-// MARK: - LoRA
-
 extension Phi3Model: LoRAModel {
     public func loraLinearLayers() -> LoRALinearLayers {
-        model.layers.map { ($0.attention, ["qkv_proj"]) }
+        model.layers.map { ($0.selfAttention, ["qkv_proj"]) }
     }
 }
