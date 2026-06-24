@@ -1,132 +1,183 @@
-// Copyright © 2024 Apple Inc.
-
 import Foundation
 import Hub
 import MLX
-
 import Tokenizers
 
-private func decodeConfiguration<C: Codable & Sendable>(from url: URL) throws -> C {
-    try JSONDecoder.json5().decode(C.self, from: Data(contentsOf: url))
+private typealias LanguageModelCreator = @Sendable (URL) throws -> any LanguageModel
+
+private struct LLMModelTypeRegistration: Sendable {
+    let names: [String]
+    let makeModel: LanguageModelCreator
 }
 
-/// Creates a function that loads a configuration file and instantiates a model with the proper configuration
-private func create<C: Codable & Sendable, M>(
-    _: C.Type,
-    _ modelInit: @escaping @Sendable (C) -> M
-) -> @Sendable (URL) throws -> M {
-    { url in
-        let configuration: C = try decodeConfiguration(from: url)
-        return modelInit(configuration)
+private func modelType<C: Codable & Sendable>(
+    _ names: String...,
+    configuration: C.Type,
+    makeModel: @escaping @Sendable (C) -> any LanguageModel
+) -> LLMModelTypeRegistration {
+    LLMModelTypeRegistration(names: names) { url in
+        let data = try Data(contentsOf: url)
+        let configuration = try JSONDecoder.json5().decode(C.self, from: data)
+        return makeModel(configuration)
     }
 }
 
-/// Registry of model type, e.g 'llama', to functions that can instantiate the model from configuration.
-///
-/// Typically called via ``LLMModelFactory/load(hub:configuration:progressHandler:)``.
-///
-/// This class is marked `@unchecked Sendable` because:
-/// - It inherits from `ModelTypeRegistry`, which is marked `@unchecked Sendable`
-/// - The parent class handles all thread safety through NSLock synchronization
-/// - This class is immutable after initialization (creators map is set once)
-///
-/// Safety guarantees:
-/// - Immutable after creation: The shared instance is initialized once with a fixed set of model creators
-/// - Thread-safe registration: Inherits NSLock-protected operations from `ModelTypeRegistry`
-/// - Safe concurrent access: Multiple threads can safely query model creators
 internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
-    /// Shared instance with default model types.
-    public static let shared: LLMTypeRegistry = .init(creators: all())
+    public static let shared: LLMTypeRegistry = .init(creators: defaultCreators())
 
-    /// All predefined model types.
-    private static func all() -> [String: @Sendable (URL) throws -> any LanguageModel] {
+    private static func defaultCreators() -> [String: LanguageModelCreator] {
+        Dictionary(uniqueKeysWithValues: defaultTypeRegistrations().flatMap { registration in
+            registration.names.map { ($0, registration.makeModel) }
+        })
+    }
+
+    private static func defaultTypeRegistrations() -> [LLMModelTypeRegistration] {
         [
-            "mistral": create(LlamaConfiguration.self, LlamaModel.init),
-            "llama": create(LlamaConfiguration.self, LlamaModel.init),
-            "phi": create(PhiConfiguration.self, PhiModel.init),
-            "phi3": create(Phi3Configuration.self, Phi3Model.init),
-            "phimoe": create(PhiMoEConfiguration.self, PhiMoEModel.init),
-            "gemma": create(GemmaConfiguration.self, GemmaModel.init),
-            "gemma2": create(Gemma2Configuration.self, Gemma2Model.init),
-            "gemma3": create(Gemma3TextConfiguration.self, Gemma3TextModel.init),
-            "gemma3_text": create(Gemma3TextConfiguration.self, Gemma3TextModel.init),
-            "gemma3n": create(Gemma3nTextConfiguration.self, Gemma3nTextModel.init),
-            "gemma4": create(Gemma4TextConfiguration.self, Gemma4Model.init),
-            "gemma4_text": create(Gemma4TextConfiguration.self, Gemma4Model.init),
-            "gemma4_assistant": create(Gemma4AssistantConfiguration.self, Gemma4AssistantModel.init),
-            "gemma4_unified_assistant": create(
-                Gemma4AssistantConfiguration.self,
-                Gemma4AssistantModel.init
-            ),
-            "qwen2": create(Qwen2Configuration.self, Qwen2Model.init),
-            "qwen3": create(Qwen3Configuration.self, Qwen3Model.init),
-            "qwen3_moe": create(Qwen3MoEConfiguration.self, Qwen3MoEModel.init),
-            "qwen3_next": create(Qwen3NextConfiguration.self, Qwen3NextModel.init),
-            "qwen3_5": create(Qwen35Configuration.self, Qwen35Model.init),
-            "qwen3_5_moe": create(Qwen35Configuration.self, Qwen35MoEModel.init),
-            "qwen3_5_text": create(Qwen35TextConfiguration.self, Qwen35TextModel.init),
-            "minicpm": create(MiniCPMConfiguration.self, MiniCPMModel.init),
-            "starcoder2": create(Starcoder2Configuration.self, Starcoder2Model.init),
-            "cohere": create(CohereConfiguration.self, CohereModel.init),
-            "openelm": create(OpenElmConfiguration.self, OpenELMModel.init),
-            "internlm2": create(InternLM2Configuration.self, InternLM2Model.init),
-            "deepseek_v3": create(DeepseekV3Configuration.self, DeepseekV3Model.init),
-            "deepseek_v32": create(DeepseekV32Configuration.self, DeepseekV32Model.init),
-            "granite": create(GraniteConfiguration.self, GraniteModel.init),
-            "granitemoehybrid": create(
-                GraniteMoeHybridConfiguration.self,
-                GraniteMoeHybridModel.init
-            ),
-            "mimo": create(MiMoConfiguration.self, MiMoModel.init),
-            "mimo_v2_flash": create(MiMoV2FlashConfiguration.self, MiMoV2FlashModel.init),
-            "minimax": create(MiniMaxConfiguration.self, MiniMaxModel.init),
-            "glm4": create(GLM4Configuration.self, GLM4Model.init),
-            "glm4_moe": create(GLM4MoEConfiguration.self, GLM4MoEModel.init),
-            "glm4_moe_lite": create(GLM4MoELiteConfiguration.self, GLM4MoELiteModel.init),
-            "glm_moe_dsa": create(GLM4MoELiteConfiguration.self, GLM4MoELiteModel.init),
-            "acereason": create(Qwen2Configuration.self, Qwen2Model.init),
-            "falcon_h1": create(FalconH1Configuration.self, FalconH1Model.init),
-            "bitnet": create(BitnetConfiguration.self, BitnetModel.init),
-            "smollm3": create(SmolLM3Configuration.self, SmolLM3Model.init),
-            "ernie4_5": create(Ernie45Configuration.self, Ernie45Model.init),
-            "lfm2": create(LFM2Configuration.self, LFM2Model.init),
-            "baichuan_m1": create(BaichuanM1Configuration.self, BaichuanM1Model.init),
-            "exaone4": create(Exaone4Configuration.self, Exaone4Model.init),
-            "gpt_oss": create(GPTOSSConfiguration.self, GPTOSSModel.init),
-            "lille-130m": create(Lille130mConfiguration.self, Lille130mModel.init),
-            "olmoe": create(OlmoEConfiguration.self, OlmoEModel.init),
-            "olmo2": create(Olmo2Configuration.self, Olmo2Model.init),
-            "olmo3": create(Olmo3Configuration.self, Olmo3Model.init),
-            "bailing_moe": create(BailingMoeConfiguration.self, BailingMoeModel.init),
-            "lfm2_moe": create(LFM2MoEConfiguration.self, LFM2MoEModel.init),
-            "nanochat": create(NanoChatConfiguration.self, NanoChatModel.init),
-            "nemotron_h": create(NemotronHConfiguration.self, NemotronHModel.init),
-            "afmoe": create(AfMoEConfiguration.self, AfMoEModel.init),
-            "jamba_3b": create(JambaConfiguration.self, JambaModel.init),
-            "mistral3": create(Mistral3TextConfiguration.self, Mistral3TextModel.init),
-            "apertus": create(ApertusConfiguration.self, ApertusModel.init)
+            modelType("mistral", "llama", configuration: LlamaConfiguration.self) {
+                LlamaModel($0)
+            },
+            modelType("phi", configuration: PhiConfiguration.self) { PhiModel($0) },
+            modelType("phi3", configuration: Phi3Configuration.self) { Phi3Model($0) },
+            modelType("phimoe", configuration: PhiMoEConfiguration.self) { PhiMoEModel($0) },
+            modelType("gemma", configuration: GemmaConfiguration.self) { GemmaModel($0) },
+            modelType("gemma2", configuration: Gemma2Configuration.self) { Gemma2Model($0) },
+            modelType("gemma3", "gemma3_text", configuration: Gemma3TextConfiguration.self) {
+                Gemma3TextModel($0)
+            },
+            modelType("gemma3n", configuration: Gemma3nTextConfiguration.self) {
+                Gemma3nTextModel(config: $0)
+            },
+            modelType("gemma4", "gemma4_text", configuration: Gemma4TextConfiguration.self) {
+                Gemma4Model($0)
+            },
+            modelType(
+                "gemma4_assistant",
+                "gemma4_unified_assistant",
+                configuration: Gemma4AssistantConfiguration.self
+            ) {
+                Gemma4AssistantModel($0)
+            },
+            modelType("qwen2", configuration: Qwen2Configuration.self) { Qwen2Model($0) },
+            modelType("qwen3", configuration: Qwen3Configuration.self) { Qwen3Model($0) },
+            modelType("qwen3_moe", configuration: Qwen3MoEConfiguration.self) {
+                Qwen3MoEModel($0)
+            },
+            modelType("qwen3_next", configuration: Qwen3NextConfiguration.self) {
+                Qwen3NextModel($0)
+            },
+            modelType("qwen3_5", configuration: Qwen35Configuration.self) { Qwen35Model($0) },
+            modelType("qwen3_5_moe", configuration: Qwen35Configuration.self) {
+                Qwen35MoEModel($0)
+            },
+            modelType("qwen3_5_text", configuration: Qwen35TextConfiguration.self) {
+                Qwen35TextModel($0)
+            },
+            modelType("minicpm", configuration: MiniCPMConfiguration.self) { MiniCPMModel($0) },
+            modelType("starcoder2", configuration: Starcoder2Configuration.self) {
+                Starcoder2Model($0)
+            },
+            modelType("cohere", configuration: CohereConfiguration.self) { CohereModel($0) },
+            modelType("openelm", configuration: OpenElmConfiguration.self) { OpenELMModel($0) },
+            modelType("internlm2", configuration: InternLM2Configuration.self) {
+                InternLM2Model($0)
+            },
+            modelType("deepseek_v3", configuration: DeepseekV3Configuration.self) {
+                DeepseekV3Model($0)
+            },
+            modelType("deepseek_v32", configuration: DeepseekV32Configuration.self) {
+                DeepseekV32Model($0)
+            },
+            modelType("granite", configuration: GraniteConfiguration.self) { GraniteModel($0) },
+            modelType("granitemoehybrid", configuration: GraniteMoeHybridConfiguration.self) {
+                GraniteMoeHybridModel($0)
+            },
+            modelType("mimo", configuration: MiMoConfiguration.self) { MiMoModel($0) },
+            modelType("mimo_v2_flash", configuration: MiMoV2FlashConfiguration.self) {
+                MiMoV2FlashModel($0)
+            },
+            modelType("minimax", configuration: MiniMaxConfiguration.self) { MiniMaxModel($0) },
+            modelType("glm4", configuration: GLM4Configuration.self) { GLM4Model($0) },
+            modelType("glm4_moe", configuration: GLM4MoEConfiguration.self) {
+                GLM4MoEModel($0)
+            },
+            modelType(
+                "glm4_moe_lite",
+                "glm_moe_dsa",
+                configuration: GLM4MoELiteConfiguration.self
+            ) {
+                GLM4MoELiteModel($0)
+            },
+            modelType("acereason", configuration: Qwen2Configuration.self) { Qwen2Model($0) },
+            modelType("falcon_h1", configuration: FalconH1Configuration.self) {
+                FalconH1Model($0)
+            },
+            modelType("bitnet", configuration: BitnetConfiguration.self) { BitnetModel($0) },
+            modelType("smollm3", configuration: SmolLM3Configuration.self) { SmolLM3Model($0) },
+            modelType("ernie4_5", configuration: Ernie45Configuration.self) { Ernie45Model($0) },
+            modelType("lfm2", configuration: LFM2Configuration.self) { LFM2Model($0) },
+            modelType("baichuan_m1", configuration: BaichuanM1Configuration.self) {
+                BaichuanM1Model($0)
+            },
+            modelType("exaone4", configuration: Exaone4Configuration.self) { Exaone4Model($0) },
+            modelType("gpt_oss", configuration: GPTOSSConfiguration.self) { GPTOSSModel($0) },
+            modelType("lille-130m", configuration: Lille130mConfiguration.self) {
+                Lille130mModel($0)
+            },
+            modelType("olmoe", configuration: OlmoEConfiguration.self) { OlmoEModel($0) },
+            modelType("olmo2", configuration: Olmo2Configuration.self) { Olmo2Model($0) },
+            modelType("olmo3", configuration: Olmo3Configuration.self) { Olmo3Model($0) },
+            modelType("bailing_moe", configuration: BailingMoeConfiguration.self) {
+                BailingMoeModel($0)
+            },
+            modelType("lfm2_moe", configuration: LFM2MoEConfiguration.self) {
+                LFM2MoEModel($0)
+            },
+            modelType("nanochat", configuration: NanoChatConfiguration.self) {
+                NanoChatModel($0)
+            },
+            modelType("nemotron_h", configuration: NemotronHConfiguration.self) {
+                NemotronHModel($0)
+            },
+            modelType("afmoe", configuration: AfMoEConfiguration.self) { AfMoEModel($0) },
+            modelType("jamba_3b", configuration: JambaConfiguration.self) { JambaModel($0) },
+            modelType("mistral3", configuration: Mistral3TextConfiguration.self) {
+                Mistral3TextModel($0)
+            },
+            modelType("apertus", configuration: ApertusConfiguration.self) {
+                ApertusModel($0)
+            }
         ]
     }
 }
 
-/// Registry of models and any overrides that go with them, e.g. prompt augmentation.
-/// If asked for an unknown configuration this will use the model/tokenizer as-is.
-///
-/// The Python tokenizers have a very rich set of implementations and configuration. The
-/// swift-tokenizers code handles a good chunk of that and this is a place to augment that
-/// implementation, if needed.
-///
-/// This class is marked `@unchecked Sendable` because:
-/// - It inherits from `AbstractModelRegistry`, which is marked `@unchecked Sendable`
-/// - The parent class handles all thread safety through NSLock synchronization
-/// - This class provides predefined model configurations (immutable after initialization)
-///
-/// Safety guarantees:
-/// - Immutable configurations: The shared instance is initialized once with predefined models
-/// - Thread-safe access: Inherits NSLock-protected operations from `AbstractModelRegistry`
-/// - Safe concurrent queries: Multiple threads can safely retrieve model configurations
+internal struct LLMGenerationTokenConfig: Equatable, Sendable {
+    var eosTokenIds: Set<Int>
+    var suppressTokenIds: Set<Int>
+
+    static func load(baseConfig: BaseConfiguration, modelDirectory: URL) -> Self {
+        let generationConfigURL = modelDirectory.appending(component: "generation_config.json")
+        guard
+            let data = try? Data(contentsOf: generationConfigURL),
+            let generationConfig = try? JSONDecoder.json5().decode(
+                GenerationConfigFile.self,
+                from: data
+            )
+        else {
+            return .init(
+                eosTokenIds: Set(baseConfig.eosTokenIds?.values ?? []),
+                suppressTokenIds: []
+            )
+        }
+
+        let eosTokenIds = generationConfig.eosTokenIds?.values ?? baseConfig.eosTokenIds?.values ?? []
+        return .init(
+            eosTokenIds: Set(eosTokenIds),
+            suppressTokenIds: Set(generationConfig.suppressTokenIds?.values ?? [])
+        )
+    }
+}
+
 internal class LLMRegistry: AbstractModelRegistry, @unchecked Sendable {
-    /// Shared instance with default model configurations.
     public static let shared = LLMRegistry(modelConfigurations: all())
 
     public static let smolLM135M4bit = ModelConfiguration(
@@ -413,74 +464,71 @@ internal class LLMRegistry: AbstractModelRegistry, @unchecked Sendable {
 @available(*, deprecated, renamed: "LLMRegistry", message: "Please use LLMRegistry directly.")
 internal typealias ModelRegistry = LLMRegistry
 
-/// Factory for creating new LLMs.
-///
-/// Callers can use the `shared` instance or create a new instance if custom configuration
-/// is required.
-///
-/// ```swift
-/// let modelContainer = try await LLMModelFactory.shared.loadContainer(
-///     configuration: LLMRegistry.llama3_8B_4bit)
-/// ```
 internal final class LLMModelFactory: ModelFactory {
     public init(typeRegistry: ModelTypeRegistry, modelRegistry: AbstractModelRegistry) {
         self.typeRegistry = typeRegistry
         self.modelRegistry = modelRegistry
     }
 
-    /// Shared instance with default behavior.
     public static let shared = LLMModelFactory(
-        typeRegistry: LLMTypeRegistry.shared, modelRegistry: LLMRegistry.shared)
+        typeRegistry: LLMTypeRegistry.shared,
+        modelRegistry: LLMRegistry.shared
+    )
 
-    /// registry of model type, e.g. configuration value `llama` -> configuration and init methods
     public let typeRegistry: ModelTypeRegistry
 
-    /// registry of model id to configuration, e.g. `mlx-community/Llama-3.2-3B-Instruct-4bit`
     public let modelRegistry: AbstractModelRegistry
 
     public func _load(
-        hub: HubApi, configuration: ModelConfiguration,
+        hub: HubApi,
+        configuration: ModelConfiguration,
         progressHandler: @Sendable @escaping (Progress) -> Void
     ) async throws -> sending ModelContext {
-        // Create progress tracker
         let progress = Progress(totalUnitCount: 100)
 
-        // Step 1: Download (0-30%)
         progressHandler(progress)
         let modelDirectory = try await downloadModel(
             hub: hub,
-            configuration: configuration) { _ in
-                progress.completedUnitCount = 30
-                progressHandler(progress)
+            configuration: configuration
+        ) { _ in
+            progress.completedUnitCount = 30
+            progressHandler(progress)
         }
 
-        // Step 2: Load config and create model (30-50%)
-        // load the generic config to understand which model and how to load the weights
         let configurationURL = modelDirectory.appending(component: "config.json")
-
         let baseConfig: BaseConfiguration
         do {
             baseConfig = try JSONDecoder.json5().decode(
-                BaseConfiguration.self, from: Data(contentsOf: configurationURL))
+                BaseConfiguration.self,
+                from: Data(contentsOf: configurationURL)
+            )
         } catch let error as DecodingError {
             throw ModelFactoryError.configurationDecodingError(
-                configurationURL.lastPathComponent, configuration.name, error)
+                configurationURL.lastPathComponent,
+                configuration.name,
+                error
+            )
         }
 
         let model: LanguageModel
         do {
             model = try typeRegistry.createModel(
-                configuration: configurationURL, modelType: baseConfig.modelType)
+                configuration: configurationURL,
+                modelType: baseConfig.modelType
+            )
         } catch let error as DecodingError {
             throw ModelFactoryError.configurationDecodingError(
-                configurationURL.lastPathComponent, configuration.name, error)
+                configurationURL.lastPathComponent,
+                configuration.name,
+                error
+            )
         }
 
         progress.completedUnitCount = 50
         progressHandler(progress)
 
         var resolvedConfiguration = configuration
-        let generationTokenConfig = loadGenerationTokenConfig(
+        let generationTokenConfig = LLMGenerationTokenConfig.load(
             baseConfig: baseConfig,
             modelDirectory: modelDirectory
         )
@@ -489,16 +537,15 @@ internal final class LLMModelFactory: ModelFactory {
 
         async let tokenizerTask = loadTokenizer(configuration: configuration, hub: hub)
 
-        // Step 3: Load weights (50-80%)
-        // apply the weights to the bare model
         try loadWeights(
-            modelDirectory: modelDirectory, model: model,
-            perLayerQuantization: baseConfig.perLayerQuantization)
+            modelDirectory: modelDirectory,
+            model: model,
+            perLayerQuantization: baseConfig.perLayerQuantization
+        )
 
         progress.completedUnitCount = 80
         progressHandler(progress)
 
-        // Step 4: Load tokenizer (80-100%)
         let tokenizer = try await tokenizerTask
         var grammarStopTokenIds = resolvedConfiguration.eosTokenIds
         if let eosTokenId = tokenizer.eosTokenId {
@@ -533,27 +580,6 @@ internal final class LLMModelFactory: ModelFactory {
             tokenizer: tokenizer,
             grammarCompiler: grammarCompiler,
             grammarCompilerError: grammarCompilerError
-        )
-    }
-
-    private func loadGenerationTokenConfig(
-        baseConfig: BaseConfiguration,
-        modelDirectory: URL
-    ) -> (eosTokenIds: Set<Int>, suppressTokenIds: Set<Int>) {
-        let generationConfigURL = modelDirectory.appending(component: "generation_config.json")
-        guard
-            let data = try? Data(contentsOf: generationConfigURL),
-            let generationConfig = try? JSONDecoder.json5().decode(
-                GenerationConfigFile.self,
-                from: data
-            )
-        else {
-            return (Set(baseConfig.eosTokenIds?.values ?? []), [])
-        }
-
-        return (
-            Set(generationConfig.eosTokenIds?.values ?? baseConfig.eosTokenIds?.values ?? []),
-            Set(generationConfig.suppressTokenIds?.values ?? [])
         )
     }
 }
