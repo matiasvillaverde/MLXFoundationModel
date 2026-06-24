@@ -1,109 +1,167 @@
-// Copyright © 2024 Apple Inc.
-
-import Foundation
+import Darwin
 import MLX
-
+import MLXFast
 import MLXNN
 
-// Port of https://github.com/maiqingqiang/mlx-examples/blob/main/llms/mlx_lm/models/internlm2.py
+internal struct InternLM2RoPEPlan: Equatable, Sendable {
+    internal let dimensions: Int
+    internal let maxPositionEmbeddings: Int
+    internal let traditional: Bool
+    internal let base: Float
+    internal let positionScale: Float
+    internal let dynamicFactor: Float?
 
-private class DynamicNTKScalingRoPE: Module {
-    let dims: Int
-    let maxPositionEmbeddings: Int
-    let traditional: Bool
-    let originalBase: Float
-    var scale: Float
+    internal init(_ config: InternLM2Configuration, dimensions: Int) {
+        precondition(dimensions > 0, "rotary dimensions must be positive")
+        precondition(config.maxPositionEmbeddings > 0, "max_position_embeddings must be positive")
 
-    init(
-        dims: Int, maxPositionEmbeddings: Int = 2_048, traditional: Bool = false,
-        base: Float = 10_000, scale: Float = 1.0
-    ) {
-        self.dims = dims
-        self.maxPositionEmbeddings = maxPositionEmbeddings
-        self.traditional = traditional
-        self.originalBase = base
-        self.scale = scale
+        self.dimensions = dimensions
+        self.maxPositionEmbeddings = config.maxPositionEmbeddings
+        self.traditional = config.ropeTraditional
+        self.base = config.ropeTheta
+
+        let ropeType = Self.ropeType(config.ropeScaling)
+        let factor = config.ropeScaling?["factor"]?.asFloat() ?? 1
+        precondition(factor > 0, "rope_scaling.factor must be positive")
+
+        switch ropeType {
+        case "linear":
+            self.positionScale = 1 / factor
+            self.dynamicFactor = nil
+        case "dynamic":
+            precondition(dimensions > 2, "dynamic RoPE scaling requires dimensions greater than 2")
+            self.positionScale = 1
+            self.dynamicFactor = factor
+        default:
+            self.positionScale = 1
+            self.dynamicFactor = nil
+        }
     }
 
-    func callAsFunction(_ input: MLXArray, offset: Int = 0) -> MLXArray {
-        let seqLen = input.dim(1) + offset
-        var base = originalBase
-        if seqLen > maxPositionEmbeddings {
-            base *= pow(
-                (scale * Float(seqLen) / Float(maxPositionEmbeddings)) - (scale - 1),
-                Float(dims) / Float(dims - 2))
+    internal func adjustedBase(sequenceLength: Int) -> Float {
+        guard let dynamicFactor, sequenceLength > maxPositionEmbeddings else {
+            return base
         }
-        return MLXFast.RoPE(
-            input, dimensions: dims, traditional: traditional, base: base, scale: scale, offset: offset)
+
+        let scaledLength = dynamicFactor * Float(sequenceLength) / Float(maxPositionEmbeddings)
+        let ratio = scaledLength - (dynamicFactor - 1)
+        let exponent = Float(dimensions) / Float(dimensions - 2)
+        return base * Darwin.powf(ratio, exponent)
+    }
+
+    private static func ropeType(_ scaling: [String: StringOrNumber]?) -> String? {
+        guard let value = scaling?["type"] ?? scaling?["rope_type"],
+              case .string(let string) = value else {
+            return nil
+        }
+        return string
     }
 }
 
-private class Attention: Module {
-    let args: InternLM2Configuration
-    let scale: Float
+private final class InternLM2RotaryEmbedding: Module {
+    private let plan: InternLM2RoPEPlan
 
-    let heads: Int
-    let kvHeads: Int
-    let kvGroups: Int
-    let headDim: Int
+    init(_ plan: InternLM2RoPEPlan) {
+        self.plan = plan
+    }
 
-    @ModuleInfo(key: "wqkv") var wqkv: Linear
-    @ModuleInfo(key: "wo") var outputProjection: Linear
+    func callAsFunction(_ input: MLXArray, offset: Int = 0) -> MLXArray {
+        let sequenceLength = input.dim(-2) + offset
+        return MLXFast.RoPE(
+            input,
+            dimensions: plan.dimensions,
+            traditional: plan.traditional,
+            base: plan.adjustedBase(sequenceLength: sequenceLength),
+            scale: plan.positionScale,
+            offset: offset
+        )
+    }
+}
 
-    let rope: DynamicNTKScalingRoPE
+internal struct InternLM2AttentionLayout: Equatable, Sendable {
+    internal let hiddenSize: Int
+    internal let queryHeads: Int
+    internal let keyValueHeads: Int
+    internal let keyValueGroups: Int
+    internal let headSize: Int
+    internal let packedProjectionSize: Int
+    internal let attentionScale: Float
 
-    init(_ args: InternLM2Configuration) {
-        self.args = args
+    internal init(_ config: InternLM2Configuration) {
+        precondition(config.hiddenSize > 0, "hidden_size must be positive")
+        precondition(config.attentionHeads > 0, "num_attention_heads must be positive")
+        precondition(config.kvHeads > 0, "num_key_value_heads must be positive")
+        precondition(
+            config.hiddenSize.isMultiple(of: config.attentionHeads),
+            "hidden_size must be divisible by num_attention_heads"
+        )
+        precondition(
+            config.attentionHeads.isMultiple(of: config.kvHeads),
+            "num_attention_heads must be divisible by num_key_value_heads"
+        )
 
-        let dim = args.hiddenSize
-        self.heads = args.attentionHeads
-        self.kvHeads = args.kvHeads
-        self.kvGroups = args.kvGroups
+        self.hiddenSize = config.hiddenSize
+        self.queryHeads = config.attentionHeads
+        self.keyValueHeads = config.kvHeads
+        self.keyValueGroups = config.attentionHeads / config.kvHeads
+        self.headSize = config.hiddenSize / config.attentionHeads
+        self.packedProjectionSize = (queryHeads + 2 * keyValueHeads) * headSize
+        self.attentionScale = 1 / Float(headSize).squareRoot()
+    }
+}
 
-        self.headDim = args.hiddenSize / self.heads
-        self.scale = pow(Float(headDim), -0.5)
+private final class InternLM2PackedAttention: Module {
+    private let layout: InternLM2AttentionLayout
 
-        self._wqkv.wrappedValue = Linear(
-            dim, (self.heads + 2 * self.kvHeads) * self.headDim, bias: args.bias)
-        self._outputProjection.wrappedValue = Linear(self.heads * self.headDim, dim, bias: args.bias)
+    @ModuleInfo(key: "wqkv") private var queryKeyValueProjection: Linear
+    @ModuleInfo(key: "wo") private var outputProjection: Linear
 
-        let ropeScale: Float
-        if let ropeScaling = args.ropeScaling, ropeScaling["type"] == .string("linear"),
-            let factor = ropeScaling["factor"] {
-            if let value = factor.asFloat() {
-                ropeScale = 1 / value
-            } else {
-                fatalError("ropeScaling.factor must be a float")
-            }
-        } else {
-            ropeScale = 1
-        }
+    private let rope: InternLM2RotaryEmbedding
 
-        self.rope = DynamicNTKScalingRoPE(
-            dims: self.headDim,
-            maxPositionEmbeddings: args.maxPositionEmbeddings,
-            traditional: args.ropeTraditional,
-            base: args.ropeTheta,
-            scale: ropeScale
+    init(_ config: InternLM2Configuration) {
+        let layout = InternLM2AttentionLayout(config)
+        self.layout = layout
+        self._queryKeyValueProjection.wrappedValue = Linear(
+            layout.hiddenSize,
+            layout.packedProjectionSize,
+            bias: config.bias
+        )
+        self._outputProjection.wrappedValue = Linear(
+            layout.queryHeads * layout.headSize,
+            layout.hiddenSize,
+            bias: config.bias
+        )
+        self.rope = InternLM2RotaryEmbedding(
+            InternLM2RoPEPlan(config, dimensions: layout.headSize)
         )
     }
 
     func callAsFunction(
-        _ input: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode, cache: KVCache?
+        _ hiddenStates: MLXArray,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode,
+        cache: KVCache?
     ) -> MLXArray {
-        let (batchSize, sequenceLength) = (input.dim(0), input.dim(1))
+        let batchSize = hiddenStates.dim(0)
+        let tokenCount = hiddenStates.dim(1)
 
-        var qkvStates = wqkv(input)
-        qkvStates = qkvStates.reshaped(batchSize, sequenceLength, -1, 2 + self.kvGroups, self.headDim)
-        var queries = qkvStates[.ellipsis, ..<self.kvGroups, 0...]
-        queries = queries.reshaped(batchSize, sequenceLength, -1, self.headDim)
-        var keys = qkvStates[.ellipsis, -2, 0...]
-        var values = qkvStates[.ellipsis, -1, 0...]
+        var packed = queryKeyValueProjection(hiddenStates)
+        packed = packed.reshaped(
+            batchSize,
+            tokenCount,
+            layout.keyValueHeads,
+            2 + layout.keyValueGroups,
+            layout.headSize
+        )
 
-        // prepare the queries, keys and values for the attention computation
-        queries = queries.reshaped(batchSize, sequenceLength, args.attentionHeads, -1).transposed(0, 2, 1, 3)
-        keys = keys.reshaped(batchSize, sequenceLength, args.kvHeads, -1).transposed(0, 2, 1, 3)
-        values = values.reshaped(batchSize, sequenceLength, args.kvHeads, -1).transposed(0, 2, 1, 3)
+        var queries = packed[.ellipsis, ..<layout.keyValueGroups, 0...]
+            .reshaped(batchSize, tokenCount, layout.queryHeads, layout.headSize)
+            .transposed(0, 2, 1, 3)
+        var keys = packed[.ellipsis, -2, 0...]
+            .reshaped(batchSize, tokenCount, layout.keyValueHeads, layout.headSize)
+            .transposed(0, 2, 1, 3)
+        let values = packed[.ellipsis, -1, 0...]
+            .reshaped(batchSize, tokenCount, layout.keyValueHeads, layout.headSize)
+            .transposed(0, 2, 1, 3)
 
         if let cache {
             queries = rope(queries, offset: cache.offset)
@@ -113,131 +171,163 @@ private class Attention: Module {
             keys = rope(keys)
         }
 
-        let output = attentionWithCacheUpdate(
+        let attentionOutput = attentionWithCacheUpdate(
             queries: queries,
             keys: keys,
             values: values,
             cache: cache,
-            scale: scale,
+            scale: layout.attentionScale,
             mask: mask
         )
         .transposed(0, 2, 1, 3)
-        .reshaped(batchSize, sequenceLength, -1)
+        .reshaped(batchSize, tokenCount, -1)
 
-        return outputProjection(output)
+        return outputProjection(attentionOutput)
     }
 }
 
-private class MLP: Module, UnaryLayer {
-    @ModuleInfo(key: "w1") var gateProjection: Linear
-    @ModuleInfo(key: "w2") var downProjection: Linear
-    @ModuleInfo(key: "w3") var upProjection: Linear
+private final class InternLM2FeedForward: Module, UnaryLayer {
+    @ModuleInfo(key: "w1") private var gateProjection: Linear
+    @ModuleInfo(key: "w2") private var downProjection: Linear
+    @ModuleInfo(key: "w3") private var upProjection: Linear
 
-    init(dim: Int, hiddenDim: Int) {
-        self._gateProjection.wrappedValue = Linear(dim, hiddenDim, bias: false)
-        self._downProjection.wrappedValue = Linear(hiddenDim, dim, bias: false)
-        self._upProjection.wrappedValue = Linear(dim, hiddenDim, bias: false)
+    init(_ config: InternLM2Configuration) {
+        self._gateProjection.wrappedValue = Linear(
+            config.hiddenSize,
+            config.intermediateSize,
+            bias: false
+        )
+        self._downProjection.wrappedValue = Linear(
+            config.intermediateSize,
+            config.hiddenSize,
+            bias: false
+        )
+        self._upProjection.wrappedValue = Linear(
+            config.hiddenSize,
+            config.intermediateSize,
+            bias: false
+        )
     }
 
-    func callAsFunction(_ input: MLXArray) -> MLXArray {
-        downProjection(silu(gateProjection(input)) * upProjection(input))
+    func callAsFunction(_ hiddenStates: MLXArray) -> MLXArray {
+        downProjection(silu(gateProjection(hiddenStates)) * upProjection(hiddenStates))
     }
 }
 
-private class TransformerBlock: Module {
-    @ModuleInfo(key: "attention") var attention: Attention
-    @ModuleInfo(key: "feed_forward") var feedForward: MLP
+private final class InternLM2TransformerBlock: Module {
+    @ModuleInfo(key: "attention") var attention: InternLM2PackedAttention
+    @ModuleInfo(key: "feed_forward") private var feedForward: InternLM2FeedForward
+    @ModuleInfo(key: "attention_norm") private var attentionNorm: RMSNorm
+    @ModuleInfo(key: "ffn_norm") private var feedForwardNorm: RMSNorm
 
-    @ModuleInfo(key: "attention_norm") var attentionNorm: RMSNorm
-    @ModuleInfo(key: "ffn_norm") var ffnNorm: RMSNorm
-
-    init(_ args: InternLM2Configuration) {
-        self._attention.wrappedValue = Attention(args)
-        self._feedForward.wrappedValue = MLP(dim: args.hiddenSize, hiddenDim: args.intermediateSize)
+    init(_ config: InternLM2Configuration) {
+        self._attention.wrappedValue = InternLM2PackedAttention(config)
+        self._feedForward.wrappedValue = InternLM2FeedForward(config)
         self._attentionNorm.wrappedValue = RMSNorm(
-            dimensions: args.hiddenSize, eps: args.rmsNormEps)
-        self._ffnNorm.wrappedValue = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
+            dimensions: config.hiddenSize,
+            eps: config.rmsNormEps
+        )
+        self._feedForwardNorm.wrappedValue = RMSNorm(
+            dimensions: config.hiddenSize,
+            eps: config.rmsNormEps
+        )
     }
 
     func callAsFunction(
-        _ input: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode, cache: KVCache?
+        _ hiddenStates: MLXArray,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode,
+        cache: KVCache?
     ) -> MLXArray {
-        var residual = attention(attentionNorm(input), mask: mask, cache: cache)
-        let hidden = input + residual
-        residual = feedForward(ffnNorm(hidden))
-        return hidden + residual
+        let attentionOutput = attention(attentionNorm(hiddenStates), mask: mask, cache: cache)
+        let afterAttention = hiddenStates + attentionOutput
+        return afterAttention + feedForward(feedForwardNorm(afterAttention))
     }
 }
 
-private class InternLM2ModelInner: Module {
-    @ModuleInfo(key: "tok_embeddings") var tokEmbeddings: Embedding
+private final class InternLM2Backbone: Module {
+    @ModuleInfo(key: "tok_embeddings") var tokenEmbeddings: Embedding
+    @ModuleInfo var layers: [InternLM2TransformerBlock]
+    @ModuleInfo var norm: RMSNorm
 
-    let layers: [TransformerBlock]
-    let norm: RMSNorm
+    init(_ config: InternLM2Configuration) {
+        precondition(config.vocabularySize > 0, "vocab_size must be positive")
 
-    init(_ args: InternLM2Configuration) {
-        precondition(args.vocabularySize > 0)
-
-        self._tokEmbeddings.wrappedValue = Embedding(
-            embeddingCount: args.vocabularySize, dimensions: args.hiddenSize)
-
-        self.layers = (0 ..< args.hiddenLayers).map { _ in TransformerBlock(args) }
-        self.norm = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
+        self._tokenEmbeddings.wrappedValue = Embedding(
+            embeddingCount: config.vocabularySize,
+            dimensions: config.hiddenSize
+        )
+        self.layers = (0 ..< config.hiddenLayers).map { _ in
+            InternLM2TransformerBlock(config)
+        }
+        self._norm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
     }
 
-    func callAsFunction(_ inputs: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
-        var hiddenStates = tokEmbeddings(inputs)
+    func callAsFunction(_ tokens: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
+        var hiddenStates = tokenEmbeddings(tokens)
+        let mask = createAttentionMask(h: tokens, cache: cache)
 
-        let mask = createAttentionMask(h: hiddenStates, cache: cache)
-
-        for (index, layer) in layers.enumerated() {
-            hiddenStates = layer(hiddenStates, mask: mask, cache: cache?[index])
+        for (layerIndex, layer) in layers.enumerated() {
+            hiddenStates = layer(hiddenStates, mask: mask, cache: cache?[layerIndex])
         }
 
         return norm(hiddenStates)
     }
 }
 
-internal class InternLM2Model: Module, LLMModel, KVCacheDimensionProvider {
+internal final class InternLM2Model: Module, LLMModel, KVCacheDimensionProvider,
+    GreedyTokenModel {
     public let vocabularySize: Int
     public let kvHeads: [Int]
 
-    fileprivate let model: InternLM2ModelInner
+    fileprivate let model: InternLM2Backbone
 
-    @ModuleInfo(key: "output") var output: Linear?
+    @ModuleInfo(key: "output") private var output: Linear?
 
-    public init(_ args: InternLM2Configuration) {
-        self.vocabularySize = args.vocabularySize
-        self.kvHeads = (0 ..< args.hiddenLayers).map { _ in args.kvHeads }
-        self.model = InternLM2ModelInner(args)
-        if !args.tieWordEmbeddings {
-            self._output.wrappedValue = Linear(args.hiddenSize, args.vocabularySize, bias: false)
+    public init(_ config: InternLM2Configuration) {
+        self.vocabularySize = config.vocabularySize
+        self.kvHeads = Array(repeating: config.kvHeads, count: config.hiddenLayers)
+        self.model = InternLM2Backbone(config)
+        if !config.tieWordEmbeddings {
+            self._output.wrappedValue = Linear(
+                config.hiddenSize,
+                config.vocabularySize,
+                bias: false
+            )
         }
     }
 
     public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
-        let out = model(inputs, cache: cache)
+        let hiddenStates = model(inputs, cache: cache)
         if let output {
-            return output(out)
+            return output(hiddenStates)
         }
-        return model.tokEmbeddings.asLinear(out)
+        return model.tokenEmbeddings.asLinear(hiddenStates)
+    }
+
+    internal func greedyToken(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?
+    ) -> GreedyTokenOutput {
+        let hiddenStates = lastTokenHiddenState(model(input[text: .newAxis].tokens, cache: cache))
+        if let output {
+            return greedyTokenOutput(logits: output(hiddenStates), state: state)
+        }
+        return greedyTokenOutput(logits: model.tokenEmbeddings.asLinear(hiddenStates), state: state)
     }
 
     public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
-        // Remove unused precomputed rotary frequencies
-        weights.filter {
-            !$0.key.contains("attention.rope.inv_freq")
-        }
+        weights.filter { !$0.key.contains("attention.rope.inv_freq") }
     }
 }
 
 extension InternLM2Model: LoRAModel {
     public func loraLinearLayers() -> LoRALinearLayers {
-        model.layers.map { ($0.attention, ["q_proj", "v_proj"]) }
+        model.layers.map { ($0.attention, ["wqkv"]) }
     }
 }
 
-internal struct InternLM2Configuration: Codable, Sendable {
+internal struct InternLM2Configuration: Codable, Sendable, Equatable {
     var hiddenSize: Int
     var hiddenLayers: Int
     var intermediateSize: Int
@@ -245,12 +335,42 @@ internal struct InternLM2Configuration: Codable, Sendable {
     var rmsNormEps: Float
     var vocabularySize: Int
     var kvHeads: Int
-    var maxPositionEmbeddings: Int = 32_768
-    var ropeTheta: Float = 10_000
-    var ropeTraditional: Bool = false
+    var maxPositionEmbeddings: Int
+    var ropeTheta: Float
+    var ropeTraditional: Bool
     var ropeScaling: [String: StringOrNumber]?
-    var tieWordEmbeddings: Bool = false
-    var bias: Bool = true
+    var tieWordEmbeddings: Bool
+    var bias: Bool
+
+    internal init(
+        hiddenSize: Int = 4_096,
+        hiddenLayers: Int = 32,
+        intermediateSize: Int = 14_336,
+        attentionHeads: Int = 32,
+        rmsNormEps: Float = 1e-5,
+        vocabularySize: Int = 92_544,
+        kvHeads: Int? = nil,
+        maxPositionEmbeddings: Int = 32_768,
+        ropeTheta: Float = 10_000,
+        ropeTraditional: Bool = false,
+        ropeScaling: [String: StringOrNumber]? = nil,
+        tieWordEmbeddings: Bool = false,
+        bias: Bool = true
+    ) {
+        self.hiddenSize = hiddenSize
+        self.hiddenLayers = hiddenLayers
+        self.intermediateSize = intermediateSize
+        self.attentionHeads = attentionHeads
+        self.rmsNormEps = rmsNormEps
+        self.vocabularySize = vocabularySize
+        self.kvHeads = kvHeads ?? attentionHeads
+        self.maxPositionEmbeddings = maxPositionEmbeddings
+        self.ropeTheta = ropeTheta
+        self.ropeTraditional = ropeTraditional
+        self.ropeScaling = ropeScaling
+        self.tieWordEmbeddings = tieWordEmbeddings
+        self.bias = bias
+    }
 
     var kvGroups: Int {
         attentionHeads / kvHeads
@@ -272,50 +392,66 @@ internal struct InternLM2Configuration: Codable, Sendable {
         case bias = "bias"
     }
 
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
+    internal init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: Self.CodingKeys.self)
+        let attentionHeads = try container.decode(Int.self, forKey: .attentionHeads)
+        let ropeScaling = try container.decodeIfPresent(
+            [String: StringOrNumber].self,
+            forKey: .ropeScaling
+        )
 
-        hiddenSize = try container.decode(Int.self, forKey: .hiddenSize)
-        hiddenLayers = try container.decode(Int.self, forKey: .hiddenLayers)
-        intermediateSize = try container.decode(Int.self, forKey: .intermediateSize)
-        attentionHeads = try container.decode(Int.self, forKey: .attentionHeads)
-        rmsNormEps = try container.decode(Float.self, forKey: .rmsNormEps)
-        vocabularySize = try container.decode(Int.self, forKey: .vocabularySize)
-        kvHeads = try container.decodeIfPresent(Int.self, forKey: .kvHeads) ?? attentionHeads
-        maxPositionEmbeddings = try container.decode(Int.self, forKey: .maxPositionEmbeddings)
-        if let ropeTheta = try container.decodeIfPresent(Float.self, forKey: .ropeTheta) {
-            self.ropeTheta = ropeTheta
-        }
-        if let ropeTraditional = try container.decodeIfPresent(Bool.self, forKey: .ropeTraditional) {
-            self.ropeTraditional = ropeTraditional
-        }
-        ropeScaling = try container.decodeIfPresent(
-            [String: StringOrNumber].self, forKey: .ropeScaling)
-        if let tieWordEmbeddings = try container.decodeIfPresent(
-            Bool.self, forKey: .tieWordEmbeddings) {
-            self.tieWordEmbeddings = tieWordEmbeddings
-        }
-        if let bias = try container.decodeIfPresent(Bool.self, forKey: .bias) {
-            self.bias = bias
+        try Self.validate(ropeScaling: ropeScaling, in: container)
+
+        self.init(
+            hiddenSize: try container.decode(Int.self, forKey: .hiddenSize),
+            hiddenLayers: try container.decode(Int.self, forKey: .hiddenLayers),
+            intermediateSize: try container.decode(Int.self, forKey: .intermediateSize),
+            attentionHeads: attentionHeads,
+            rmsNormEps: try container.decode(Float.self, forKey: .rmsNormEps),
+            vocabularySize: try container.decode(Int.self, forKey: .vocabularySize),
+            kvHeads: try container.decodeIfPresent(Int.self, forKey: .kvHeads),
+            maxPositionEmbeddings: try container.decodeIfPresent(
+                Int.self,
+                forKey: .maxPositionEmbeddings
+            ) ?? 32_768,
+            ropeTheta: try container.decodeIfPresent(Float.self, forKey: .ropeTheta) ?? 10_000,
+            ropeTraditional: try container.decodeIfPresent(
+                Bool.self,
+                forKey: .ropeTraditional
+            ) ?? false,
+            ropeScaling: ropeScaling,
+            tieWordEmbeddings: try container.decodeIfPresent(
+                Bool.self,
+                forKey: .tieWordEmbeddings
+            ) ?? false,
+            bias: try container.decodeIfPresent(Bool.self, forKey: .bias) ?? true
+        )
+    }
+
+    private static func validate(
+        ropeScaling: [String: StringOrNumber]?,
+        in container: KeyedDecodingContainer<CodingKeys>
+    ) throws {
+        guard let ropeScaling else {
+            return
         }
 
-        if let ropeScaling {
-            let requiredKeys: Set<String> = ["factor", "type"]
-            let keys = Set(ropeScaling.keys)
-            if !requiredKeys.isSubset(of: keys) {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .ropeScaling, in: container,
-                    debugDescription: "rope_scaling must contain keys \(requiredKeys)"
-                )
-            }
-            if let type = ropeScaling["type"],
-                type != .string("linear") && type != .string("dynamic") {
-                throw DecodingError.dataCorruptedError(
-                    forKey: .ropeScaling, in: container,
-                    debugDescription:
-                        "rope_scaling 'type' currently only supports 'linear' or 'dynamic'"
-                )
-            }
+        guard ropeScaling["factor"]?.asFloat() != nil else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .ropeScaling,
+                in: container,
+                debugDescription: "rope_scaling.factor must be numeric"
+            )
+        }
+
+        guard let ropeType = ropeScaling["type"] ?? ropeScaling["rope_type"],
+              case .string(let string) = ropeType,
+              string == "linear" || string == "dynamic" else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .ropeScaling,
+                in: container,
+                debugDescription: "rope_scaling type must be 'linear' or 'dynamic'"
+            )
         }
     }
 }

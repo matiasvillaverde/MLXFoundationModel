@@ -12,9 +12,9 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 
 | Area | Files | Notes |
 | --- | ---: | --- |
-| Apple source-level notices | 7 | Keep notices until replaced. |
-| Explicit upstream model ports | 38 | Keep port notes until replaced. |
-| Project-authored or no upstream marker | 48 | Safe area for normal refactors. |
+| Apple source-level notices | 6 | Keep notices until replaced. |
+| Explicit upstream model ports | 37 | Keep port notes until replaced. |
+| Project-authored or no upstream marker | 49 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -37,6 +37,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/Common/Tokenizer.swift` | Tokenizer loading, tokenizer-class rewriting, replacement registry, and streaming detokenization. |
 | `Sources/MLXLocalModels/MLXLLM/LLMModel.swift` | Default text-model prefill chunking and adaptive prefill integration. |
 | `Sources/MLXLocalModels/MLXLLM/LLMModelFactory.swift` | LLM type registration, alias grouping, model load progress, generation-token resolution, and trampoline factory. |
+| `Sources/MLXLocalModels/MLXLLM/Internlm2.swift` | InternLM2 packed attention, dynamic RoPE planning, decoder blocks, greedy-token fast path, config defaults, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Phi.swift` | Phi attention layout, decoder block, backbone, greedy-token fast path, configuration defaults, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Lora+Data.swift` | LoRA JSONL/text data lookup and parsing. |
 | `Sources/MLXLocalModels/MLXLLM/LoraTrain.swift` | LoRA batching, conversion/fusion, masked loss, evaluation, save/load, and training progress. |
@@ -62,6 +63,7 @@ Current independence pass:
 - Replaced LanguageModel core contracts with focused coverage for input slicing, media wrappers, default forwarding, greedy helpers, sanitize fallback, and KV-cache creation.
 - Replaced model loading support with deterministic safetensor discovery, explicit directory errors, and focused coverage for recursive discovery, case-insensitive extensions, and missing directories.
 - Replaced Phi with an explicit attention layout, project-owned module structure, config defaults, greedy-token fast path, and focused layout/config/LoRA coverage.
+- Replaced InternLM2 with packed-attention layout, type-specific RoPE scaling, greedy-token fast path, packed LoRA targeting, and focused layout/RoPE/config coverage.
 
 Previous performance pass:
 
@@ -109,58 +111,58 @@ session requests, and token-level grammar constraint checks.
 ## Benchmarks
 
 These rows come from `BENCH` lines printed by the real-model test runner in
-`.build/benchmarks/test-all-architectures-2026-06-24-independent-phi.log`.
+`.build/benchmarks/test-all-architectures-2026-06-24-independent-internlm2.log`.
 They are short 8-token decode checks, so treat them as a regression snapshot
 rather than a stable throughput claim.
 
 | Architecture | Model | Generated | Prompt | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `qwen3` | `qwen3-0.6b-4bit` | 8 | 16 | 0.0690 | 0.0328 | 0.0362 | 220.93 | 115.91 |
-| `qwen3` | `qwen3-1.7b-4bit` | 8 | 16 | 0.1027 | 0.0397 | 0.0630 | 126.94 | 77.89 |
-| `qwen3` | `qwen3-4b-4bit` | 8 | 16 | 0.2114 | 0.0947 | 0.1167 | 68.56 | 37.85 |
-| `qwen3` | `qwen3-8b-4bit` | 8 | 17 | 0.3057 | 0.1238 | 0.1820 | 43.97 | 26.17 |
-| `qwen2` | `qwen2.5-1.5b-4bit` | 8 | 37 | 0.0923 | 0.0357 | 0.0566 | 141.26 | 86.67 |
-| `qwen2` | `qwen2.5-7b-4bit` | 8 | 37 | 0.2610 | 0.0938 | 0.1673 | 47.83 | 30.65 |
-| `qwen2` | `qwen1.5-0.5b-chat-4bit` | 8 | 23 | 0.0463 | 0.0189 | 0.0274 | 291.99 | 172.66 |
-| `llama` | `llama-3.2-1b-instruct-4bit` | 7 | 42 | 0.0735 | 0.0188 | 0.0547 | 128.02 | 95.27 |
-| `llama` | `llama-3.2-3b-instruct-4bit` | 8 | 45 | 0.1548 | 0.0532 | 0.1016 | 78.74 | 51.67 |
-| `llama` | `llama-3.1-8b-instruct-4bit` | 8 | 45 | 0.2970 | 0.1282 | 0.1688 | 47.38 | 26.94 |
-| `llama` | `llama-3-8b-instruct-4bit` | 8 | 18 | 0.2510 | 0.1030 | 0.1480 | 54.06 | 31.87 |
-| `mistral` | `mistral-7b-v0.3-4bit` | 8 | 10 | 0.2247 | 0.0806 | 0.1442 | 55.49 | 35.60 |
-| `mistral` | `mistral-7b-v0.2-4bit` | 8 | 13 | 0.2186 | 0.0721 | 0.1464 | 54.63 | 36.60 |
-| `mistral` | `mistral-nemo-2407-4bit` | 8 | 11 | 0.6245 | 0.4209 | 0.2036 | 39.29 | 12.81 |
-| `phi` | `phi-2-hf-4bit-mlx` | 8 | 5 | 0.0907 | 0.0291 | 0.0616 | 129.88 | 88.16 |
-| `phi3` | `phi-3.5-mini-instruct-4bit` | 8 | 8 | 0.1315 | 0.0421 | 0.0894 | 89.52 | 60.85 |
-| `phi3` | `phi-4-mini-instruct-4bit` | 8 | 12 | 0.1683 | 0.0821 | 0.0863 | 92.74 | 47.53 |
-| `gemma` | `gemma-2b-it-4bit` | 8 | 15 | 0.1292 | 0.0425 | 0.0866 | 92.34 | 61.94 |
-| `gemma2` | `gemma-2-2b-it-4bit` | 8 | 14 | 0.1268 | 0.0437 | 0.0830 | 96.35 | 63.11 |
-| `gemma2` | `gemma-2-9b-it-4bit` | 8 | 16 | 0.3094 | 0.1257 | 0.1837 | 43.56 | 25.86 |
-| `gemma3` | `gemma-3-1b-it-qat-4bit` | 8 | 16 | 0.2392 | 0.1932 | 0.0460 | 173.98 | 33.45 |
-| `gemma3` | `gemma-3-1b-it-4bit` | 8 | 18 | 0.2418 | 0.1959 | 0.0459 | 174.25 | 33.08 |
-| `gemma3n` | `gemma-3n-e2b-it-lm-4bit` | 8 | 17 | 0.3731 | 0.2675 | 0.1056 | 75.77 | 21.44 |
-| `gemma3n` | `gemma-3n-e4b-it-lm-4bit` | 8 | 17 | 0.4821 | 0.3267 | 0.1554 | 51.47 | 16.59 |
-| `gemma4` | `gemma-4-e2b-it-4bit` | 8 | 19 | 0.2123 | 0.1278 | 0.0845 | 94.63 | 37.68 |
-| `gemma4` | `gemma-4-e4b-it-4bit` | 8 | 21 | 0.2843 | 0.1508 | 0.1335 | 59.92 | 28.14 |
-| `granite` | `granite-3.3-2b-instruct-4bit` | 8 | 65 | 0.1500 | 0.0623 | 0.0877 | 91.20 | 53.32 |
-| `llama` | `smollm-135m-instruct-4bit` | 8 | 17 | 0.0466 | 0.0171 | 0.0295 | 271.32 | 171.56 |
-| `smollm3` | `smollm3-3b-4bit` | 8 | 252 | 0.4716 | 0.1914 | 0.2801 | 28.56 | 16.96 |
-| `lfm2` | `lfm2.5-1.2b-thinking-4bit` | 8 | 21 | 0.0747 | 0.0157 | 0.0590 | 135.69 | 107.12 |
-| `lfm2_moe` | `lfm2-moe` | 8 | 17 | 0.1665 | 0.0779 | 0.0887 | 90.20 | 48.03 |
-| `exaone4` | `exaone-4.0-1.2b-4bit` | 8 | 17 | 0.0951 | 0.0402 | 0.0549 | 145.85 | 84.13 |
-| `ernie4_5` | `ernie-4.5-0.3b-bf16` | 8 | 11 | 0.0599 | 0.0148 | 0.0450 | 177.67 | 133.61 |
-| `bitnet` | `bitnet-b1.58-2b-4t-4bit` | 8 | 10 | 0.1150 | 0.0384 | 0.0766 | 104.48 | 69.57 |
-| `baichuan_m1` | `baichuan-m1-14b-instruct-4bit` | 8 | 10 | 0.6441 | 0.3641 | 0.2800 | 28.57 | 12.42 |
-| `deepseek_v3` | `deepseek-r1-distill-qwen-7b-4bit` | 8 | 10 | 0.2178 | 0.0779 | 0.1399 | 57.19 | 36.74 |
-| `mimo` | `mimo-7b-rl-4bit` | 8 | 28 | 0.3046 | 0.1174 | 0.1872 | 42.74 | 26.26 |
-| `glm4` | `glm-4-9b-0414-4bit` | 8 | 13 | 0.2750 | 0.1021 | 0.1729 | 46.27 | 29.09 |
-| `acereason` | `acereason-nemotron-1.1-7b-4bit` | 8 | 33 | 0.3842 | 0.1609 | 0.2233 | 35.83 | 20.82 |
-| `starcoder2` | `starcoder2-3b-4bit` | 8 | 6 | 0.1260 | 0.0484 | 0.0776 | 103.06 | 63.47 |
-| `openelm` | `openelm-270m-instruct` | 8 | 5 | 0.0524 | 0.0111 | 0.0413 | 193.49 | 152.62 |
-| `internlm2` | `internlm2.5-7b-chat-4bit` | 8 | 18 | 0.2242 | 0.0803 | 0.1439 | 55.58 | 35.68 |
-| `falcon_h1` | `falcon-h1-0.5b-instruct-4bit` | 8 | 19 | 0.0927 | 0.0433 | 0.0493 | 162.12 | 86.34 |
-| `qwen3_5` | `qwen3.5` | 8 | 18 | 0.2150 | 0.1009 | 0.1141 | 70.13 | 37.21 |
-| `olmo3` | `olmo3` | 8 | 85 | 0.4903 | 0.2194 | 0.2710 | 29.52 | 16.31 |
-| `apertus` | `apertus` | 8 | 76 | 0.5631 | 0.3188 | 0.2443 | 32.75 | 14.21 |
+| `qwen3` | `qwen3-0.6b-4bit` | 8 | 16 | 0.0685 | 0.0325 | 0.0361 | 221.79 | 116.72 |
+| `qwen3` | `qwen3-1.7b-4bit` | 8 | 16 | 0.1034 | 0.0392 | 0.0642 | 124.62 | 77.38 |
+| `qwen3` | `qwen3-4b-4bit` | 8 | 16 | 0.2015 | 0.0860 | 0.1155 | 69.26 | 39.71 |
+| `qwen3` | `qwen3-8b-4bit` | 8 | 17 | 0.2939 | 0.1118 | 0.1822 | 43.92 | 27.22 |
+| `qwen2` | `qwen2.5-1.5b-4bit` | 8 | 37 | 0.0903 | 0.0338 | 0.0566 | 141.46 | 88.58 |
+| `qwen2` | `qwen2.5-7b-4bit` | 8 | 37 | 0.2929 | 0.1255 | 0.1674 | 47.78 | 27.31 |
+| `qwen2` | `qwen1.5-0.5b-chat-4bit` | 8 | 23 | 0.0501 | 0.0174 | 0.0327 | 244.64 | 159.55 |
+| `llama` | `llama-3.2-1b-instruct-4bit` | 7 | 42 | 0.0741 | 0.0184 | 0.0557 | 125.69 | 94.51 |
+| `llama` | `llama-3.2-3b-instruct-4bit` | 8 | 45 | 0.1548 | 0.0532 | 0.1016 | 78.71 | 51.67 |
+| `llama` | `llama-3.1-8b-instruct-4bit` | 8 | 45 | 0.3024 | 0.1321 | 0.1702 | 47.00 | 26.46 |
+| `llama` | `llama-3-8b-instruct-4bit` | 8 | 18 | 0.2468 | 0.0987 | 0.1480 | 54.04 | 32.42 |
+| `mistral` | `mistral-7b-v0.3-4bit` | 8 | 10 | 0.2297 | 0.0855 | 0.1442 | 55.46 | 34.82 |
+| `mistral` | `mistral-7b-v0.2-4bit` | 8 | 13 | 0.2250 | 0.0784 | 0.1466 | 54.58 | 35.55 |
+| `mistral` | `mistral-nemo-2407-4bit` | 8 | 11 | 0.6345 | 0.4310 | 0.2035 | 39.31 | 12.61 |
+| `phi` | `phi-2-hf-4bit-mlx` | 8 | 5 | 0.0905 | 0.0287 | 0.0618 | 129.47 | 88.42 |
+| `phi3` | `phi-3.5-mini-instruct-4bit` | 8 | 8 | 0.1273 | 0.0383 | 0.0889 | 89.95 | 62.85 |
+| `phi3` | `phi-4-mini-instruct-4bit` | 8 | 12 | 0.1413 | 0.0563 | 0.0850 | 94.09 | 56.60 |
+| `gemma` | `gemma-2b-it-4bit` | 8 | 15 | 0.1410 | 0.0536 | 0.0874 | 91.54 | 56.72 |
+| `gemma2` | `gemma-2-2b-it-4bit` | 8 | 14 | 0.1241 | 0.0485 | 0.0756 | 105.83 | 64.47 |
+| `gemma2` | `gemma-2-9b-it-4bit` | 8 | 16 | 0.3128 | 0.1296 | 0.1832 | 43.66 | 25.57 |
+| `gemma3` | `gemma-3-1b-it-qat-4bit` | 8 | 16 | 0.2411 | 0.1950 | 0.0461 | 173.56 | 33.18 |
+| `gemma3` | `gemma-3-1b-it-4bit` | 8 | 18 | 0.2417 | 0.1951 | 0.0466 | 171.68 | 33.10 |
+| `gemma3n` | `gemma-3n-e2b-it-lm-4bit` | 8 | 17 | 0.3937 | 0.2884 | 0.1054 | 75.92 | 20.32 |
+| `gemma3n` | `gemma-3n-e4b-it-lm-4bit` | 8 | 17 | 0.4672 | 0.3218 | 0.1454 | 55.01 | 17.12 |
+| `gemma4` | `gemma-4-e2b-it-4bit` | 8 | 19 | 0.2098 | 0.1198 | 0.0899 | 88.95 | 38.14 |
+| `gemma4` | `gemma-4-e4b-it-4bit` | 8 | 21 | 0.2830 | 0.1491 | 0.1339 | 59.75 | 28.27 |
+| `granite` | `granite-3.3-2b-instruct-4bit` | 8 | 65 | 0.1471 | 0.0588 | 0.0883 | 90.59 | 54.39 |
+| `llama` | `smollm-135m-instruct-4bit` | 8 | 17 | 0.0451 | 0.0170 | 0.0281 | 284.96 | 177.31 |
+| `smollm3` | `smollm3-3b-4bit` | 8 | 252 | 0.4624 | 0.1821 | 0.2803 | 28.54 | 17.30 |
+| `lfm2` | `lfm2.5-1.2b-thinking-4bit` | 8 | 21 | 0.0736 | 0.0168 | 0.0568 | 140.77 | 108.68 |
+| `lfm2_moe` | `lfm2-moe` | 8 | 17 | 0.1602 | 0.0811 | 0.0791 | 101.12 | 49.93 |
+| `exaone4` | `exaone-4.0-1.2b-4bit` | 8 | 17 | 0.0942 | 0.0397 | 0.0545 | 146.83 | 84.94 |
+| `ernie4_5` | `ernie-4.5-0.3b-bf16` | 8 | 11 | 0.0581 | 0.0146 | 0.0435 | 184.06 | 137.80 |
+| `bitnet` | `bitnet-b1.58-2b-4t-4bit` | 8 | 10 | 0.1128 | 0.0360 | 0.0767 | 104.25 | 70.94 |
+| `baichuan_m1` | `baichuan-m1-14b-instruct-4bit` | 8 | 10 | 0.6670 | 0.3904 | 0.2766 | 28.92 | 11.99 |
+| `deepseek_v3` | `deepseek-r1-distill-qwen-7b-4bit` | 8 | 10 | 0.2144 | 0.0747 | 0.1396 | 57.29 | 37.32 |
+| `mimo` | `mimo-7b-rl-4bit` | 8 | 28 | 0.2936 | 0.1065 | 0.1870 | 42.78 | 27.25 |
+| `glm4` | `glm-4-9b-0414-4bit` | 8 | 13 | 0.2770 | 0.1044 | 0.1726 | 46.35 | 28.88 |
+| `acereason` | `acereason-nemotron-1.1-7b-4bit` | 8 | 33 | 0.4007 | 0.1778 | 0.2229 | 35.89 | 19.97 |
+| `starcoder2` | `starcoder2-3b-4bit` | 8 | 6 | 0.1241 | 0.0482 | 0.0759 | 105.44 | 64.46 |
+| `openelm` | `openelm-270m-instruct` | 8 | 5 | 0.0485 | 0.0108 | 0.0376 | 212.56 | 165.06 |
+| `internlm2` | `internlm2.5-7b-chat-4bit` | 8 | 18 | 0.2244 | 0.0832 | 0.1412 | 56.65 | 35.65 |
+| `falcon_h1` | `falcon-h1-0.5b-instruct-4bit` | 8 | 19 | 0.0940 | 0.0444 | 0.0496 | 161.33 | 85.10 |
+| `qwen3_5` | `qwen3.5` | 8 | 18 | 0.2110 | 0.0969 | 0.1140 | 70.15 | 37.92 |
+| `olmo3` | `olmo3` | 8 | 85 | 0.4929 | 0.2224 | 0.2705 | 29.57 | 16.23 |
+| `apertus` | `apertus` | 8 | 76 | 0.5580 | 0.3127 | 0.2453 | 32.61 | 14.34 |
 
 ## Skipped By Memory Gate
 
