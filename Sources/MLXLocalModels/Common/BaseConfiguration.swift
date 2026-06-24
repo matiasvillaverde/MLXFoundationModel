@@ -1,52 +1,50 @@
-// Copyright © 2025 Apple Inc.
-
 import Foundation
 import MLX
 
-/// Base ``LanguageModel`` configuration -- provides `modelType`
-/// and `quantization` (used in loading the model).
-///
-/// This is used by ``ModelFactory/load(hub:configuration:progressHandler:)``
-/// to determine the type of model to load.
+/// Minimal model metadata needed before the concrete architecture type is known.
 internal struct BaseConfiguration: Codable, Sendable {
     internal let modelType: String
     internal var eosTokenIds: IntOrIntArray?
+    internal var quantizationContainer: QuantizationContainer?
 
     internal struct Quantization: Codable, Sendable, Equatable {
-        internal init(groupSize: Int, bits: Int, quantizationMode: String? = nil) {
+        internal let groupSize: Int
+        internal let bits: Int
+        internal var quantMethod: String?
+        internal var linearClass: String?
+        internal var quantizationMode: String?
+
+        internal init(groupSize: Int, bits: Int) {
+            self.groupSize = groupSize
+            self.bits = bits
+        }
+
+        internal init(groupSize: Int, bits: Int, quantizationMode: String?) {
             self.groupSize = groupSize
             self.bits = bits
             self.quantizationMode = quantizationMode
         }
 
-        internal let groupSize: Int
-        internal let bits: Int
-        internal var quantMethod: String? = nil
-        internal var linearClass: String? = nil
-        internal var quantizationMode: String? = nil
-
         internal var mode: QuantizationMode {
-            if let quantizationMode, let mode = QuantizationMode(rawValue: quantizationMode) {
-                return mode
-            }
-            return .affine
+            quantizationMode.flatMap(QuantizationMode.init(rawValue:)) ?? .affine
         }
 
         internal var asTuple: (groupSize: Int, bits: Int, mode: QuantizationMode) {
             (groupSize, bits, mode)
         }
 
-        enum CodingKeys: String, CodingKey {
+        internal enum CodingKeys: String, CodingKey, CaseIterable {
             case groupSize = "group_size"
-            case bits = "bits"
+            case bits
             case quantMethod = "quant_method"
             case linearClass = "linear_class"
             case quantizationMode = "quantization_mode"
-            case mode = "mode"
+            case mode
         }
 
-        init(from decoder: any Decoder) throws {
+        internal init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
+
             groupSize = try container.decode(Int.self, forKey: .groupSize)
             bits = try container.decode(Int.self, forKey: .bits)
             quantMethod = try container.decodeIfPresent(String.self, forKey: .quantMethod)
@@ -56,8 +54,9 @@ internal struct BaseConfiguration: Codable, Sendable {
                 ?? container.decodeIfPresent(String.self, forKey: .mode)
         }
 
-        func encode(to encoder: any Encoder) throws {
+        internal func encode(to encoder: Encoder) throws {
             var container = encoder.container(keyedBy: CodingKeys.self)
+
             try container.encode(groupSize, forKey: .groupSize)
             try container.encode(bits, forKey: .bits)
             try container.encodeIfPresent(quantMethod, forKey: .quantMethod)
@@ -66,122 +65,100 @@ internal struct BaseConfiguration: Codable, Sendable {
         }
     }
 
-    /// handling instructions for ``PerLayerQuantization``
-    internal enum QuantizationOption: Sendable {
+    internal enum QuantizationOption: Sendable, Equatable {
         case skip
         case quantize(Quantization)
     }
 
-    /// Per-layer ``Quantization`` values with optional default.
-    internal struct PerLayerQuantization: Sendable {
-        internal var quantization: Quantization? = nil
+    internal struct PerLayerQuantization: Sendable, Equatable {
+        internal var quantization: Quantization?
         internal var perLayerQuantization: [String: QuantizationOption]
 
         internal init(
-            quantization: BaseConfiguration.Quantization? = nil,
-            perLayerQuantization: [String: BaseConfiguration.QuantizationOption]
+            quantization: Quantization?,
+            perLayerQuantization: [String: QuantizationOption]
         ) {
             self.quantization = quantization
             self.perLayerQuantization = perLayerQuantization
         }
 
-        /// The quantization to apply for the given layer name or nil for no quantization.
         internal func quantization(layer: String) -> Quantization? {
-            if let perLayer = perLayerQuantization[layer] {
-                switch perLayer {
-                case .skip:
-                    return nil
-                case .quantize(let quantization):
-                    return quantization
-                }
-            } else {
+            guard let override = perLayerQuantization[layer] else {
+                return quantization
+            }
+
+            switch override {
+            case .skip:
+                return nil
+            case .quantize(let quantization):
                 return quantization
             }
         }
     }
 
-    /// Special codable to support a mixed key: Int / key: Quantization
-    /// structure for hereogenous quantization, e.g.
-    ///
-    /// ```
-    /// "quantization": {
-    ///     "group_size": 64,
-    ///     "bits": 4,
-    ///     "model.embed_tokens": {
-    ///         "group_size": 32,
-    ///         "bits": 4
-    ///     },
-    ///     "model.layers.0.self_attn.q_norm": false,
-    /// ```
-    ///
-    /// This mixed type structure requires manual decoding.
-    struct QuantizationContainer: Codable, Sendable {
-        var quantization: Quantization
-        var perLayerQuantization: PerLayerQuantization
+    internal struct QuantizationContainer: Codable, Sendable, Equatable {
+        internal var quantization: Quantization
+        internal var perLayerQuantization: PerLayerQuantization
 
-        // based on Dictionary's coding key
-        internal struct _DictionaryCodingKey: CodingKey {
-            internal let stringValue: String
-            internal let intValue: Int?
-
-            internal init(stringValue: String) {
-                self.stringValue = stringValue
-                self.intValue = Int(stringValue)
-            }
-
-            internal init(intValue: Int) {
-                self.stringValue = "\(intValue)"
-                self.intValue = intValue
-            }
+        internal init(from decoder: Decoder) throws {
+            quantization = try Quantization(from: decoder)
+            perLayerQuantization = try Self.decodePerLayerQuantization(
+                from: decoder,
+                defaultQuantization: quantization
+            )
         }
 
-        init(from decoder: any Decoder) throws {
-            // handle the embedded Quantization
-            self.quantization = try Quantization(from: decoder)
+        internal func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: DynamicCodingKey.self)
 
-            // and the interleaved per-layer values
-            var perLayerQuantization = [String: QuantizationOption]()
-            let container = try decoder.container(keyedBy: _DictionaryCodingKey.self)
-            for key in container.allKeys {
-                switch key.stringValue {
-                case Quantization.CodingKeys.groupSize.rawValue: continue
-                case Quantization.CodingKeys.bits.rawValue: continue
-                case Quantization.CodingKeys.quantMethod.rawValue: continue
-                case Quantization.CodingKeys.linearClass.rawValue: continue
-                case Quantization.CodingKeys.quantizationMode.rawValue: continue
-                case Quantization.CodingKeys.mode.rawValue: continue
+            try container.encode(quantization.groupSize, forKey: .key("group_size"))
+            try container.encode(quantization.bits, forKey: .key("bits"))
+            try container.encodeIfPresent(quantization.quantMethod, forKey: .key("quant_method"))
+            try container.encodeIfPresent(quantization.linearClass, forKey: .key("linear_class"))
+            try container.encodeIfPresent(
+                quantization.quantizationMode,
+                forKey: .key("quantization_mode")
+            )
 
-                default:
-                    if let f = try? container.decode(Bool.self, forKey: key) {
-                        if !f {
-                            perLayerQuantization[key.stringValue] = .skip
-                        }
-                    } else {
-                        perLayerQuantization[key.stringValue] = .quantize(
-                            try container.decode(Quantization.self, forKey: key))
-                    }
-                }
-            }
-            self.perLayerQuantization = PerLayerQuantization(
-                quantization: quantization, perLayerQuantization: perLayerQuantization)
-        }
-
-        func encode(to encoder: any Encoder) throws {
-            try quantization.encode(to: encoder)
-
-            var container = encoder.container(keyedBy: _DictionaryCodingKey.self)
-            for (key, value) in perLayerQuantization.perLayerQuantization {
-                switch value {
+            for (layer, option) in perLayerQuantization.perLayerQuantization {
+                switch option {
                 case .skip:
-                    try container.encode(false, forKey: .init(stringValue: key))
-                case .quantize(let q):
-                    try container.encode(q, forKey: .init(stringValue: key))
+                    try container.encode(false, forKey: .key(layer))
+                case .quantize(let quantization):
+                    try container.encode(quantization, forKey: .key(layer))
                 }
             }
         }
-    }
 
-    var quantizationContainer: QuantizationContainer?
+        private static func decodePerLayerQuantization(
+            from decoder: Decoder,
+            defaultQuantization: Quantization
+        ) throws -> PerLayerQuantization {
+            let container = try decoder.container(keyedBy: DynamicCodingKey.self)
+            var overrides = [String: QuantizationOption]()
+
+            for key in container.allKeys where !Self.reservedQuantizationKeys.contains(key.stringValue) {
+                if let bool = try? container.decode(Bool.self, forKey: key) {
+                    if bool == false {
+                        overrides[key.stringValue] = .skip
+                    }
+                } else {
+                    overrides[key.stringValue] = .quantize(
+                        try container.decode(Quantization.self, forKey: key)
+                    )
+                }
+            }
+
+            return PerLayerQuantization(
+                quantization: defaultQuantization,
+                perLayerQuantization: overrides
+            )
+        }
+
+        private static let reservedQuantizationKeys = Set(
+            Quantization.CodingKeys.allCases.map(\.rawValue)
+        )
+    }
 
     @available(*, deprecated, message: "Please use perLayerQuantization instead")
     internal var quantization: Quantization? {
@@ -192,9 +169,28 @@ internal struct BaseConfiguration: Codable, Sendable {
         quantizationContainer?.perLayerQuantization
     }
 
-    enum CodingKeys: String, CodingKey {
+    internal enum CodingKeys: String, CodingKey {
         case modelType = "model_type"
         case eosTokenIds = "eos_token_id"
         case quantizationContainer = "quantization"
+    }
+}
+
+private struct DynamicCodingKey: CodingKey {
+    let stringValue: String
+    let intValue: Int?
+
+    init(stringValue: String) {
+        self.stringValue = stringValue
+        self.intValue = Int(stringValue)
+    }
+
+    init(intValue: Int) {
+        self.stringValue = String(intValue)
+        self.intValue = intValue
+    }
+
+    static func key(_ value: String) -> Self {
+        Self(stringValue: value)
     }
 }
