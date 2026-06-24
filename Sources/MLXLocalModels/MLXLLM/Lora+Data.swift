@@ -1,67 +1,76 @@
-// Copyright © 2024 Apple Inc.
-
 import Foundation
 
-enum LoRADataError: LocalizedError {
-    case fileNotFound(URL, String)
+internal enum LoRADataError: LocalizedError, Equatable {
+    case fileNotFound(directory: URL, name: String)
+    case unsupportedFileExtension(URL)
 
-    var errorDescription: String? {
+    internal var errorDescription: String? {
         switch self {
         case .fileNotFound(let directory, let name):
-            return String(
-                localized: "Could not find data file '\(name)' in directory '\(directory.path())'.")
+            "Could not find LoRA data file '\(name)' in '\(directory.path())'."
+        case .unsupportedFileExtension(let url):
+            "Unsupported LoRA data file extension: '\(url.pathExtension)'."
         }
     }
 }
 
-/// Load a LoRA data file.
-///
-/// Given a directory and a base name, e.g. `train`, this will load a `.jsonl` or `.txt` file
-/// if possible.
+internal enum LoRADataFormat: String, CaseIterable, Sendable {
+    case jsonLines = "jsonl"
+    case text = "txt"
+
+    internal init?(url: URL) {
+        self.init(rawValue: url.pathExtension.lowercased())
+    }
+}
+
 internal func loadLoRAData(directory: URL, name: String) throws -> [String] {
-    let extensions = ["jsonl", "txt"]
-
-    for ext in extensions {
-        let url = directory.appending(component: "\(name).\(ext)")
-        if FileManager.default.fileExists(atPath: url.path()) {
-            return try loadLoRAData(url: url)
+    for format in LoRADataFormat.allCases {
+        let candidateURL = directory.appending(component: "\(name).\(format.rawValue)")
+        guard FileManager.default.fileExists(atPath: candidateURL.path()) else {
+            continue
         }
+        return try loadLoRAData(url: candidateURL)
     }
 
-    throw LoRADataError.fileNotFound(directory, name)
+    throw LoRADataError.fileNotFound(directory: directory, name: name)
 }
 
-/// Load a .txt or .jsonl file and return the contents
 internal func loadLoRAData(url: URL) throws -> [String] {
-    switch url.pathExtension {
-    case "jsonl":
+    guard let format = LoRADataFormat(url: url) else {
+        throw LoRADataError.unsupportedFileExtension(url)
+    }
+
+    switch format {
+    case .jsonLines:
         return try loadJSONL(url: url)
-
-    case "txt":
+    case .text:
         return try loadLines(url: url)
-
-    default:
-        fatalError("Unable to load data file, unknown type: \(url)")
     }
 }
 
-func loadJSONL(url: URL) throws -> [String] {
-    struct Line: Codable {
+internal func loadJSONL(url: URL) throws -> [String] {
+    struct Record: Decodable {
         let text: String?
     }
 
-    return try String(contentsOf: url, encoding: .utf8)
-        .components(separatedBy: .newlines)
-        .filter {
-            $0.first == "{"
+    let decoder = JSONDecoder()
+    let lines = try loadRawLines(url: url)
+
+    return try lines.compactMap { line in
+        let trimmedLine = line.trimmingCharacters(in: .whitespaces)
+        guard trimmedLine.first == "{" else {
+            return nil
         }
-        .compactMap {
-            try JSONDecoder().decode(Line.self, from: $0.data(using: .utf8)!).text
-        }
+
+        return try decoder.decode(Record.self, from: Data(trimmedLine.utf8)).text
+    }
 }
 
-func loadLines(url: URL) throws -> [String] {
+internal func loadLines(url: URL) throws -> [String] {
+    try loadRawLines(url: url).filter { !$0.isEmpty }
+}
+
+private func loadRawLines(url: URL) throws -> [String] {
     try String(contentsOf: url, encoding: .utf8)
         .components(separatedBy: .newlines)
-        .filter { !$0.isEmpty }
 }
