@@ -1,27 +1,64 @@
 # MLXFoundationModel
 
-Run local MLX models from Swift with Apple's Foundation Models interface.
+Apple interfaces for local MLX models.
 
-This package adapts open-source MLX language models to
-`LanguageModelSession`. Models run locally on Apple silicon.
+`MLXFoundationModel` runs open-source MLX language models from Swift and maps
+them to the interfaces Apple apps expect: streaming text, tool calls, structured
+output, and `LanguageModelSession` when the Foundation Models provider API is
+available.
 
-> Alpha. The Foundation Models provider path requires Xcode 27 and an OS 27 SDK.
-> The direct MLX runtime, tests, and playground also build on current SDKs.
+Models stay local. Tests run against real weights. The goal is broad MLX model
+coverage behind Apple-native APIs.
 
-## Requirements
+> Alpha. Direct MLX generation works on current SDKs. The
+> `LanguageModelSession(model:)` provider path requires Xcode 27 and an OS 27
+> SDK.
 
-- Apple Silicon Mac for real MLX inference.
-- Swift 6.
-- Xcode 27 beta and an OS 27 SDK for `LanguageModelSession(model:)`.
+## Try It
 
-## Products
+```sh
+make demo
+```
 
-- `MLXFoundationModel`: Foundation Models bridge.
-- `MLXLocalModels`: direct MLX generation.
-- `MLXFoundationModelExamples`: shared example requests.
-- `FoundationModelsPlayground`: runnable examples.
+This downloads Qwen3 0.6B 4-bit into ignored `.models/` and runs the playground.
 
-## Usage
+Useful variants:
+
+```sh
+make demo DEMO_EXAMPLE=apple-finite-choice-guided-generation
+swift run FoundationModelsPlayground --list-examples
+```
+
+## Test
+
+```sh
+make test
+```
+
+Real-model checks are opt-in:
+
+```sh
+make test-demo-model          # downloads and tests one small model
+make download-main-models
+make test-main-architectures  # serialized across representative models
+```
+
+Use `MLX_TEST_MODELS_DIR=/path/to/models` to reuse shared model storage.
+
+## Add The Package
+
+```swift
+.package(
+    url: "https://github.com/matiasvillaverde/MLXFoundationModel.git",
+    branch: "main"
+)
+```
+
+```swift
+.product(name: "MLXFoundationModel", package: "MLXFoundationModel")
+```
+
+## Use The Apple Interface
 
 ```swift
 import Foundation
@@ -29,8 +66,8 @@ import FoundationModels
 import MLXFoundationModel
 
 let model = try MLXLanguageModel(
-    id: "mlx-community/Qwen3-4B-4bit",
-    location: URL(fileURLWithPath: "/path/to/downloaded/model")
+    id: "qwen3-0.6b-4bit",
+    location: URL(fileURLWithPath: ".models/Qwen3-0.6B-4bit")
 )
 
 let session = LanguageModelSession(model: model)
@@ -38,74 +75,46 @@ let response = try await session.respond(to: "Write one sentence about local AI.
 print(response.content)
 ```
 
-Build the provider path:
+Build that path with:
 
 ```sh
 swift build -Xswiftc -DFOUNDATION_MODELS_PROVIDER_API
-```
-
-Run the provider contract tests:
-
-```sh
 make test-provider
 ```
 
-## Playground
+## What It Covers
 
-Download the small test model:
-
-```sh
-MLX_ASSUME_YES=1 MLX_MODEL_FILTER=smoke make download-test-models
-```
-
-Run the examples:
-
-```sh
-MLX_FOUNDATION_MODEL_PATH=.models/Qwen3-0.6B-4bit \
-MLX_FOUNDATION_MODEL_ID=qwen3-0.6b-4bit \
-swift run FoundationModelsPlayground
-```
-
-Run one:
-
-```sh
-MLX_FOUNDATION_MODEL_PATH=.models/Qwen3-0.6B-4bit \
-MLX_FOUNDATION_MODEL_ID=qwen3-0.6b-4bit \
-swift run FoundationModelsPlayground --example apple-finite-choice-guided-generation
-```
-
-Example output:
-
-```text
-=== Apple finite-choice guided generation ===
-apple
-tokens prompt=31 generated=1 total=32
-```
-
-## Features
-
-- Local text generation with MLX models.
-- Streaming responses.
-- Tool definitions and tool-call parsing.
-- Structured output with token-level constrained decoding.
+- MLX-backed text generation on Apple silicon.
+- Apple-style request rendering.
+- Streaming response translation.
+- Tool-call parsing and schema normalization.
 - JSON Schema, JSON, EBNF, regex, and finite-choice constraints.
-- Provider compatibility tests behind `FOUNDATION_MODELS_PROVIDER_API`.
+- Prompt caching, memory guards, model pooling, and real-model benchmarks.
+- Central metrics, logs, and Instruments signposts.
 
-## Development
+## Project Shape
+
+- `Sources/MLXFoundationModel`: public Apple-facing bridge.
+- `Sources/MLXLocalModels`: MLX runtime, model registry, generation, caching.
+- `Examples/FoundationModelsPlayground`: runnable examples.
+- `Tests/MLXFoundationModelTests`: unit tests without real weights.
+- `Tests/MLXRealModelTests`: opt-in tests with downloaded models.
+- `docs/observability-usage.md`: metrics and logging.
+- `docs/apple-profiling.md`: Instruments workflows.
+
+## Commands
 
 ```sh
-make lint
+make help
 make build
 make test
-make test-provider
+make demo
+make test-demo-model
+make quality
 ```
 
-Real-model tests are opt-in and run serially because MLX uses the GPU:
+Model downloads are ignored by git. The default location is `.models/`.
 
-```sh
-MLX_ASSUME_YES=1 MLX_MODEL_FILTER=smoke make download-test-models
-make test-real-models
-```
+## License
 
-Models download into ignored `.models/` by default. Set `MLX_TEST_MODELS_DIR`
-to reuse an existing model directory.
+MIT. See `NOTICE.md` for third-party attribution.

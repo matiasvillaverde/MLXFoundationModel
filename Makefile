@@ -10,6 +10,8 @@ PROVIDER_TEST_FILTER ?= MLXSessionCompatibilityTests|MLXSessionProviderContractT
 PROVIDER_REAL_MODEL_TEST_FILTER ?= MLXRealModelFoundationModelsProviderTests
 PROVIDER_REAL_MODEL_ID ?= qwen3-0.6b-4bit
 MLX_REAL_MODEL_SCOPE ?= smoke
+DEMO_MODEL_ID ?= qwen3-0.6b-4bit
+DEMO_EXAMPLE ?= streaming-chat
 
 GREEN = \033[0;32m
 YELLOW = \033[0;33m
@@ -23,6 +25,10 @@ build: ## Build the package
 	@echo "$(BLUE)Building MLXFoundationModel ($(CONFIGURATION))...$(NC)"
 	@swift build $(SWIFT_BUILD_FLAGS)
 	@echo "$(GREEN)Build complete$(NC)"
+
+demo: ## Download a small model and run the playground
+	@MLX_ASSUME_YES=1 MLX_DEMO_MODEL_ID=$(DEMO_MODEL_ID) MLX_DEMO_EXAMPLE=$(DEMO_EXAMPLE) \
+		bash scripts/run-demo.sh
 
 build-ci: lint ## Build with warnings as errors
 	@echo "$(BLUE)Building MLXFoundationModel with strict warnings...$(NC)"
@@ -53,6 +59,9 @@ test-real-models: ## Run opt-in real-model smoke tests against downloaded weight
 		bash scripts/test-real-models-by-id.sh
 	@echo "$(GREEN)Real-model tests passed$(NC)"
 
+test-demo-model: download-demo-model ## Download and test the default demo model
+	@MLX_REAL_MODEL_IDS=$(DEMO_MODEL_ID) $(MAKE) test-real-models MLX_REAL_MODEL_SCOPE=downloaded
+
 test-all-architectures: ## Run opt-in real-model tests for all downloadable catalog entries
 	@$(MAKE) test-real-models MLX_REAL_MODEL_SCOPE=all
 
@@ -66,6 +75,9 @@ profile-real-model: ## Profile the release playground with Instruments/xctrace
 	@bash scripts/profile-real-model.sh
 
 test-acceptance: test-real-models ## Alias for opt-in real-model acceptance
+
+download-demo-model: ## Download the default small demo model
+	@MLX_ASSUME_YES=1 MLX_MODEL_FILTER=$(DEMO_MODEL_ID) bash scripts/download-test-models.sh
 
 download-test-models: ## Download test models into ignored .models/
 	@bash scripts/download-test-models.sh
@@ -113,4 +125,4 @@ clean: ## Clean build artifacts
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
-		awk 'BEGIN {FS = ":.*?## "}; {printf "%-18s %s\n", $$1, $$2}'
+		awk 'BEGIN {FS = ":.*?## "}; {printf "%-26s %s\n", $$1, $$2}'

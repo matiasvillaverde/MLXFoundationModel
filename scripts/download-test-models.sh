@@ -10,6 +10,7 @@ DOWNLOADER="${MLX_MODEL_DOWNLOADER:-auto}"
 HF_MAX_WORKERS="${MLX_HF_MAX_WORKERS:-4}"
 ALLOW_OVERSIZED_MODELS="${MLX_ALLOW_OVERSIZED_MODELS:-0}"
 DOWNLOAD_TIMEOUT_SECONDS="${MLX_MODEL_DOWNLOAD_TIMEOUT_SECONDS:-1800}"
+MODEL_STORAGE_TIMEOUT_SECONDS="${MLX_MODEL_STORAGE_TIMEOUT_SECONDS:-10}"
 
 if ! command -v python3 >/dev/null 2>&1; then
   echo "python3 is required"
@@ -107,10 +108,50 @@ download_with_git_lfs() {
 is_complete_model_download() {
   local target="$1"
 
-  [[ -f "$target/config.json" ]] &&
-    [[ -f "$target/tokenizer.json" || -f "$target/tokenizer.model" ]] &&
-    find "$target" -maxdepth 1 \( -name '*.safetensors' -o -name 'model.safetensors.index.json' \) \
-      -type f -print -quit | grep -q .
+  python3 - "$target" "$MODEL_STORAGE_TIMEOUT_SECONDS" <<'PY'
+import os
+import signal
+import sys
+
+target = sys.argv[1]
+timeout_seconds = int(sys.argv[2])
+
+
+def timeout_handler(_signum, _frame):
+    raise TimeoutError
+
+
+signal.signal(signal.SIGALRM, timeout_handler)
+signal.alarm(timeout_seconds)
+
+try:
+    if not os.path.isdir(target):
+        sys.exit(1)
+
+    names = set(os.listdir(target))
+    has_config = "config.json" in names
+    has_tokenizer = "tokenizer.json" in names or "tokenizer.model" in names
+    has_weights = (
+        "model.safetensors.index.json" in names
+        or any(name.endswith(".safetensors") for name in names)
+    )
+    sys.exit(0 if has_config and has_tokenizer and has_weights else 1)
+except TimeoutError:
+    print(
+        f"Model path did not respond within {timeout_seconds}s: {target}",
+        file=sys.stderr,
+    )
+    print(
+        "Check the model volume or set MLX_TEST_MODELS_DIR to a responsive model root.",
+        file=sys.stderr,
+    )
+    sys.exit(124)
+except OSError as error:
+    print(f"Cannot inspect model path {target}: {error}", file=sys.stderr)
+    sys.exit(1)
+finally:
+    signal.alarm(0)
+PY
 }
 
 download_model() {
@@ -180,6 +221,7 @@ echo "Downloader: $DOWNLOADER"
 echo "Host RAM: ${HOST_MEMORY_GB} GiB"
 echo "Free disk: ${AVAILABLE_DISK_GB} GiB"
 echo "Download timeout: ${DOWNLOAD_TIMEOUT_SECONDS}s"
+echo "Storage timeout: ${MODEL_STORAGE_TIMEOUT_SECONDS}s"
 if [[ -n "$FILTER" ]]; then
   echo "Filter:  $FILTER"
 fi
@@ -270,6 +312,9 @@ for MODEL in "${MODELS[@]}"; do
 
   if is_complete_model_download "$TARGET"; then
     echo "Already downloaded."
+    continue
+  elif [[ "$?" -eq 124 ]]; then
+    FAILED=1
     continue
   fi
 

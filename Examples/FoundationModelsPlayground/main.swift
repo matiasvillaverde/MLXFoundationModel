@@ -10,7 +10,20 @@ import FoundationModels
 @main
 enum FoundationModelsPlayground {
     static func main() async throws {
+        let arguments = Array(CommandLine.arguments.dropFirst())
+        if arguments.contains("--help") || arguments.contains("-h") {
+            printHelp()
+            return
+        }
+        if arguments.contains("--list-examples") {
+            printExamples()
+            return
+        }
+
         let configuration = try PlaygroundConfiguration.parse()
+        guard !configuration.selectedExamples.isEmpty else {
+            throw PlaygroundConfigurationError.unknownExample(configuration.exampleID ?? "")
+        }
 
         #if FOUNDATION_MODELS_PROVIDER_API && canImport(FoundationModels)
         if #available(macOS 27.0, iOS 27.0, visionOS 27.0, *) {
@@ -20,6 +33,33 @@ enum FoundationModelsPlayground {
         #endif
 
         try await DirectMLXPlayground(configuration: configuration).run()
+    }
+
+    private static func printHelp() {
+        print([
+            "FoundationModelsPlayground",
+            "",
+            "Run Apple-style requests against a local MLX model.",
+            "",
+            "Usage:",
+            "  swift run FoundationModelsPlayground \\",
+            "    --model-path .models/Qwen3-0.6B-4bit \\",
+            "    --model-id qwen3-0.6b-4bit",
+            "  swift run FoundationModelsPlayground --list-examples",
+            "",
+            "Options:",
+            "  --model-path PATH      Downloaded MLX model directory.",
+            "  --model-id ID          Catalog or display identifier.",
+            "  --example ID           Run one example.",
+            "  --prompt TEXT          Run a benchmark prompt.",
+            "  --max-tokens N         Benchmark token cap."
+        ].joined(separator: "\n"))
+    }
+
+    private static func printExamples() {
+        for example in FoundationModelPlaygroundExamples.all {
+            print("\(example.id)\t\(example.title)")
+        }
     }
 }
 
@@ -42,8 +82,9 @@ struct PlaygroundConfiguration: Sendable {
             throw PlaygroundConfigurationError.missingModelPath
         }
 
+        let expandedModelPath = expandingTilde(in: modelPath)
         return Self(
-            modelURL: URL(fileURLWithPath: NSString(string: modelPath).expandingTildeInPath),
+            modelURL: URL(fileURLWithPath: expandedModelPath),
             modelID: value(for: "--model-id", in: arguments)
                 ?? environment["MLX_FOUNDATION_MODEL_ID"]
                 ?? "local-mlx-model",
@@ -113,18 +154,31 @@ struct PlaygroundConfiguration: Sendable {
         }
         return parsed
     }
+
+    private static func expandingTilde(in path: String) -> String {
+        if path == "~" {
+            return NSHomeDirectory()
+        }
+        guard path.hasPrefix("~/") else {
+            return path
+        }
+        return NSHomeDirectory() + String(path.dropFirst())
+    }
 }
 
 enum PlaygroundConfigurationError: Error, LocalizedError {
     case missingModelPath
 
+    case unknownExample(String)
+
     var errorDescription: String? {
         switch self {
         case .missingModelPath:
-            """
-            Missing model path. Pass --model-path /path/to/model or set MLX_FOUNDATION_MODEL_PATH.
-            Download test models with: MLX_ASSUME_YES=1 MLX_MODEL_FILTER=smoke make download-test-models
-            """
+            "Missing model path. Pass --model-path or set MLX_FOUNDATION_MODEL_PATH. "
+                + "Try the default model with: make demo"
+
+        case .unknownExample(let exampleID):
+            "Unknown playground example: \(exampleID). List examples with --list-examples."
         }
     }
 }
@@ -195,8 +249,11 @@ struct DirectMLXPlayground {
             return "usage unavailable"
         }
         let promptTokens = usage.promptTokens.map(String.init) ?? "unknown"
+        let tokenSummary = "tokens prompt=\(promptTokens) "
+            + "generated=\(usage.generatedTokens) "
+            + "total=\(usage.totalTokens)"
         var fields = [
-            "tokens prompt=\(promptTokens) generated=\(usage.generatedTokens) total=\(usage.totalTokens)"
+            tokenSummary
         ]
 
         if let timing = metrics?.timing {
@@ -222,7 +279,9 @@ struct DirectMLXPlayground {
         Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18
     }
 
-    private static func modelPromptStyle(for configuration: PlaygroundConfiguration) -> MLXPromptStyle {
+    private static func modelPromptStyle(
+        for configuration: PlaygroundConfiguration
+    ) -> MLXPromptStyle {
         (try? MLXModelProfile.load(
             from: configuration.modelURL,
             id: configuration.modelID
@@ -341,7 +400,9 @@ struct FoundationModelsSessionPlayground {
         """
     }
 
-    private static func modelPromptStyle(for configuration: PlaygroundConfiguration) -> MLXPromptStyle {
+    private static func modelPromptStyle(
+        for configuration: PlaygroundConfiguration
+    ) -> MLXPromptStyle {
         (try? MLXModelProfile.load(
             from: configuration.modelURL,
             id: configuration.modelID
