@@ -1,61 +1,107 @@
-// Copyright © 2024 Apple Inc.
-
-import Foundation
 import MLX
-
+import MLXFast
 import MLXNN
 
-// https://github.com/ml-explore/mlx-examples/blob/main/llms/mlx_lm/models/phi.py
+internal struct PhiAttentionLayout: Equatable, Sendable {
+    internal let hiddenSize: Int
+    internal let queryHeads: Int
+    internal let keyValueHeads: Int
+    internal let headSize: Int
+    internal let queryProjectionSize: Int
+    internal let keyValueProjectionSize: Int
+    internal let rotaryDimensions: Int
+    internal let attentionScale: Float
 
-private class PhiAttention: Module {
-    let args: PhiConfiguration
-    let heads: Int
-    let headDim: Int
+    internal init(_ config: PhiConfiguration) {
+        precondition(config.hiddenSize > 0, "hidden_size must be positive")
+        precondition(config.attentionHeads > 0, "num_attention_heads must be positive")
+        precondition(config.kvHeads > 0, "num_key_value_heads must be positive")
+        precondition(
+            config.hiddenSize.isMultiple(of: config.attentionHeads),
+            "hidden_size must be divisible by num_attention_heads"
+        )
+        precondition(
+            config.attentionHeads.isMultiple(of: config.kvHeads),
+            "num_attention_heads must be divisible by num_key_value_heads"
+        )
+        precondition(config.partialRotaryFactor >= 0, "partial_rotary_factor cannot be negative")
 
-    @ModuleInfo(key: "q_proj") var wq: Linear
-    @ModuleInfo(key: "k_proj") var wk: Linear
-    @ModuleInfo(key: "v_proj") var wv: Linear
-    @ModuleInfo(key: "dense") var dense: Linear
+        self.hiddenSize = config.hiddenSize
+        self.queryHeads = config.attentionHeads
+        self.keyValueHeads = config.kvHeads
+        self.headSize = config.hiddenSize / config.attentionHeads
+        self.queryProjectionSize = queryHeads * headSize
+        self.keyValueProjectionSize = keyValueHeads * headSize
+        self.rotaryDimensions = min(
+            headSize,
+            Int(Float(headSize) * config.partialRotaryFactor)
+        )
+        self.attentionScale = 1 / Float(headSize).squareRoot()
+    }
+}
 
-    let rope: RoPE
+private final class PhiSelfAttention: Module {
+    private let layout: PhiAttentionLayout
 
-    init(_ args: PhiConfiguration) {
-        self.args = args
+    @ModuleInfo(key: "q_proj") private var queryProjection: Linear
+    @ModuleInfo(key: "k_proj") private var keyProjection: Linear
+    @ModuleInfo(key: "v_proj") private var valueProjection: Linear
+    @ModuleInfo(key: "dense") private var outputProjection: Linear
 
-        let hiddenSize = args.hiddenSize
-        self.heads = args.attentionHeads
-        self.headDim = args.hiddenSize / heads
-        let kvHeads = args.kvHeads
+    private let rope: RoPE
 
-        if headDim * heads != hiddenSize {
-            fatalError("hidden_size must be divisible by num_heads")
-        }
-
-        self._wq.wrappedValue = Linear(hiddenSize, heads * headDim, bias: true)
-        self._wk.wrappedValue = Linear(hiddenSize, kvHeads * headDim, bias: true)
-        self._wv.wrappedValue = Linear(hiddenSize, kvHeads * headDim, bias: true)
-        self._dense.wrappedValue = Linear(heads * headDim, hiddenSize, bias: true)
-
+    init(_ config: PhiConfiguration) {
+        let layout = PhiAttentionLayout(config)
+        self.layout = layout
+        self._queryProjection.wrappedValue = Linear(
+            layout.hiddenSize,
+            layout.queryProjectionSize,
+            bias: true
+        )
+        self._keyProjection.wrappedValue = Linear(
+            layout.hiddenSize,
+            layout.keyValueProjectionSize,
+            bias: true
+        )
+        self._valueProjection.wrappedValue = Linear(
+            layout.hiddenSize,
+            layout.keyValueProjectionSize,
+            bias: true
+        )
+        self._outputProjection.wrappedValue = Linear(
+            layout.queryProjectionSize,
+            layout.hiddenSize,
+            bias: true
+        )
         self.rope = RoPE(
-            dimensions: Int(args.partialRotaryFactor * Float(headDim)), traditional: false,
-            base: args.ropeTheta)
+            dimensions: layout.rotaryDimensions,
+            traditional: false,
+            base: config.ropeTheta
+        )
     }
 
     func callAsFunction(
-        _ x: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode, cache: KVCache?
+        _ hiddenStates: MLXArray,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode,
+        cache: KVCache?
     ) -> MLXArray {
-        let (B, L) = (x.dim(0), x.dim(1))
+        let batchSize = hiddenStates.dim(0)
+        let tokenCount = hiddenStates.dim(1)
 
-        var queries = wq(x)
-        var keys = wk(x)
-        var values = wv(x)
+        var queries = queryProjection(hiddenStates)
+        var keys = keyProjection(hiddenStates)
+        var values = valueProjection(hiddenStates)
 
-        // prepare the queries, keys and values for the attention computation
-        queries = queries.reshaped(B, L, heads, headDim).transposed(0, 2, 1, 3)
-        keys = keys.reshaped(B, L, args.kvHeads, headDim).transposed(0, 2, 1, 3)
-        values = values.reshaped(B, L, args.kvHeads, headDim).transposed(0, 2, 1, 3)
+        queries = queries
+            .reshaped(batchSize, tokenCount, layout.queryHeads, layout.headSize)
+            .transposed(0, 2, 1, 3)
+        keys = keys
+            .reshaped(batchSize, tokenCount, layout.keyValueHeads, layout.headSize)
+            .transposed(0, 2, 1, 3)
+        values = values
+            .reshaped(batchSize, tokenCount, layout.keyValueHeads, layout.headSize)
+            .transposed(0, 2, 1, 3)
 
-        // Add RoPE to the queries and keys and combine them with the cache
         if let cache {
             queries = rope(queries, offset: cache.offset)
             keys = rope(keys, offset: cache.offset)
@@ -64,127 +110,165 @@ private class PhiAttention: Module {
             keys = rope(keys)
         }
 
-        // Finally perform the attention computation
-        let scale = sqrt(1 / Float(queries.dim(-1)))
-        let output = attentionWithCacheUpdate(
+        let attentionOutput = attentionWithCacheUpdate(
             queries: queries.asType(.float32),
             keys: keys,
             values: values,
             cache: cache,
-            scale: scale,
+            scale: layout.attentionScale,
             mask: mask
         )
         .asType(values.dtype)
         .transposed(0, 2, 1, 3)
-        .reshaped(B, L, -1)
+        .reshaped(batchSize, tokenCount, -1)
 
-        return dense(output)
+        return outputProjection(attentionOutput)
     }
 }
 
-private class PhiMLP: Module, UnaryLayer {
-    @ModuleInfo var fc1: Linear
-    @ModuleInfo var fc2: Linear
-    @ModuleInfo var act: GELU
+private final class PhiFeedForward: Module, UnaryLayer {
+    @ModuleInfo(key: "fc1") private var upProjection: Linear
+    @ModuleInfo(key: "fc2") private var downProjection: Linear
+
+    private let activation = GELU(approximation: .precise)
 
     init(_ config: PhiConfiguration) {
-        self.fc1 = Linear(config.hiddenSize, config.intermediateSize)
-        self.fc2 = Linear(config.intermediateSize, config.hiddenSize)
-        self.act = GELU(approximation: .precise)
+        self._upProjection.wrappedValue = Linear(config.hiddenSize, config.intermediateSize)
+        self._downProjection.wrappedValue = Linear(config.intermediateSize, config.hiddenSize)
     }
 
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
-        fc2(act(fc1(x)))
+    func callAsFunction(_ hiddenStates: MLXArray) -> MLXArray {
+        downProjection(activation(upProjection(hiddenStates)))
     }
 }
 
-private class PhiDecoderLayer: Module {
-    @ModuleInfo(key: "self_attn") var selfAttention: PhiAttention
-    @ModuleInfo(key: "input_layernorm") var inputLayerNorm: LayerNorm
-    var mlp: PhiMLP
+private final class PhiTransformerBlock: Module {
+    @ModuleInfo(key: "self_attn") var selfAttention: PhiSelfAttention
+    @ModuleInfo(key: "input_layernorm") private var inputLayerNorm: LayerNorm
+    @ModuleInfo(key: "mlp") private var feedForward: PhiFeedForward
 
     init(_ config: PhiConfiguration) {
-        self._selfAttention.wrappedValue = PhiAttention(config)
+        self._selfAttention.wrappedValue = PhiSelfAttention(config)
         self._inputLayerNorm.wrappedValue = LayerNorm(
-            dimensions: config.hiddenSize, eps: config.layerNormEps)
-        self.mlp = PhiMLP(config)
+            dimensions: config.hiddenSize,
+            eps: config.layerNormEps
+        )
+        self._feedForward.wrappedValue = PhiFeedForward(config)
     }
 
     func callAsFunction(
-        _ x: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode, cache: KVCache?
+        _ hiddenStates: MLXArray,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode,
+        cache: KVCache?
     ) -> MLXArray {
-        let h = inputLayerNorm(x)
-        let attentionH = selfAttention(h, mask: mask, cache: cache)
-        let ffH = mlp(h)
-        return attentionH + ffH + x
+        let normalizedStates = inputLayerNorm(hiddenStates)
+        return hiddenStates
+            + selfAttention(normalizedStates, mask: mask, cache: cache)
+            + feedForward(normalizedStates)
     }
 }
 
-private class PhiModelInner: Module {
+private final class PhiBackbone: Module {
     @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding
+    @ModuleInfo var layers: [PhiTransformerBlock]
+    @ModuleInfo(key: "final_layernorm") private var finalLayerNorm: LayerNorm
 
-    @ModuleInfo var layers: [PhiDecoderLayer]
-    @ModuleInfo(key: "final_layernorm") var finalLayerNorm: LayerNorm
-
-    init(_ args: PhiConfiguration) {
+    init(_ config: PhiConfiguration) {
         self._embedTokens.wrappedValue = Embedding(
-            embeddingCount: args.vocabularySize, dimensions: args.hiddenSize)
-
-        self.layers = (0 ..< args.hiddenLayers)
-            .map { _ in
-                PhiDecoderLayer(args)
-            }
+            embeddingCount: config.vocabularySize,
+            dimensions: config.hiddenSize
+        )
+        self.layers = (0 ..< config.hiddenLayers).map { _ in
+            PhiTransformerBlock(config)
+        }
         self._finalLayerNorm.wrappedValue = LayerNorm(
-            dimensions: args.hiddenSize, eps: args.layerNormEps)
+            dimensions: config.hiddenSize,
+            eps: config.layerNormEps
+        )
     }
 
     func callAsFunction(
-        _ x: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode, cache: [KVCache]? = nil
+        _ tokens: MLXArray,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode,
+        cache: [KVCache]? = nil
     ) -> MLXArray {
-        var x = embedTokens(x)
+        var hiddenStates = embedTokens(tokens)
 
-        for (i, layer) in layers.enumerated() {
-            x = layer(x, mask: mask, cache: cache?[i])
+        for (layerIndex, layer) in layers.enumerated() {
+            hiddenStates = layer(hiddenStates, mask: mask, cache: cache?[layerIndex])
         }
 
-        return finalLayerNorm(x)
+        return finalLayerNorm(hiddenStates)
     }
 }
 
-internal class PhiModel: Module, LLMModel, KVCacheDimensionProvider {
+internal final class PhiModel: Module, LLMModel, KVCacheDimensionProvider, GreedyTokenModel {
     public let vocabularySize: Int
     public let kvHeads: [Int]
 
-    fileprivate let model: PhiModelInner
+    fileprivate let model: PhiBackbone
 
-    @ModuleInfo(key: "lm_head") var lmHead: Linear
+    @ModuleInfo(key: "lm_head") private var lmHead: Linear
 
-    public init(_ args: PhiConfiguration) {
-        self.vocabularySize = args.vocabularySize
-        self.kvHeads = (0 ..< args.hiddenLayers).map { _ in args.kvHeads }
-        self.model = PhiModelInner(args)
-        self._lmHead.wrappedValue = Linear(args.hiddenSize, args.vocabularySize, bias: true)
+    public init(_ config: PhiConfiguration) {
+        self.vocabularySize = config.vocabularySize
+        self.kvHeads = Array(repeating: config.kvHeads, count: config.hiddenLayers)
+        self.model = PhiBackbone(config)
+        self._lmHead.wrappedValue = Linear(config.hiddenSize, config.vocabularySize, bias: true)
     }
 
-    public func callAsFunction(_ x: MLXArray, cache: [KVCache]?) -> MLXArray {
-        let mask = createAttentionMask(h: x, cache: cache)
+    public func callAsFunction(_ tokens: MLXArray, cache: [KVCache]?) -> MLXArray {
+        let mask = createAttentionMask(h: tokens, cache: cache)
+        return lmHead(model(tokens, mask: mask, cache: cache))
+    }
 
-        let y = model(x, mask: mask, cache: cache)
-        return lmHead(y)
+    internal func greedyToken(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?
+    ) -> GreedyTokenOutput {
+        let tokens = input[text: .newAxis].tokens
+        let mask = createAttentionMask(h: tokens, cache: cache)
+        let hiddenStates = model(tokens, mask: mask, cache: cache)
+        return greedyTokenOutput(logits: lmHead(lastTokenHiddenState(hiddenStates)), state: state)
     }
 }
 
-internal struct PhiConfiguration: Codable, Sendable {
-    var maxPositionalEmbeddings = 2_048
-    var vocabularySize = 51_200
-    var hiddenSize = 2_560
-    var attentionHeads = 32
-    var hiddenLayers = 32
-    var kvHeads = 32
-    var partialRotaryFactor: Float = 0.4
-    var intermediateSize = 10_240
-    var layerNormEps: Float = 1e-5
-    var ropeTheta: Float = 10_000
+internal struct PhiConfiguration: Codable, Sendable, Equatable {
+    var maxPositionalEmbeddings: Int
+    var vocabularySize: Int
+    var hiddenSize: Int
+    var attentionHeads: Int
+    var hiddenLayers: Int
+    var kvHeads: Int
+    var partialRotaryFactor: Float
+    var intermediateSize: Int
+    var layerNormEps: Float
+    var ropeTheta: Float
+
+    internal init(
+        maxPositionalEmbeddings: Int = 2_048,
+        vocabularySize: Int = 51_200,
+        hiddenSize: Int = 2_560,
+        attentionHeads: Int = 32,
+        hiddenLayers: Int = 32,
+        kvHeads: Int? = nil,
+        partialRotaryFactor: Float = 0.4,
+        intermediateSize: Int = 10_240,
+        layerNormEps: Float = 1e-5,
+        ropeTheta: Float = 10_000
+    ) {
+        self.maxPositionalEmbeddings = maxPositionalEmbeddings
+        self.vocabularySize = vocabularySize
+        self.hiddenSize = hiddenSize
+        self.attentionHeads = attentionHeads
+        self.hiddenLayers = hiddenLayers
+        self.kvHeads = kvHeads ?? attentionHeads
+        self.partialRotaryFactor = partialRotaryFactor
+        self.intermediateSize = intermediateSize
+        self.layerNormEps = layerNormEps
+        self.ropeTheta = ropeTheta
+    }
 
     enum CodingKeys: String, CodingKey {
         case maxPositionalEmbeddings = "max_position_embeddings"
@@ -199,36 +283,37 @@ internal struct PhiConfiguration: Codable, Sendable {
         case ropeTheta = "rope_theta"
     }
 
-    public init(from decoder: Decoder) throws {
-        let container: KeyedDecodingContainer<Self.CodingKeys> = try decoder.container(
-            keyedBy: Self.CodingKeys.self)
-
-        self.maxPositionalEmbeddings = try container.decode(
-            Int.self, forKey: Self.CodingKeys.maxPositionalEmbeddings)
-        self.vocabularySize = try container.decode(
-            Int.self, forKey: Self.CodingKeys.vocabularySize)
-        self.hiddenSize = try container.decode(
-            Int.self, forKey: Self.CodingKeys.hiddenSize)
-        self.attentionHeads = try container.decode(
-            Int.self, forKey: Self.CodingKeys.attentionHeads)
-        self.hiddenLayers = try container.decode(
-            Int.self, forKey: Self.CodingKeys.hiddenLayers)
-        self.kvHeads =
-            try container.decodeIfPresent(Int.self, forKey: Self.CodingKeys.kvHeads)
-            ?? attentionHeads
-        self.partialRotaryFactor = try container.decode(
-            Float.self, forKey: Self.CodingKeys.partialRotaryFactor)
-        self.intermediateSize = try container.decode(
-            Int.self, forKey: Self.CodingKeys.intermediateSize)
-        self.layerNormEps = try container.decode(
-            Float.self, forKey: Self.CodingKeys.layerNormEps)
-        self.ropeTheta =
-            try container.decodeIfPresent(Float.self, forKey: Self.CodingKeys.ropeTheta)
-            ?? 10_000
+    internal init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self.init(
+            maxPositionalEmbeddings: try container.decodeIfPresent(
+                Int.self,
+                forKey: .maxPositionalEmbeddings
+            ) ?? 2_048,
+            vocabularySize: try container.decodeIfPresent(
+                Int.self,
+                forKey: .vocabularySize
+            ) ?? 51_200,
+            hiddenSize: try container.decodeIfPresent(Int.self, forKey: .hiddenSize) ?? 2_560,
+            attentionHeads: try container.decodeIfPresent(
+                Int.self,
+                forKey: .attentionHeads
+            ) ?? 32,
+            hiddenLayers: try container.decodeIfPresent(Int.self, forKey: .hiddenLayers) ?? 32,
+            kvHeads: try container.decodeIfPresent(Int.self, forKey: .kvHeads),
+            partialRotaryFactor: try container.decodeIfPresent(
+                Float.self,
+                forKey: .partialRotaryFactor
+            ) ?? 0.4,
+            intermediateSize: try container.decodeIfPresent(
+                Int.self,
+                forKey: .intermediateSize
+            ) ?? 10_240,
+            layerNormEps: try container.decodeIfPresent(Float.self, forKey: .layerNormEps) ?? 1e-5,
+            ropeTheta: try container.decodeIfPresent(Float.self, forKey: .ropeTheta) ?? 10_000
+        )
     }
 }
-
-// MARK: - LoRA
 
 extension PhiModel: LoRAModel {
     public func loraLinearLayers() -> LoRALinearLayers {
