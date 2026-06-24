@@ -46,6 +46,27 @@ make test-main-architectures  # serialized across representative models
 
 Use `MLX_TEST_MODELS_DIR=/path/to/models` to reuse shared model storage.
 
+`make test-main-architectures` currently runs real-model E2E checks for:
+
+| Architecture | Model |
+| --- | --- |
+| `qwen3` | `qwen3-0.6b-4bit` |
+| `qwen2` | `qwen2.5-1.5b-4bit` |
+| `llama` | `llama-3.2-1b-instruct-4bit` |
+| `mistral` | `mistral-7b-v0.3-4bit` |
+| `phi3` | `phi-3.5-mini-instruct-4bit` |
+| `gemma3` | `gemma-3-1b-it-qat-4bit` |
+| `gemma4` | `gemma-4-e2b-it-4bit` |
+| `granite` | `granite-3.3-2b-instruct-4bit` |
+| `smollm3` | `smollm3-3b-4bit` |
+| `lfm2` | `lfm2.5-1.2b-thinking-4bit` |
+| `lfm2_moe` | `lfm2-moe` |
+| `exaone4` | `exaone-4.0-1.2b-4bit` |
+| `ernie4_5` | `ernie-4.5-0.3b-bf16` |
+| `bitnet` | `bitnet-b1.58-2b-4t-4bit` |
+| `starcoder2` | `starcoder2-3b-4bit` |
+| `openelm` | `openelm-270m-instruct` |
+
 ## Add Package
 
 ```swift
@@ -89,7 +110,8 @@ make test-provider
 - Request rendering for the Foundation Models shape.
 - Streaming text translation.
 - Tool-call parsing and schema normalization.
-- JSON Schema, JSON, EBNF, regex, and finite-choice constraints.
+- Token-level constrained decoding for JSON Schema, JSON, EBNF, regex, and
+  finite choices.
 - Prompt caching, memory guards, model pooling, and real-model timing.
 - Metrics, logs, and Instruments signposts.
 
