@@ -1,105 +1,120 @@
-// Copyright © 2024 Apple Inc.
-
-import Foundation
 import MLX
 import MLXFast
 import MLXNN
 
 internal enum Gemma {
-    /// Specialized norm for gemma
-    public class RMSNorm: Module, UnaryLayer {
-        let weight: MLXArray
-        let eps: Float
+    internal final class RMSNorm: Module, UnaryLayer {
+        private let weight: MLXArray
+        private let eps: Float
 
-        public init(dimensions: Int, eps: Float = 1e-5) {
+        internal init(dimensions: Int, eps: Float = 1e-5) {
             self.weight = MLXArray.ones([dimensions])
             self.eps = eps
-            super.init()
         }
 
-        public func callAsFunction(_ x: MLXArray) -> MLXArray {
-            MLXFast.rmsNorm(x, weight: 1.0 + self.weight, eps: self.eps)
+        internal func callAsFunction(_ hiddenStates: MLXArray) -> MLXArray {
+            MLXFast.rmsNorm(hiddenStates, weight: 1 + weight, eps: eps)
         }
     }
 
-    /// Clips residual connections to prevent overflow in float16 operations
-    public static func clipResidual(_ x: MLXArray, _ y: MLXArray) -> MLXArray {
-        if x.dtype != .float16 {
-            return x + y
+    internal static func clipResidual(_ lhs: MLXArray, _ rhs: MLXArray) -> MLXArray {
+        guard lhs.dtype == .float16 else {
+            return lhs + rhs
         }
-        // IEEE 754 half-precision maximum finite value
-        let bound: Float = 65_504.0  // Float16 maximum finite value
-        let xFloat32 = x.asType(.float32)
-        let yFloat32 = y.asType(.float32)
-        let result = xFloat32 + yFloat32
-        return clip(result, min: MLXArray(-bound), max: MLXArray(bound)).asType(.float16)
+
+        let float16Max: Float = 65_504
+        let sum = lhs.asType(.float32) + rhs.asType(.float32)
+        return clip(sum, min: MLXArray(-float16Max), max: MLXArray(float16Max))
+            .asType(.float16)
     }
 }
 
-import Tokenizers
+internal struct GemmaAttentionLayout: Equatable, Sendable {
+    internal let hiddenSize: Int
+    internal let queryHeads: Int
+    internal let keyValueHeads: Int
+    internal let headSize: Int
+    internal let queryProjectionSize: Int
+    internal let keyValueProjectionSize: Int
+    internal let attentionScale: Float
 
-// Port of https://github.com/ml-explore/mlx-examples/blob/main/llms/mlx_lm/models/gemma.py
+    internal init(_ config: GemmaConfiguration) {
+        precondition(config.hiddenSize > 0, "hidden_size must be positive")
+        precondition(config.attentionHeads > 0, "num_attention_heads must be positive")
+        precondition(config.kvHeads > 0, "num_key_value_heads must be positive")
+        precondition(config.headDimensions > 0, "head_dim must be positive")
+        precondition(
+            config.attentionHeads.isMultiple(of: config.kvHeads),
+            "num_attention_heads must be divisible by num_key_value_heads"
+        )
 
-// Specialized norm for Gemma
-private class RMSNorm: Module, UnaryLayer {
-    let weight: MLXArray
-    let eps: Float
-
-    init(dimensions: Int, eps: Float = 1e-5) {
-        self.weight = MLXArray.ones([dimensions])
-        self.eps = eps
-    }
-
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
-        MLXFast.rmsNorm(x, weight: 1.0 + self.weight, eps: self.eps)
+        self.hiddenSize = config.hiddenSize
+        self.queryHeads = config.attentionHeads
+        self.keyValueHeads = config.kvHeads
+        self.headSize = config.headDimensions
+        self.queryProjectionSize = queryHeads * headSize
+        self.keyValueProjectionSize = keyValueHeads * headSize
+        self.attentionScale = 1 / Float(headSize).squareRoot()
     }
 }
 
-private class Attention: Module {
-    let args: GemmaConfiguration
-    let nHeads: Int
-    let nKVHeads: Int
-    let headDim: Int
-    let scale: Float
+private final class GemmaSelfAttention: Module {
+    private let layout: GemmaAttentionLayout
 
-    @ModuleInfo(key: "q_proj") var wq: Linear
-    @ModuleInfo(key: "k_proj") var wk: Linear
-    @ModuleInfo(key: "v_proj") var wv: Linear
-    @ModuleInfo(key: "o_proj") var wo: Linear
+    @ModuleInfo(key: "q_proj") private var queryProjection: Linear
+    @ModuleInfo(key: "k_proj") private var keyProjection: Linear
+    @ModuleInfo(key: "v_proj") private var valueProjection: Linear
+    @ModuleInfo(key: "o_proj") private var outputProjection: Linear
 
-    let rope: RoPE
+    private let rope: RoPE
 
-    init(_ args: GemmaConfiguration) {
-        self.args = args
-
-        let dim = args.hiddenSize
-        self.nHeads = args.attentionHeads
-        self.nKVHeads = args.kvHeads
-        self.headDim = args.headDimensions
-        self.scale = pow(Float(headDim), -0.5)
-
-        self._wq.wrappedValue = Linear(dim, nHeads * headDim, bias: false)
-        self._wk.wrappedValue = Linear(dim, nKVHeads * headDim, bias: false)
-        self._wv.wrappedValue = Linear(dim, nKVHeads * headDim, bias: false)
-        self._wo.wrappedValue = Linear(nHeads * headDim, dim, bias: false)
-
+    init(_ config: GemmaConfiguration) {
+        let layout = GemmaAttentionLayout(config)
+        self.layout = layout
+        self._queryProjection.wrappedValue = Linear(
+            layout.hiddenSize,
+            layout.queryProjectionSize,
+            bias: false
+        )
+        self._keyProjection.wrappedValue = Linear(
+            layout.hiddenSize,
+            layout.keyValueProjectionSize,
+            bias: false
+        )
+        self._valueProjection.wrappedValue = Linear(
+            layout.hiddenSize,
+            layout.keyValueProjectionSize,
+            bias: false
+        )
+        self._outputProjection.wrappedValue = Linear(
+            layout.queryProjectionSize,
+            layout.hiddenSize,
+            bias: false
+        )
         self.rope = RoPE(
-            dimensions: headDim, traditional: args.ropeTraditional, base: args.ropeTheta)
+            dimensions: layout.headSize,
+            traditional: config.ropeTraditional,
+            base: config.ropeTheta
+        )
     }
 
     func callAsFunction(
-        _ x: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode, cache: KVCache?
+        _ hiddenStates: MLXArray,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode,
+        cache: KVCache?
     ) -> MLXArray {
-        let (B, L) = (x.dim(0), x.dim(1))
+        let batchSize = hiddenStates.dim(0)
+        let tokenCount = hiddenStates.dim(1)
 
-        var queries = wq(x)
-        var keys = wk(x)
-        var values = wv(x)
-
-        // Prepare the queries, keys and values for the attention computation
-        queries = queries.reshaped(B, L, nHeads, -1).transposed(0, 2, 1, 3)
-        keys = keys.reshaped(B, L, nKVHeads, -1).transposed(0, 2, 1, 3)
-        values = values.reshaped(B, L, nKVHeads, -1).transposed(0, 2, 1, 3)
+        var queries = queryProjection(hiddenStates)
+            .reshaped(batchSize, tokenCount, layout.queryHeads, layout.headSize)
+            .transposed(0, 2, 1, 3)
+        var keys = keyProjection(hiddenStates)
+            .reshaped(batchSize, tokenCount, layout.keyValueHeads, layout.headSize)
+            .transposed(0, 2, 1, 3)
+        let values = valueProjection(hiddenStates)
+            .reshaped(batchSize, tokenCount, layout.keyValueHeads, layout.headSize)
+            .transposed(0, 2, 1, 3)
 
         if let cache {
             queries = rope(queries, offset: cache.offset)
@@ -109,124 +124,146 @@ private class Attention: Module {
             keys = rope(keys)
         }
 
-        let output = attentionWithCacheUpdate(
+        let attentionOutput = attentionWithCacheUpdate(
             queries: queries,
             keys: keys,
             values: values,
             cache: cache,
-            scale: scale,
+            scale: layout.attentionScale,
             mask: mask
         )
         .transposed(0, 2, 1, 3)
-        .reshaped(B, L, -1)
+        .reshaped(batchSize, tokenCount, -1)
 
-        return wo(output)
+        return outputProjection(attentionOutput)
     }
 }
 
-private class MLP: Module, UnaryLayer {
-    @ModuleInfo(key: "gate_proj") var gate: Linear
-    @ModuleInfo(key: "down_proj") var down: Linear
-    @ModuleInfo(key: "up_proj") var up: Linear
+private final class GemmaFeedForward: Module, UnaryLayer {
+    @ModuleInfo(key: "gate_proj") private var gateProjection: Linear
+    @ModuleInfo(key: "down_proj") private var downProjection: Linear
+    @ModuleInfo(key: "up_proj") private var upProjection: Linear
 
-    init(dimensions: Int, hiddenDimensions: Int) {
-        self._gate.wrappedValue = Linear(dimensions, hiddenDimensions, bias: false)
-        self._down.wrappedValue = Linear(hiddenDimensions, dimensions, bias: false)
-        self._up.wrappedValue = Linear(dimensions, hiddenDimensions, bias: false)
+    init(_ config: GemmaConfiguration) {
+        self._gateProjection.wrappedValue = Linear(
+            config.hiddenSize,
+            config.intermediateSize,
+            bias: false
+        )
+        self._downProjection.wrappedValue = Linear(
+            config.intermediateSize,
+            config.hiddenSize,
+            bias: false
+        )
+        self._upProjection.wrappedValue = Linear(
+            config.hiddenSize,
+            config.intermediateSize,
+            bias: false
+        )
     }
 
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
-        down(gelu(gate(x)) * up(x))
+    func callAsFunction(_ hiddenStates: MLXArray) -> MLXArray {
+        downProjection(gelu(gateProjection(hiddenStates)) * upProjection(hiddenStates))
     }
 }
 
-private class TransformerBlock: Module {
-    @ModuleInfo(key: "self_attn") var attention: Attention
-    let mlp: MLP
+private final class GemmaTransformerBlock: Module {
+    @ModuleInfo(key: "self_attn") var selfAttention: GemmaSelfAttention
+    @ModuleInfo(key: "mlp") private var feedForward: GemmaFeedForward
+    @ModuleInfo(key: "input_layernorm") private var inputLayerNorm: Gemma.RMSNorm
+    @ModuleInfo(key: "post_attention_layernorm") private var postAttentionLayerNorm:
+        Gemma.RMSNorm
 
-    @ModuleInfo(key: "input_layernorm") var inputLayerNorm: Gemma.RMSNorm
-    @ModuleInfo(key: "post_attention_layernorm") var postAttentionLayerNorm: Gemma.RMSNorm
-
-    init(_ args: GemmaConfiguration) {
-        self._attention.wrappedValue = Attention(args)
-        self.mlp = MLP(dimensions: args.hiddenSize, hiddenDimensions: args.intermediateSize)
+    init(_ config: GemmaConfiguration) {
+        self._selfAttention.wrappedValue = GemmaSelfAttention(config)
+        self._feedForward.wrappedValue = GemmaFeedForward(config)
         self._inputLayerNorm.wrappedValue = Gemma.RMSNorm(
-            dimensions: args.hiddenSize, eps: args.rmsNormEps)
+            dimensions: config.hiddenSize,
+            eps: config.rmsNormEps
+        )
         self._postAttentionLayerNorm.wrappedValue = Gemma.RMSNorm(
-            dimensions: args.hiddenSize, eps: args.rmsNormEps)
+            dimensions: config.hiddenSize,
+            eps: config.rmsNormEps
+        )
     }
 
     func callAsFunction(
-        _ x: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode, cache: KVCache?
+        _ hiddenStates: MLXArray,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode,
+        cache: KVCache?
     ) -> MLXArray {
-        var r = attention(inputLayerNorm(x), mask: mask, cache: cache)
-        let h = x + r
-        r = mlp(postAttentionLayerNorm(h))
-        return h + r
+        let afterAttention = hiddenStates
+            + selfAttention(inputLayerNorm(hiddenStates), mask: mask, cache: cache)
+        return afterAttention + feedForward(postAttentionLayerNorm(afterAttention))
     }
 }
 
-private class GemmaModelInner: Module {
-    let args: GemmaConfiguration
-    let vocabularySize: Int
-    let numHiddenLayers: Int
+private final class GemmaBackbone: Module {
+    @ModuleInfo(key: "embed_tokens") var tokenEmbeddings: Embedding
+    @ModuleInfo var layers: [GemmaTransformerBlock]
+    @ModuleInfo(key: "norm") private var finalNorm: Gemma.RMSNorm
 
-    @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding
-    fileprivate let layers: [TransformerBlock]
-    fileprivate let norm: Gemma.RMSNorm
+    private let hiddenScale: Float
 
-    init(_ args: GemmaConfiguration) {
-        precondition(args.vocabularySize > 0)
+    init(_ config: GemmaConfiguration) {
+        precondition(config.vocabularySize > 0, "vocab_size must be positive")
 
-        self.args = args
-        self.vocabularySize = args.vocabularySize
-        self.numHiddenLayers = args.hiddenLayers
-
-        self._embedTokens.wrappedValue = Embedding(
-            embeddingCount: args.vocabularySize, dimensions: args.hiddenSize)
-
-        self.layers = (0 ..< args.hiddenLayers)
-            .map { _ in
-                TransformerBlock(args)
-            }
-        self.norm = Gemma.RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
+        self._tokenEmbeddings.wrappedValue = Embedding(
+            embeddingCount: config.vocabularySize,
+            dimensions: config.hiddenSize
+        )
+        self.layers = (0 ..< config.hiddenLayers).map { _ in
+            GemmaTransformerBlock(config)
+        }
+        self._finalNorm.wrappedValue = Gemma.RMSNorm(
+            dimensions: config.hiddenSize,
+            eps: config.rmsNormEps
+        )
+        self.hiddenScale = Float(config.hiddenSize).squareRoot()
     }
 
-    func callAsFunction(_ inputs: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
-        var h = embedTokens(inputs)
-        h = h * pow(Float(args.hiddenSize), 0.5)
+    func callAsFunction(_ tokens: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
+        var hiddenStates = tokenEmbeddings(tokens) * hiddenScale
+        let mask = createAttentionMask(h: tokens, cache: cache)
 
-        let mask = createAttentionMask(h: h, cache: cache)
-
-        for (i, layer) in layers.enumerated() {
-            h = layer(h, mask: mask, cache: cache?[i])
+        for (layerIndex, layer) in layers.enumerated() {
+            hiddenStates = layer(hiddenStates, mask: mask, cache: cache?[layerIndex])
         }
 
-        return norm(h)
+        return finalNorm(hiddenStates)
     }
 }
 
-internal class GemmaModel: Module, LLMModel, KVCacheDimensionProvider {
+internal final class GemmaModel: Module, LLMModel, KVCacheDimensionProvider,
+    GreedyTokenModel {
     public let vocabularySize: Int
     public let kvHeads: [Int]
 
-    let modelType: String
-    private let model: GemmaModelInner
+    internal let modelType: String
+    fileprivate let model: GemmaBackbone
 
-    public init(_ args: GemmaConfiguration) {
-        self.modelType = args.modelType
-        self.vocabularySize = args.vocabularySize
-        self.kvHeads = Array(repeating: args.kvHeads, count: args.hiddenLayers)
-        self.model = GemmaModelInner(args)
+    public init(_ config: GemmaConfiguration) {
+        self.modelType = config.modelType
+        self.vocabularySize = config.vocabularySize
+        self.kvHeads = Array(repeating: config.kvHeads, count: config.hiddenLayers)
+        self.model = GemmaBackbone(config)
     }
 
-    public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
-        let out = model(inputs, cache: cache)
-        return model.embedTokens.asLinear(out)
+    public func callAsFunction(_ tokens: MLXArray, cache: [KVCache]?) -> MLXArray {
+        model.tokenEmbeddings.asLinear(model(tokens, cache: cache))
+    }
+
+    internal func greedyToken(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?
+    ) -> GreedyTokenOutput {
+        let hiddenStates = lastTokenHiddenState(model(input[text: .newAxis].tokens, cache: cache))
+        return greedyTokenOutput(logits: model.tokenEmbeddings.asLinear(hiddenStates), state: state)
     }
 }
 
-internal struct GemmaConfiguration: Codable, Sendable {
+internal struct GemmaConfiguration: Codable, Sendable, Equatable {
     var modelType: String
     var hiddenSize: Int
     var hiddenLayers: Int
@@ -236,10 +273,34 @@ internal struct GemmaConfiguration: Codable, Sendable {
     var rmsNormEps: Float
     var vocabularySize: Int
     var kvHeads: Int
-    private let _ropeTheta: Float?
-    public var ropeTheta: Float { _ropeTheta ?? 10_000 }
-    private let _ropeTraditional: Bool?
-    public var ropeTraditional: Bool { _ropeTraditional ?? false }
+    var ropeTheta: Float
+    var ropeTraditional: Bool
+
+    internal init(
+        modelType: String = "gemma",
+        hiddenSize: Int = 2_048,
+        hiddenLayers: Int = 18,
+        intermediateSize: Int = 16_384,
+        attentionHeads: Int = 8,
+        headDimensions: Int? = nil,
+        rmsNormEps: Float = 1e-6,
+        vocabularySize: Int = 256_000,
+        kvHeads: Int? = nil,
+        ropeTheta: Float = 10_000,
+        ropeTraditional: Bool = false
+    ) {
+        self.modelType = modelType
+        self.hiddenSize = hiddenSize
+        self.hiddenLayers = hiddenLayers
+        self.intermediateSize = intermediateSize
+        self.attentionHeads = attentionHeads
+        self.headDimensions = headDimensions ?? max(1, hiddenSize / max(attentionHeads, 1))
+        self.rmsNormEps = rmsNormEps
+        self.vocabularySize = vocabularySize
+        self.kvHeads = kvHeads ?? attentionHeads
+        self.ropeTheta = ropeTheta
+        self.ropeTraditional = ropeTraditional
+    }
 
     enum CodingKeys: String, CodingKey {
         case modelType = "model_type"
@@ -251,15 +312,45 @@ internal struct GemmaConfiguration: Codable, Sendable {
         case rmsNormEps = "rms_norm_eps"
         case vocabularySize = "vocab_size"
         case kvHeads = "num_key_value_heads"
-        case _ropeTheta = "rope_theta"
-        case _ropeTraditional = "rope_traditional"
+        case ropeTheta = "rope_theta"
+        case ropeTraditional = "rope_traditional"
+    }
+
+    internal init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: Self.CodingKeys.self)
+        let hiddenSize = try container.decodeIfPresent(Int.self, forKey: .hiddenSize) ?? 2_048
+        let attentionHeads = try container.decodeIfPresent(
+            Int.self,
+            forKey: .attentionHeads
+        ) ?? 8
+
+        self.init(
+            modelType: try container.decodeIfPresent(String.self, forKey: .modelType) ?? "gemma",
+            hiddenSize: hiddenSize,
+            hiddenLayers: try container.decodeIfPresent(Int.self, forKey: .hiddenLayers) ?? 18,
+            intermediateSize: try container.decodeIfPresent(
+                Int.self,
+                forKey: .intermediateSize
+            ) ?? 16_384,
+            attentionHeads: attentionHeads,
+            headDimensions: try container.decodeIfPresent(Int.self, forKey: .headDimensions),
+            rmsNormEps: try container.decodeIfPresent(Float.self, forKey: .rmsNormEps) ?? 1e-6,
+            vocabularySize: try container.decodeIfPresent(
+                Int.self,
+                forKey: .vocabularySize
+            ) ?? 256_000,
+            kvHeads: try container.decodeIfPresent(Int.self, forKey: .kvHeads),
+            ropeTheta: try container.decodeIfPresent(Float.self, forKey: .ropeTheta) ?? 10_000,
+            ropeTraditional: try container.decodeIfPresent(
+                Bool.self,
+                forKey: .ropeTraditional
+            ) ?? false
+        )
     }
 }
 
-// MARK: - LoRA
-
 extension GemmaModel: LoRAModel {
     public func loraLinearLayers() -> LoRALinearLayers {
-        model.layers.map { ($0.attention, ["q_proj", "v_proj"]) }
+        model.layers.map { ($0.selfAttention, ["q_proj", "v_proj"]) }
     }
 }
