@@ -1,119 +1,165 @@
-//
-//  GatedDelta.swift
-//  mlx-swift-lm
-//
-//  Port of https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/models/gated_delta.py
-//
-
 import Foundation
 import MLX
 import MLXNN
 
-// MARK: - Compute G
+// MARK: - Layout
+
+struct GatedDeltaLayout: Equatable, Sendable {
+    let batchSize: Int
+    let sequenceLength: Int
+    let keyHeads: Int
+    let keyDimensions: Int
+    let valueHeads: Int
+    let valueDimensions: Int
+
+    init(q: MLXArray, k: MLXArray, v: MLXArray) {
+        precondition(q.ndim == 4, "gated delta q must be [batch, time, keyHeads, keyDim]")
+        precondition(k.ndim == 4, "gated delta k must be [batch, time, keyHeads, keyDim]")
+        precondition(v.ndim == 4, "gated delta v must be [batch, time, valueHeads, valueDim]")
+        precondition(q.dim(0) == k.dim(0) && q.dim(0) == v.dim(0), "batch sizes differ")
+        precondition(q.dim(1) == k.dim(1) && q.dim(1) == v.dim(1), "sequence lengths differ")
+        precondition(q.dim(2) == k.dim(2), "q and k head counts differ")
+        precondition(q.dim(3) == k.dim(3), "q and k head dimensions differ")
+        precondition(v.dim(2).isMultiple(of: q.dim(2)), "value heads must group key heads")
+
+        batchSize = q.dim(0)
+        sequenceLength = q.dim(1)
+        keyHeads = q.dim(2)
+        keyDimensions = q.dim(3)
+        valueHeads = v.dim(2)
+        valueDimensions = v.dim(3)
+    }
+
+    var valueHeadsPerKeyHead: Int { valueHeads / keyHeads }
+
+    var stateShape: [Int] {
+        [batchSize, valueHeads, valueDimensions, keyDimensions]
+    }
+
+    var supportsMetalKernel: Bool {
+        keyDimensions > 0 && keyDimensions.isMultiple(of: 32)
+    }
+}
+
+// MARK: - Decay
+
+enum GatedDeltaDecay {
+    static func values(aLog: MLXArray, a: MLXArray, dtBias: MLXArray) -> MLXArray {
+        let rate = exp(aLog.asType(.float32))
+        let step = softplus(a + dtBias)
+        return exp(-rate * step).asType(a.dtype)
+    }
+}
 
 func computeGatedDeltaG(_ aLog: MLXArray, _ a: MLXArray, _ dtBias: MLXArray) -> MLXArray {
-    let decay = exp(-exp(aLog.asType(.float32)) * softplus(a + dtBias))
-    return decay.asType(a.dtype)
+    GatedDeltaDecay.values(aLog: aLog, a: a, dtBias: dtBias)
 }
 
 // MARK: - Metal Kernel
 
 private func makeGatedDeltaKernel(hasMask: Bool) -> MLXFast.MLXFastKernel? {
-    let maskSource = hasMask ? "mask[b_idx * T + t]" : "true"
+    let isTokenActive = hasMask ? "mask[batchIndex * sequenceLength + tokenIndex]" : "true"
+    let suffix = hasMask ? "_masked" : ""
 
     let source = """
-            auto n = thread_position_in_grid.z;
-            auto b_idx = n / Hv;
-            auto hv_idx = n % Hv;
-            auto hk_idx = hv_idx / (Hv / Hk);
-            constexpr int n_per_t = Dk / 32;
+            auto sampleAndValueHead = thread_position_in_grid.z;
+            auto batchIndex = sampleAndValueHead / valueHeadCount;
+            auto valueHead = sampleAndValueHead % valueHeadCount;
+            auto keyHead = valueHead / valueHeadsPerKeyHead;
 
-            // q, k: [B, T, Hk, Dk]
-            auto q_ = q + b_idx * T * Hk * Dk + hk_idx * Dk;
-            auto k_ = k + b_idx * T * Hk * Dk + hk_idx * Dk;
+            constexpr int keyPiecesPerThread = keyDimensions / 32;
 
-            // v, y: [B, T, Hv, Dv]
-            auto v_ = v + b_idx * T * Hv * Dv + hv_idx * Dv;
-            y += b_idx * T * Hv * Dv + hv_idx * Dv;
+            auto qToken = q + batchIndex * sequenceLength * keyHeadCount * keyDimensions
+                + keyHead * keyDimensions;
+            auto kToken = k + batchIndex * sequenceLength * keyHeadCount * keyDimensions
+                + keyHead * keyDimensions;
+            auto vToken = v + batchIndex * sequenceLength * valueHeadCount * valueDimensions
+                + valueHead * valueDimensions;
+            auto yToken = y + batchIndex * sequenceLength * valueHeadCount * valueDimensions
+                + valueHead * valueDimensions;
 
-            auto dk_idx = thread_position_in_threadgroup.x;
-            auto dv_idx = thread_position_in_grid.y;
+            auto decayToken = decay + batchIndex * sequenceLength * valueHeadCount;
+            auto betaToken = beta + batchIndex * sequenceLength * valueHeadCount;
 
-            // g: [B, T, Hv]
-            auto g_ = g + b_idx * T * Hv;
-            auto beta_ = beta + b_idx * T * Hv;
+            auto keyLane = thread_position_in_threadgroup.x;
+            auto valueChannel = thread_position_in_grid.y;
 
-            // state_in, state_out: [B, Hv, Dv, Dk]
-            auto i_state = state_in + (n * Dv + dv_idx) * Dk;
-            auto o_state = state_out + (n * Dv + dv_idx) * Dk;
+            auto stateOffset = (sampleAndValueHead * valueDimensions + valueChannel)
+                * keyDimensions;
+            auto stateRead = stateIn + stateOffset;
+            auto stateWrite = stateOut + stateOffset;
 
-            float state[n_per_t];
-            for (int i = 0; i < n_per_t; ++i) {
-              auto s_idx = n_per_t * dk_idx + i;
-              state[i] = static_cast<float>(i_state[s_idx]);
+            float laneState[keyPiecesPerThread];
+            for (int piece = 0; piece < keyPiecesPerThread; ++piece) {
+                auto keyOffset = keyPiecesPerThread * keyLane + piece;
+                laneState[piece] = static_cast<float>(stateRead[keyOffset]);
             }
 
-            for (int t = 0; t < T; ++t) {
-              if (\(maskSource)) {
-                float kv_mem = 0.0f;
-                for (int i = 0; i < n_per_t; ++i) {
-                  auto s_idx = n_per_t * dk_idx + i;
-                  state[i] = state[i] * g_[hv_idx];
-                  kv_mem += state[i] * k_[s_idx];
-                }
-                kv_mem = simd_sum(kv_mem);
+            for (int tokenIndex = 0; tokenIndex < sequenceLength; ++tokenIndex) {
+                if (\(isTokenActive)) {
+                    float memory = 0.0f;
+                    for (int piece = 0; piece < keyPiecesPerThread; ++piece) {
+                        auto keyOffset = keyPiecesPerThread * keyLane + piece;
+                        laneState[piece] *= decayToken[valueHead];
+                        memory += laneState[piece] * kToken[keyOffset];
+                    }
+                    memory = simd_sum(memory);
 
-                auto delta = (v_[dv_idx] - kv_mem) * beta_[hv_idx];
+                    auto correction = (vToken[valueChannel] - memory) * betaToken[valueHead];
 
-                float out = 0.0f;
-                for (int i = 0; i < n_per_t; ++i) {
-                  auto s_idx = n_per_t * dk_idx + i;
-                  state[i] = state[i] + k_[s_idx] * delta;
-                  out += state[i] * q_[s_idx];
+                    float output = 0.0f;
+                    for (int piece = 0; piece < keyPiecesPerThread; ++piece) {
+                        auto keyOffset = keyPiecesPerThread * keyLane + piece;
+                        laneState[piece] += kToken[keyOffset] * correction;
+                        output += laneState[piece] * qToken[keyOffset];
+                    }
+                    output = simd_sum(output);
+
+                    if (thread_index_in_simdgroup == 0) {
+                        yToken[valueChannel] = static_cast<InT>(output);
+                    }
+                } else {
+                    if (thread_index_in_simdgroup == 0) {
+                        yToken[valueChannel] = static_cast<InT>(0.0f);
+                    }
                 }
-                out = simd_sum(out);
-                if (thread_index_in_simdgroup == 0) {
-                  y[dv_idx] = static_cast<InT>(out);
-                }
-              }
-              // Increment data pointers to next time step
-              q_ += Hk * Dk;
-              k_ += Hk * Dk;
-              v_ += Hv * Dv;
-              y += Hv * Dv;
-              g_ += Hv;
-              beta_ += Hv;
+
+                qToken += keyHeadCount * keyDimensions;
+                kToken += keyHeadCount * keyDimensions;
+                vToken += valueHeadCount * valueDimensions;
+                yToken += valueHeadCount * valueDimensions;
+                decayToken += valueHeadCount;
+                betaToken += valueHeadCount;
             }
-            for (int i = 0; i < n_per_t; ++i) {
-              auto s_idx = n_per_t * dk_idx + i;
-              o_state[s_idx] = static_cast<InT>(state[i]);
+
+            for (int piece = 0; piece < keyPiecesPerThread; ++piece) {
+                auto keyOffset = keyPiecesPerThread * keyLane + piece;
+                stateWrite[keyOffset] = static_cast<InT>(laneState[piece]);
             }
         """
 
-    var inputNames = ["q", "k", "v", "g", "beta", "state_in", "T"]
+    var inputNames = ["q", "k", "v", "decay", "beta", "stateIn", "sequenceLength"]
     if hasMask {
         inputNames.append("mask")
     }
 
-    let suffix = hasMask ? "_mask" : ""
-
     return MLXFast.metalKernel(
-        name: "gated_delta_step\(suffix)",
+        name: "gated_delta_recurrence\(suffix)",
         inputNames: inputNames,
-        outputNames: ["y", "state_out"],
+        outputNames: ["y", "stateOut"],
         source: source
     )
 }
 
-private final class GatedDeltaKernelManager: Sendable {
-    static let shared = GatedDeltaKernelManager()
+private final class GatedDeltaKernelPool: Sendable {
+    static let shared = GatedDeltaKernelPool()
 
-    let kernel: MLXFast.MLXFastKernel?
-    let kernelMasked: MLXFast.MLXFastKernel?
+    let unmasked: MLXFast.MLXFastKernel?
+    let masked: MLXFast.MLXFastKernel?
 
     private init() {
-        kernel = makeGatedDeltaKernel(hasMask: false)
-        kernelMasked = makeGatedDeltaKernel(hasMask: true)
+        unmasked = makeGatedDeltaKernel(hasMask: false)
+        masked = makeGatedDeltaKernel(hasMask: true)
     }
 }
 
@@ -128,46 +174,91 @@ func gatedDeltaKernel(
     state: MLXArray,
     mask: MLXArray? = nil
 ) -> (MLXArray, MLXArray) {
-    let B = k.dim(0)
-    let T = k.dim(1)
-    let Hk = k.dim(2)
-    let Dk = k.dim(3)
-    let Hv = v.dim(2)
-    let Dv = v.dim(3)
-    let inputType = q.dtype
+    let layout = GatedDeltaLayout(q: q, k: k, v: v)
+    let kernel = mask == nil ? GatedDeltaKernelPool.shared.unmasked : GatedDeltaKernelPool.shared.masked
 
-    let selectedKernel: MLXFast.MLXFastKernel?
-    var inputs: [MLXArray] = [q, k, v, g, beta, state, MLXArray(T)]
-    if let mask {
-        selectedKernel = GatedDeltaKernelManager.shared.kernelMasked
-        inputs.append(mask)
-    } else {
-        selectedKernel = GatedDeltaKernelManager.shared.kernel
+    guard layout.supportsMetalKernel, let kernel else {
+        return gatedDeltaOps(q: q, k: k, v: v, g: g, beta: beta, state: state, mask: mask)
     }
 
-    guard let kernel = selectedKernel else {
-        fatalError("Gated delta kernel not available")
+    var inputs: [MLXArray] = [q, k, v, g, beta, state, MLXArray(layout.sequenceLength)]
+    if let mask {
+        inputs.append(mask)
     }
 
     let outputs = kernel(
         inputs,
         template: [
-            ("InT", inputType),
-            ("Dk", Dk),
-            ("Dv", Dv),
-            ("Hk", Hk),
-            ("Hv", Hv),
+            ("InT", q.dtype),
+            ("keyDimensions", layout.keyDimensions),
+            ("valueDimensions", layout.valueDimensions),
+            ("keyHeadCount", layout.keyHeads),
+            ("valueHeadCount", layout.valueHeads),
+            ("valueHeadsPerKeyHead", layout.valueHeadsPerKeyHead),
         ],
-        grid: (32, Dv, B * Hv),
+        grid: (32, layout.valueDimensions, layout.batchSize * layout.valueHeads),
         threadGroup: (32, 4, 1),
-        outputShapes: [[B, T, Hv, Dv], state.shape],
-        outputDTypes: [inputType, inputType]
+        outputShapes: [[
+            layout.batchSize,
+            layout.sequenceLength,
+            layout.valueHeads,
+            layout.valueDimensions,
+        ], state.shape],
+        outputDTypes: [q.dtype, q.dtype]
     )
 
     return (outputs[0], outputs[1])
 }
 
 // MARK: - Ops Fallback
+
+private func expandedStepMask(_ mask: MLXArray) -> MLXArray {
+    switch mask.ndim {
+    case 0:
+        mask
+    case 1:
+        expandedDimensions(mask, axes: [1, 2, 3])
+    case 2:
+        expandedDimensions(mask, axes: [2, 3])
+    case 3:
+        expandedDimensions(mask, axis: -1)
+    case 4:
+        mask
+    default:
+        fatalError("Unsupported gated delta mask shape \(mask.shape)")
+    }
+}
+
+private func expandedOutputMask(_ mask: MLXArray) -> MLXArray {
+    switch mask.ndim {
+    case 0:
+        mask
+    case 1:
+        expandedDimensions(mask, axes: [1, 2])
+    case 2:
+        expandedDimensions(mask, axis: -1)
+    case 3:
+        mask
+    default:
+        fatalError("Unsupported gated delta output mask shape \(mask.shape)")
+    }
+}
+
+private func maskSlice(_ mask: MLXArray?, at tokenIndex: Int) -> MLXArray? {
+    guard let mask else { return nil }
+    switch mask.ndim {
+    case 1:
+        return mask[tokenIndex]
+    case 2:
+        return mask[0..., tokenIndex]
+    case 3:
+        return mask[0..., tokenIndex, 0...]
+    case 4:
+        return mask[0..., tokenIndex, 0..., 0...]
+    default:
+        fatalError("Unsupported gated delta mask shape \(mask.shape)")
+    }
+}
 
 private func gatedDeltaStepOps(
     q: MLXArray,
@@ -178,37 +269,28 @@ private func gatedDeltaStepOps(
     state: MLXArray,
     mask: MLXArray? = nil
 ) -> (MLXArray, MLXArray) {
-    let oldState = state
+    let previousState = state
     let decay: MLXArray
     if g.ndim == 2 {
         decay = expandedDimensions(g, axes: [2, 3])
     } else if g.ndim == 3 {
         decay = expandedDimensions(g, axis: -2)
     } else {
-        fatalError("Unsupported gating shape \(g.shape)")
+        fatalError("Unsupported gated delta decay shape \(g.shape)")
     }
 
-    var state = state * decay
-    let kvMem = (state * expandedDimensions(k, axis: -2)).sum(axis: -1)
-    let delta = (v - kvMem) * expandedDimensions(beta, axis: -1)
-    state = state + expandedDimensions(k, axis: -2) * expandedDimensions(delta, axis: -1)
-    let y = (state * expandedDimensions(q, axis: -2)).sum(axis: -1)
+    var nextState = state * decay
+    let memory = (nextState * expandedDimensions(k, axis: -2)).sum(axis: -1)
+    let correction = (v - memory) * expandedDimensions(beta, axis: -1)
+    nextState = nextState + expandedDimensions(k, axis: -2) * expandedDimensions(correction, axis: -1)
+    var output = (nextState * expandedDimensions(q, axis: -2)).sum(axis: -1)
 
     if let mask {
-        let expandedMask: MLXArray
-        if mask.ndim == 1 {
-            expandedMask = expandedDimensions(mask, axes: [1, 2, 3])
-        } else if mask.ndim == 2 {
-            expandedMask = expandedDimensions(mask, axes: [2, 3])
-        } else if mask.ndim == 3 {
-            expandedMask = expandedDimensions(mask, axis: -1)
-        } else {
-            fatalError("Unsupported mask shape \(mask.shape)")
-        }
-        state = MLX.where(expandedMask, state, oldState)
+        nextState = MLX.where(expandedStepMask(mask), nextState, previousState)
+        output = MLX.where(expandedOutputMask(mask), output, MLXArray.zeros(like: output))
     }
 
-    return (y, state)
+    return (output, nextState)
 }
 
 func gatedDeltaOps(
@@ -220,50 +302,34 @@ func gatedDeltaOps(
     state: MLXArray? = nil,
     mask: MLXArray? = nil
 ) -> (MLXArray, MLXArray) {
-    let B = q.dim(0)
-    let T = q.dim(1)
-    let Hk = q.dim(2)
-    let Dk = q.dim(3)
-    let Hv = v.dim(2)
-    let Dv = v.dim(3)
+    let layout = GatedDeltaLayout(q: q, k: k, v: v)
 
-    var q = q
-    var k = k
-
-    let repeatFactor = Hv / Hk
-    if repeatFactor > 1 {
-        q = repeated(q, count: repeatFactor, axis: -2)
-        k = repeated(k, count: repeatFactor, axis: -2)
+    var queries = q
+    var keys = k
+    if layout.valueHeadsPerKeyHead > 1 {
+        queries = repeated(queries, count: layout.valueHeadsPerKeyHead, axis: -2)
+        keys = repeated(keys, count: layout.valueHeadsPerKeyHead, axis: -2)
     }
 
-    var state = state ?? MLXArray.zeros([B, Hv, Dv, Dk], dtype: q.dtype)
+    var state = state ?? MLXArray.zeros(layout.stateShape, dtype: q.dtype)
+    var outputs = [MLXArray]()
+    outputs.reserveCapacity(layout.sequenceLength)
 
-    var ys = [MLXArray]()
-    ys.reserveCapacity(T)
-
-    for t in 0 ..< T {
-        let qT = q[0..., t]
-        let kT = k[0..., t]
-        let vT = v[0..., t]
-        let gT = g[0..., t]
-        let betaT = beta[0..., t]
-        let maskT = mask == nil ? nil : mask![0..., t]
-
-        let (y, newState) = gatedDeltaStepOps(
-            q: qT,
-            k: kT,
-            v: vT,
-            g: gT,
-            beta: betaT,
+    for tokenIndex in 0 ..< layout.sequenceLength {
+        let (output, nextState) = gatedDeltaStepOps(
+            q: queries[0..., tokenIndex],
+            k: keys[0..., tokenIndex],
+            v: v[0..., tokenIndex],
+            g: g[0..., tokenIndex],
+            beta: beta[0..., tokenIndex],
             state: state,
-            mask: maskT
+            mask: maskSlice(mask, at: tokenIndex)
         )
-        ys.append(y)
-        state = newState
+        outputs.append(output)
+        state = nextState
     }
 
-    let y = MLX.stacked(ys, axis: 1)
-    return (y, state)
+    return (MLX.stacked(outputs, axis: 1), state)
 }
 
 // MARK: - Public API
@@ -279,19 +345,22 @@ func gatedDeltaUpdate(
     state: MLXArray? = nil,
     mask: MLXArray? = nil
 ) -> (MLXArray, MLXArray) {
+    let layout = GatedDeltaLayout(q: q, k: k, v: v)
     let beta = sigmoid(b)
-    let g = computeGatedDeltaG(aLog, a, dtBias)
+    let decay = computeGatedDeltaG(aLog, a, dtBias)
+    let initialState = state ?? MLXArray.zeros(layout.stateShape, dtype: q.dtype)
 
-    let B = q.dim(0)
-    let Dk = q.dim(3)
-    let Hv = v.dim(2)
-    let Dv = v.dim(3)
-
-    let state = state ?? MLXArray.zeros([B, Hv, Dv, Dk], dtype: q.dtype)
-
-    if GatedDeltaKernelManager.shared.kernel != nil {
-        return gatedDeltaKernel(q: q, k: k, v: v, g: g, beta: beta, state: state, mask: mask)
+    guard layout.supportsMetalKernel else {
+        return gatedDeltaOps(q: q, k: k, v: v, g: decay, beta: beta, state: initialState, mask: mask)
     }
 
-    return gatedDeltaOps(q: q, k: k, v: v, g: g, beta: beta, state: state, mask: mask)
+    return gatedDeltaKernel(
+        q: q,
+        k: k,
+        v: v,
+        g: decay,
+        beta: beta,
+        state: initialState,
+        mask: mask
+    )
 }
