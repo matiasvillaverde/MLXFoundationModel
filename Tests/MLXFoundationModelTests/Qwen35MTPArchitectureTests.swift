@@ -13,6 +13,64 @@ struct Qwen35MTPArchitectureTests {
         #expect(config.hasNativeMTP)
     }
 
+    @Test("decodes explicit linear and full attention schedule")
+    func decodesExplicitLayerSchedule() throws {
+        let config = try Self.decodeConfig(
+            mtpLayers: 1,
+            layerTypes: ["linear_attention", "full_attention"]
+        )
+
+        #expect(config.layerTypes == [.linearAttention, .fullAttention])
+        #expect(config.layerSchedule.firstLinearIndex == 0)
+        #expect(config.layerSchedule.firstFullAttentionIndex == 1)
+    }
+
+    @Test("defaults layer schedule from full attention interval")
+    func defaultsLayerScheduleFromFullAttentionInterval() throws {
+        let config = try Self.decodeConfig(mtpLayers: 0, fullAttentionInterval: 2)
+
+        #expect(config.layerTypes == [.linearAttention, .fullAttention])
+    }
+
+    @Test("rejects layer schedule count mismatch")
+    func rejectsLayerScheduleCountMismatch() {
+        #expect(throws: DecodingError.self) {
+            _ = try Self.decodeConfig(
+                mtpLayers: 0,
+                layerTypes: ["linear_attention"]
+            )
+        }
+    }
+
+    @Test("computes attention and linear-attention layouts")
+    func computesAttentionLayouts() throws {
+        let config = try Self.decodeConfig(mtpLayers: 0)
+        let attention = Qwen35AttentionLayout(config)
+        let linear = Qwen35LinearAttentionLayout(config)
+
+        #expect(attention.headDimensions == 8)
+        #expect(attention.queryProjectionDimensions == 16)
+        #expect(attention.keyValueProjectionDimensions == 16)
+        #expect(attention.rotaryDimensions == 2)
+        #expect(linear.keyDimensions == 16)
+        #expect(linear.valueDimensions == 16)
+        #expect(linear.convolutionDimensions == 48)
+    }
+
+    @Test("cache types follow decoded layer schedule")
+    func cacheTypesFollowDecodedLayerSchedule() throws {
+        let config = try Self.decodeConfig(
+            mtpLayers: 0,
+            layerTypes: ["linear_attention", "full_attention"]
+        )
+        let model = Qwen35TextModel(config)
+        let cache = model.newCache(parameters: nil)
+
+        #expect(cache.count == 2)
+        #expect(cache[0] is MambaCache)
+        #expect(cache[1] is KVCacheSimple)
+    }
+
     @Test("constructs native MTP module when configured")
     func constructsNativeMTPModuleWhenConfigured() throws {
         let model = Qwen35TextModel(try Self.decodeConfig(mtpLayers: 1))
@@ -145,10 +203,18 @@ struct Qwen35MTPArchitectureTests {
         }
     }
 
-    private static func decodeConfig(mtpLayers: Int) throws -> Qwen35TextConfiguration {
+    private static func decodeConfig(
+        mtpLayers: Int,
+        fullAttentionInterval: Int = 1,
+        layerTypes: [String] = []
+    ) throws -> Qwen35TextConfiguration {
         try JSONDecoder.json5().decode(
             Qwen35TextConfiguration.self,
-            from: configJSON(mtpLayers: mtpLayers)
+            from: configJSON(
+                mtpLayers: mtpLayers,
+                fullAttentionInterval: fullAttentionInterval,
+                layerTypes: layerTypes
+            )
         )
     }
 
@@ -168,14 +234,20 @@ struct Qwen35MTPArchitectureTests {
         return try JSONDecoder.json5().decode(Qwen35Configuration.self, from: data)
     }
 
-    private static func configJSON(mtpLayers: Int) -> Data {
-        Data(
+    private static func configJSON(
+        mtpLayers: Int,
+        fullAttentionInterval: Int = 1,
+        layerTypes: [String] = []
+    ) -> Data {
+        let layerTypesField = Self.layerTypesJSONField(layerTypes)
+        return Data(
             """
             {
                 "attention_bias": false,
-                "full_attention_interval": 1,
+                "full_attention_interval": \(fullAttentionInterval),
                 "hidden_size": 16,
                 "intermediate_size": 32,
+                \(layerTypesField)
                 "linear_conv_kernel_dim": 2,
                 "linear_key_head_dim": 8,
                 "linear_num_key_heads": 2,
@@ -195,5 +267,13 @@ struct Qwen35MTPArchitectureTests {
             }
             """.utf8
         )
+    }
+
+    private static func layerTypesJSONField(_ layerTypes: [String]) -> String {
+        guard !layerTypes.isEmpty else {
+            return ""
+        }
+        let values = layerTypes.map { "\"\($0)\"" }.joined(separator: ", ")
+        return "\"layer_types\": [\(values)],"
     }
 }

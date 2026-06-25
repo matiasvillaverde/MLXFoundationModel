@@ -1,12 +1,3 @@
-//
-//  Qwen35.swift
-//  mlx-swift-lm
-//
-//  Created by John Mai on 2026/2/9.
-//
-//  Port of https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/models/qwen3_5.py
-//
-
 import Foundation
 import MLX
 import MLXNN
@@ -15,6 +6,107 @@ import MLXNN
 
 private enum RopeParametersCodingKey: String, CodingKey {
     case ropeParameters = "rope_parameters"
+}
+
+internal enum Qwen35LayerKind: String, Codable, Sendable, Equatable {
+    case linearAttention = "linear_attention"
+    case fullAttention = "full_attention"
+
+    internal static func defaultSchedule(
+        layerCount: Int,
+        fullAttentionInterval: Int
+    ) -> [Qwen35LayerKind] {
+        precondition(fullAttentionInterval > 0, "full_attention_interval must be positive")
+        return (0 ..< layerCount).map { layerIndex in
+            (layerIndex + 1) % fullAttentionInterval == 0
+                ? .fullAttention
+                : .linearAttention
+        }
+    }
+}
+
+internal struct Qwen35LayerSchedule: Sendable, Equatable {
+    internal let kinds: [Qwen35LayerKind]
+    internal let firstLinearIndex: Int?
+    internal let firstFullAttentionIndex: Int?
+
+    internal init(kinds: [Qwen35LayerKind]) {
+        self.kinds = kinds
+        self.firstLinearIndex = kinds.firstIndex(of: .linearAttention)
+        self.firstFullAttentionIndex = kinds.firstIndex(of: .fullAttention)
+    }
+
+    internal func kind(at layerIndex: Int) -> Qwen35LayerKind {
+        kinds[layerIndex]
+    }
+}
+
+internal struct Qwen35AttentionLayout: Sendable, Equatable {
+    internal let hiddenSize: Int
+    internal let attentionHeads: Int
+    internal let keyValueHeads: Int
+    internal let headDimensions: Int
+    internal let queryProjectionDimensions: Int
+    internal let keyValueProjectionDimensions: Int
+    internal let outputProjectionDimensions: Int
+    internal let rotaryDimensions: Int
+    internal let scale: Float
+
+    internal init(_ configuration: Qwen35TextConfiguration) {
+        let headDimensions =
+            configuration.headDim ?? configuration.hiddenSize / configuration.attentionHeads
+        precondition(configuration.hiddenSize > 0, "hidden_size must be positive")
+        precondition(configuration.attentionHeads > 0, "num_attention_heads must be positive")
+        precondition(configuration.kvHeads > 0, "num_key_value_heads must be positive")
+        precondition(headDimensions > 0, "head_dim must be positive")
+
+        self.hiddenSize = configuration.hiddenSize
+        self.attentionHeads = configuration.attentionHeads
+        self.keyValueHeads = configuration.kvHeads
+        self.headDimensions = headDimensions
+        self.queryProjectionDimensions = configuration.attentionHeads * headDimensions
+        self.keyValueProjectionDimensions = configuration.kvHeads * headDimensions
+        self.outputProjectionDimensions = configuration.attentionHeads * headDimensions
+        self.rotaryDimensions = max(
+            1,
+            Int(Float(headDimensions) * configuration.partialRotaryFactor)
+        )
+        self.scale = pow(Float(headDimensions), -0.5)
+    }
+}
+
+internal struct Qwen35LinearAttentionLayout: Sendable, Equatable {
+    internal let hiddenSize: Int
+    internal let valueHeads: Int
+    internal let keyHeads: Int
+    internal let keyHeadDimensions: Int
+    internal let valueHeadDimensions: Int
+    internal let keyDimensions: Int
+    internal let valueDimensions: Int
+    internal let convolutionKernelSize: Int
+    internal let convolutionDimensions: Int
+
+    internal init(_ configuration: Qwen35TextConfiguration) {
+        precondition(configuration.linearNumValueHeads > 0, "linear_num_value_heads must be positive")
+        precondition(configuration.linearNumKeyHeads > 0, "linear_num_key_heads must be positive")
+        precondition(
+            configuration.linearNumValueHeads % configuration.linearNumKeyHeads == 0,
+            "linear_num_value_heads must be divisible by linear_num_key_heads"
+        )
+        precondition(configuration.linearKeyHeadDim > 0, "linear_key_head_dim must be positive")
+        precondition(configuration.linearValueHeadDim > 0, "linear_value_head_dim must be positive")
+        precondition(configuration.linearConvKernelDim > 1, "linear_conv_kernel_dim must exceed one")
+
+        self.hiddenSize = configuration.hiddenSize
+        self.valueHeads = configuration.linearNumValueHeads
+        self.keyHeads = configuration.linearNumKeyHeads
+        self.keyHeadDimensions = configuration.linearKeyHeadDim
+        self.valueHeadDimensions = configuration.linearValueHeadDim
+        self.keyDimensions = keyHeads * keyHeadDimensions
+        self.valueDimensions = valueHeads * valueHeadDimensions
+        self.convolutionKernelSize = configuration.linearConvKernelDim
+        self.convolutionDimensions = keyDimensions * 2 + valueDimensions
+    }
 }
 
 internal struct Qwen35TextConfiguration: Codable, Sendable {
@@ -39,6 +131,8 @@ internal struct Qwen35TextConfiguration: Codable, Sendable {
     var headDim: Int?
     var ropeScaling: [String: StringOrNumber]?
     var fullAttentionInterval: Int = 4
+    var layerTypes: [Qwen35LayerKind] = []
+    var mlpOnlyLayers: [Int] = []
     var mtpNumHiddenLayers: Int = 0
 
     // MoE fields
@@ -71,6 +165,8 @@ internal struct Qwen35TextConfiguration: Codable, Sendable {
         case headDim = "head_dim"
         case ropeScaling = "rope_scaling"
         case fullAttentionInterval = "full_attention_interval"
+        case layerTypes = "layer_types"
+        case mlpOnlyLayers = "mlp_only_layers"
         case mtpNumHiddenLayers = "mtp_num_hidden_layers"
         case numExperts = "num_experts"
         case numExpertsPerTok = "num_experts_per_tok"
@@ -118,6 +214,8 @@ internal struct Qwen35TextConfiguration: Codable, Sendable {
         self.headDim = try container.decodeIfPresent(Int.self, forKey: .headDim)
         self.fullAttentionInterval =
             try container.decodeIfPresent(Int.self, forKey: .fullAttentionInterval) ?? 4
+        self.mlpOnlyLayers =
+            try container.decodeIfPresent([Int].self, forKey: .mlpOnlyLayers) ?? []
         self.mtpNumHiddenLayers =
             try container.decodeIfPresent(Int.self, forKey: .mtpNumHiddenLayers) ?? 0
 
@@ -158,10 +256,51 @@ internal struct Qwen35TextConfiguration: Codable, Sendable {
         if self.headDim == nil {
             self.headDim = self.hiddenSize / self.attentionHeads
         }
+
+        if let layerTypeNames = try container.decodeIfPresent([String].self, forKey: .layerTypes) {
+            guard layerTypeNames.count == self.hiddenLayers else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .layerTypes,
+                    in: container,
+                    debugDescription:
+                        "layer_types count must match num_hidden_layers"
+                )
+            }
+            self.layerTypes = try layerTypeNames.map { name in
+                guard let kind = Qwen35LayerKind(rawValue: name) else {
+                    throw DecodingError.dataCorruptedError(
+                        forKey: .layerTypes,
+                        in: container,
+                        debugDescription: "Unsupported Qwen3.5 layer type: \(name)"
+                    )
+                }
+                return kind
+            }
+        } else {
+            self.layerTypes = Qwen35LayerKind.defaultSchedule(
+                layerCount: self.hiddenLayers,
+                fullAttentionInterval: self.fullAttentionInterval
+            )
+        }
     }
 
     internal var hasNativeMTP: Bool {
         mtpNumHiddenLayers > 0
+    }
+
+    internal var layerSchedule: Qwen35LayerSchedule {
+        Qwen35LayerSchedule(kinds: layerTypes)
+    }
+
+    internal func layerKind(at layerIndex: Int) -> Qwen35LayerKind {
+        layerTypes[layerIndex]
+    }
+
+    internal func usesMoE(layerIndex: Int) -> Bool {
+        numExperts > 0
+            && numExpertsPerTok > 0
+            && !mlpOnlyLayers.contains(layerIndex)
+            && (layerIndex + 1) % decoderSparseStep == 0
     }
 }
 
@@ -202,18 +341,10 @@ private struct Qwen35WeightBackedNativeMTPActivationStrategy:
     }
 }
 
-// MARK: - GatedDeltaNet
+// MARK: - Linear Attention
 
-final class Qwen35GatedDeltaNet: Module {
-    let hiddenSize: Int
-    let numVHeads: Int
-    let numKHeads: Int
-    let headKDim: Int
-    let headVDim: Int
-    let keyDim: Int
-    let valueDim: Int
-    let convKernelSize: Int
-    let convDim: Int
+final class Qwen35LinearAttention: Module {
+    let layout: Qwen35LinearAttentionLayout
 
     @ModuleInfo(key: "conv1d") var conv1d: Conv1d
     @ModuleInfo(key: "in_proj_qkv") var inProjQKV: Linear
@@ -228,43 +359,41 @@ final class Qwen35GatedDeltaNet: Module {
     @ModuleInfo(key: "out_proj") var outProj: Linear
 
     init(_ args: Qwen35TextConfiguration) {
-        self.hiddenSize = args.hiddenSize
-        self.numVHeads = args.linearNumValueHeads
-        self.numKHeads = args.linearNumKeyHeads
-        self.headKDim = args.linearKeyHeadDim
-        self.headVDim = args.linearValueHeadDim
-        self.keyDim = headKDim * numKHeads
-        self.valueDim = headVDim * numVHeads
-        self.convKernelSize = args.linearConvKernelDim
-        self.convDim = keyDim * 2 + valueDim
-
-        precondition(
-            numVHeads % numKHeads == 0,
-            "num_v_heads (\(numVHeads)) must be divisible by num_k_heads (\(numKHeads))"
-        )
+        self.layout = Qwen35LinearAttentionLayout(args)
 
         _conv1d.wrappedValue = Conv1d(
-            inputChannels: convDim,
-            outputChannels: convDim,
-            kernelSize: convKernelSize,
+            inputChannels: layout.convolutionDimensions,
+            outputChannels: layout.convolutionDimensions,
+            kernelSize: layout.convolutionKernelSize,
             stride: 1,
             padding: 0,
             dilation: 1,
-            groups: convDim,
+            groups: layout.convolutionDimensions,
             bias: false
         )
 
-        _inProjQKV.wrappedValue = Linear(hiddenSize, keyDim * 2 + valueDim, bias: false)
-        _inProjZ.wrappedValue = Linear(hiddenSize, valueDim, bias: false)
-        _inProjB.wrappedValue = Linear(hiddenSize, numVHeads, bias: false)
-        _inProjA.wrappedValue = Linear(hiddenSize, numVHeads, bias: false)
+        _inProjQKV.wrappedValue = Linear(
+            layout.hiddenSize,
+            layout.convolutionDimensions,
+            bias: false
+        )
+        _inProjZ.wrappedValue = Linear(layout.hiddenSize, layout.valueDimensions, bias: false)
+        _inProjB.wrappedValue = Linear(layout.hiddenSize, layout.valueHeads, bias: false)
+        _inProjA.wrappedValue = Linear(layout.hiddenSize, layout.valueHeads, bias: false)
 
-        _dtBias.wrappedValue = MLXArray.ones([numVHeads])
-        let a = MLXRandom.uniform(low: 0, high: 16, [numVHeads])
+        _dtBias.wrappedValue = MLXArray.ones([layout.valueHeads])
+        let a = MLXRandom.uniform(low: 0, high: 16, [layout.valueHeads])
         _aLog.wrappedValue = log(a)
 
-        _norm.wrappedValue = Qwen3NextRMSNormGated(dimensions: headVDim, eps: args.rmsNormEps)
-        _outProj.wrappedValue = Linear(valueDim, hiddenSize, bias: false)
+        _norm.wrappedValue = Qwen3NextRMSNormGated(
+            dimensions: layout.valueHeadDimensions,
+            eps: args.rmsNormEps
+        )
+        _outProj.wrappedValue = Linear(
+            layout.valueDimensions,
+            layout.hiddenSize,
+            bias: false
+        )
 
         super.init()
     }
@@ -278,7 +407,12 @@ final class Qwen35GatedDeltaNet: Module {
         let S = inputs.dim(1)
 
         var qkv = inProjQKV(inputs)
-        let z = inProjZ(inputs).reshaped(B, S, numVHeads, headVDim)
+        let z = inProjZ(inputs).reshaped(
+            B,
+            S,
+            layout.valueHeads,
+            layout.valueHeadDimensions
+        )
         let b = inProjB(inputs)
         let a = inProjA(inputs)
 
@@ -286,7 +420,10 @@ final class Qwen35GatedDeltaNet: Module {
         if let cacheState = cache?[0] {
             convState = cacheState
         } else {
-            convState = MLXArray.zeros([B, convKernelSize - 1, convDim], dtype: inputs.dtype)
+            convState = MLXArray.zeros(
+                [B, layout.convolutionKernelSize - 1, layout.convolutionDimensions],
+                dtype: inputs.dtype
+            )
         }
 
         if let mask {
@@ -295,19 +432,38 @@ final class Qwen35GatedDeltaNet: Module {
 
         let convInput = concatenated([convState, qkv], axis: 1)
         if let cache {
-            cache[0] = convInput[0..., (-(convKernelSize - 1))...]
+            cache[0] = convInput[0..., (1 - layout.convolutionKernelSize)...]
         }
 
         let convOut = silu(conv1d(convInput))
 
-        let convSplit = MLX.split(convOut, indices: [keyDim, 2 * keyDim], axis: -1)
-        let q = convSplit[0].reshaped(B, S, numKHeads, headKDim)
-        let k = convSplit[1].reshaped(B, S, numKHeads, headKDim)
-        let v = convSplit[2].reshaped(B, S, numVHeads, headVDim)
+        let convSplit = MLX.split(
+            convOut,
+            indices: [layout.keyDimensions, 2 * layout.keyDimensions],
+            axis: -1
+        )
+        let q = convSplit[0].reshaped(
+            B,
+            S,
+            layout.keyHeads,
+            layout.keyHeadDimensions
+        )
+        let k = convSplit[1].reshaped(
+            B,
+            S,
+            layout.keyHeads,
+            layout.keyHeadDimensions
+        )
+        let v = convSplit[2].reshaped(
+            B,
+            S,
+            layout.valueHeads,
+            layout.valueHeadDimensions
+        )
 
         var state = cache?[1]
         let dtype = q.dtype
-        let invScale = pow(Float(headKDim), -0.5)
+        let invScale = pow(Float(layout.keyHeadDimensions), -0.5)
         let qNormed =
             MLXArray(pow(invScale, 2)).asType(dtype)
             * MLXFast.rmsNorm(q, weight: MLXArray.mlxNone, eps: 1e-6)
@@ -341,9 +497,7 @@ final class Qwen35GatedDeltaNet: Module {
 // MARK: - Attention
 
 final class Qwen35Attention: Module {
-    let attentionHeads: Int
-    let kvHeads: Int
-    let scale: Float
+    let layout: Qwen35AttentionLayout
 
     @ModuleInfo(key: "q_proj") var qProj: Linear
     @ModuleInfo(key: "k_proj") var kProj: Linear
@@ -356,26 +510,34 @@ final class Qwen35Attention: Module {
     let rope: RoPELayer
 
     init(_ args: Qwen35TextConfiguration) {
-        let headDim = args.headDim ?? (args.hiddenSize / args.attentionHeads)
-        self.attentionHeads = args.attentionHeads
-        self.kvHeads = args.kvHeads
-        self.scale = pow(Float(headDim), -0.5)
+        self.layout = Qwen35AttentionLayout(args)
 
         _qProj.wrappedValue = Linear(
-            args.hiddenSize, args.attentionHeads * headDim * 2, bias: args.attentionBias)
+            layout.hiddenSize,
+            layout.queryProjectionDimensions * 2,
+            bias: args.attentionBias
+        )
         _kProj.wrappedValue = Linear(
-            args.hiddenSize, args.kvHeads * headDim, bias: args.attentionBias)
+            layout.hiddenSize,
+            layout.keyValueProjectionDimensions,
+            bias: args.attentionBias
+        )
         _vProj.wrappedValue = Linear(
-            args.hiddenSize, args.kvHeads * headDim, bias: args.attentionBias)
+            layout.hiddenSize,
+            layout.keyValueProjectionDimensions,
+            bias: args.attentionBias
+        )
         _oProj.wrappedValue = Linear(
-            args.attentionHeads * headDim, args.hiddenSize, bias: args.attentionBias)
+            layout.outputProjectionDimensions,
+            layout.hiddenSize,
+            bias: args.attentionBias
+        )
 
-        _qNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: args.rmsNormEps)
-        _kNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: args.rmsNormEps)
+        _qNorm.wrappedValue = RMSNorm(dimensions: layout.headDimensions, eps: args.rmsNormEps)
+        _kNorm.wrappedValue = RMSNorm(dimensions: layout.headDimensions, eps: args.rmsNormEps)
 
-        let ropeDims = Int(Float(headDim) * args.partialRotaryFactor)
         self.rope = initializeRope(
-            dims: max(1, ropeDims),
+            dims: layout.rotaryDimensions,
             base: args.ropeTheta,
             traditional: false,
             scalingConfig: args.ropeScaling,
@@ -392,7 +554,13 @@ final class Qwen35Attention: Module {
         let L = x.dim(1)
 
         let qProjOutput = qProj(x)
-        let qSplit = qProjOutput.reshaped(B, L, attentionHeads, -1).split(parts: 2, axis: -1)
+        let qSplit = qProjOutput.reshaped(
+            B,
+            L,
+            layout.attentionHeads,
+            -1
+        )
+        .split(parts: 2, axis: -1)
         var queries = qSplit[0]
         let gate = qSplit[1].reshaped(B, L, -1)
 
@@ -400,8 +568,8 @@ final class Qwen35Attention: Module {
         var values = vProj(x)
 
         queries = qNorm(queries).transposed(0, 2, 1, 3)
-        keys = kNorm(keys.reshaped(B, L, kvHeads, -1)).transposed(0, 2, 1, 3)
-        values = values.reshaped(B, L, kvHeads, -1).transposed(0, 2, 1, 3)
+        keys = kNorm(keys.reshaped(B, L, layout.keyValueHeads, -1)).transposed(0, 2, 1, 3)
+        values = values.reshaped(B, L, layout.keyValueHeads, -1).transposed(0, 2, 1, 3)
 
         queries = applyRotaryPosition(rope, to: queries, cache: cache)
         keys = applyRotaryPosition(rope, to: keys, cache: cache)
@@ -411,7 +579,7 @@ final class Qwen35Attention: Module {
             keys: keys,
             values: values,
             cache: cache,
-            scale: scale,
+            scale: layout.scale,
             mask: mask
         )
         .transposed(0, 2, 1, 3)
@@ -478,10 +646,10 @@ final class Qwen35SparseMoeBlock: Module, UnaryLayer {
 // MARK: - Decoder Layer
 
 final class Qwen35DecoderLayer: Module {
-    let isLinear: Bool
+    let layerKind: Qwen35LayerKind
 
     @ModuleInfo(key: "self_attn") var selfAttn: Qwen35Attention?
-    @ModuleInfo(key: "linear_attn") var linearAttn: Qwen35GatedDeltaNet?
+    @ModuleInfo(key: "linear_attn") var linearAttn: Qwen35LinearAttention?
 
     @ModuleInfo(key: "input_layernorm") var inputLayerNorm: RMSNorm
     @ModuleInfo(key: "post_attention_layernorm") var postAttentionLayerNorm: RMSNorm
@@ -489,15 +657,15 @@ final class Qwen35DecoderLayer: Module {
     @ModuleInfo(key: "mlp") var mlp: Module
 
     init(_ args: Qwen35TextConfiguration, layerIdx: Int) {
-        self.isLinear = (layerIdx + 1) % args.fullAttentionInterval != 0
+        self.layerKind = args.layerKind(at: layerIdx)
 
-        if isLinear {
-            _linearAttn.wrappedValue = Qwen35GatedDeltaNet(args)
+        if layerKind == .linearAttention {
+            _linearAttn.wrappedValue = Qwen35LinearAttention(args)
         } else {
             _selfAttn.wrappedValue = Qwen35Attention(args)
         }
 
-        if args.numExperts > 0 {
+        if args.usesMoE(layerIndex: layerIdx) {
             _mlp.wrappedValue = Qwen35SparseMoeBlock(args)
         } else {
             _mlp.wrappedValue = Qwen3NextMLP(
@@ -518,6 +686,10 @@ final class Qwen35DecoderLayer: Module {
         super.init()
     }
 
+    var isLinear: Bool {
+        layerKind == .linearAttention
+    }
+
     func callAsFunction(
         _ x: MLXArray,
         attentionMask: MLXFast.ScaledDotProductAttentionMaskMode,
@@ -526,9 +698,15 @@ final class Qwen35DecoderLayer: Module {
     ) -> MLXArray {
         let r: MLXArray
         if isLinear {
-            r = linearAttn!(inputLayerNorm(x), mask: ssmMask, cache: cache as? MambaCache)
+            guard let linearAttn else {
+                preconditionFailure("Qwen3.5 linear layer is missing its linear attention module")
+            }
+            r = linearAttn(inputLayerNorm(x), mask: ssmMask, cache: cache as? MambaCache)
         } else {
-            r = selfAttn!(inputLayerNorm(x), mask: attentionMask, cache: cache)
+            guard let selfAttn else {
+                preconditionFailure("Qwen3.5 full-attention layer is missing its attention module")
+            }
+            r = selfAttn(inputLayerNorm(x), mask: attentionMask, cache: cache)
         }
 
         let h = x + r
@@ -555,7 +733,7 @@ final class Qwen35MTPDecoderLayer: Module {
             eps: args.rmsNormEps
         )
 
-        if args.numExperts > 0 {
+        if args.numExperts > 0 && args.numExpertsPerTok > 0 {
             _mlp.wrappedValue = Qwen35SparseMoeBlock(args)
         } else {
             _mlp.wrappedValue = Qwen3NextMLP(
@@ -645,12 +823,11 @@ internal class Qwen35TextModelInner: Module {
 
     fileprivate let layers: [Qwen35DecoderLayer]
     let norm: RMSNorm
-
-    let ssmIdx: Int
-    let faIdx: Int
+    let schedule: Qwen35LayerSchedule
 
     init(_ args: Qwen35TextConfiguration) {
         precondition(args.vocabularySize > 0)
+        self.schedule = args.layerSchedule
 
         _embedTokens.wrappedValue = Embedding(
             embeddingCount: args.vocabularySize,
@@ -663,9 +840,6 @@ internal class Qwen35TextModelInner: Module {
 
         self.norm = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
 
-        self.ssmIdx = 0
-        self.faIdx = args.fullAttentionInterval - 1
-
         super.init()
     }
 
@@ -677,14 +851,25 @@ internal class Qwen35TextModelInner: Module {
             cacheArray = Array(repeating: nil as KVCache?, count: layers.count)
         }
 
-        let faMask = createAttentionMask(h: hiddenStates, cache: cacheArray?[faIdx])
-        let ssmMask = createSSMMask(h: hiddenStates, cache: cacheArray?[ssmIdx] as? MambaCache)
+        let fullAttentionMask: MLXFast.ScaledDotProductAttentionMaskMode
+        if let index = schedule.firstFullAttentionIndex {
+            fullAttentionMask = createAttentionMask(h: hiddenStates, cache: cacheArray?[index])
+        } else {
+            fullAttentionMask = .none
+        }
+
+        let ssmMask: MLXArray?
+        if let index = schedule.firstLinearIndex {
+            ssmMask = createSSMMask(h: hiddenStates, cache: cacheArray?[index] as? MambaCache)
+        } else {
+            ssmMask = nil
+        }
 
         for (i, layer) in layers.enumerated() {
             let mask = layer.isLinear ? ssmMask : nil
             let attnMask =
                 layer.isLinear
-                ? MLXFast.ScaledDotProductAttentionMaskMode.none : faMask
+                ? MLXFast.ScaledDotProductAttentionMaskMode.none : fullAttentionMask
             hiddenStates = layer(
                 hiddenStates, attentionMask: attnMask, ssmMask: mask, cache: cacheArray?[i])
         }
@@ -697,11 +882,13 @@ internal class Qwen35TextModelInner: Module {
     }
 }
 
-internal class Qwen35TextModel: Module, LLMModel, KVCacheDimensionProvider, NativeMTPModel {
+internal class Qwen35TextModel: Module, LLMModel, KVCacheDimensionProvider, NativeMTPModel,
+    GreedyTokenModel {
     internal let vocabularySize: Int
     internal let kvHeads: [Int]
 
-    internal let model: Qwen35TextModelInner
+    @ModuleInfo(key: "model") fileprivate var model: Qwen35TextModelInner
+
     let configuration: Qwen35TextConfiguration
     private let nativeMTPActivationStrategy: Qwen35NativeMTPActivationStrategy
 
@@ -712,7 +899,7 @@ internal class Qwen35TextModel: Module, LLMModel, KVCacheDimensionProvider, Nati
         self.configuration = args
         self.vocabularySize = args.vocabularySize
         self.kvHeads = (0 ..< args.hiddenLayers).map { _ in args.kvHeads }
-        self.model = Qwen35TextModelInner(args)
+        self._model.wrappedValue = Qwen35TextModelInner(args)
         self.nativeMTPActivationStrategy = Qwen35WeightBackedNativeMTPActivationStrategy()
 
         if !args.tieWordEmbeddings {
@@ -728,11 +915,12 @@ internal class Qwen35TextModel: Module, LLMModel, KVCacheDimensionProvider, Nati
     }
 
     internal func newCache(parameters: GenerateParameters?) -> [KVCache] {
-        return model.layers.map { layer in
+        model.layers.map { layer in
             if layer.isLinear {
-                return MambaCache()
+                MambaCache()
+            } else {
+                KVCacheSimple()
             }
-            return KVCacheSimple()
         }
     }
 
@@ -795,6 +983,21 @@ internal class Qwen35TextModel: Module, LLMModel, KVCacheDimensionProvider, Nati
 
     internal func hiddenStates(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
         model.hiddenStates(inputs, cache: cache)
+    }
+
+    internal func greedyToken(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?
+    ) -> GreedyTokenOutput {
+        greedyTokenOutput(
+            logits: projectToLogits(
+                lastTokenHiddenState(
+                    model(input[text: .newAxis].tokens, cache: cache)
+                )
+            ),
+            state: state
+        )
     }
 
     internal func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
@@ -907,9 +1110,50 @@ extension Qwen35TextModel: LoRAModel {
     }
 }
 
+internal enum Qwen35TopLevelWeightMapper {
+    internal static func languageModelWeights(from weights: [String: MLXArray]) -> [String: MLXArray] {
+        var mapped = [String: MLXArray]()
+        mapped.reserveCapacity(weights.count)
+
+        for (originalKey, value) in weights {
+            guard !shouldDropTopLevelWeight(originalKey) else {
+                continue
+            }
+            mapped[languageModelKey(for: originalKey)] = value
+        }
+
+        return mapped
+    }
+
+    private static func shouldDropTopLevelWeight(_ key: String) -> Bool {
+        key.hasPrefix("vision_tower") || key.hasPrefix("model.visual")
+    }
+
+    private static func languageModelKey(for key: String) -> String {
+        if key.hasPrefix("model.language_model.mtp.") {
+            return "language_model.mtp."
+                + key.dropFirst("model.language_model.mtp.".count)
+        }
+        if key.hasPrefix("model.mtp.") {
+            return "language_model.mtp." + key.dropFirst("model.mtp.".count)
+        }
+        if key.hasPrefix("model.language_model") {
+            return key.replacingOccurrences(
+                of: "model.language_model",
+                with: "language_model.model"
+            )
+        }
+        if key.hasPrefix("language_model.") {
+            return key
+        }
+        return "language_model." + key
+    }
+}
+
 // MARK: - Top-level Model
 
-internal class Qwen35Model: Module, LLMModel, KVCacheDimensionProvider, NativeMTPModel {
+internal class Qwen35Model: Module, LLMModel, KVCacheDimensionProvider, NativeMTPModel,
+    GreedyTokenModel {
     internal let vocabularySize: Int
     internal let kvHeads: [Int]
 
@@ -924,6 +1168,14 @@ internal class Qwen35Model: Module, LLMModel, KVCacheDimensionProvider, NativeMT
 
     internal func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
         languageModel(inputs, cache: cache)
+    }
+
+    internal func greedyToken(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?
+    ) -> GreedyTokenOutput {
+        languageModel.greedyToken(input, cache: cache, state: state)
     }
 
     internal func newCache(parameters: GenerateParameters?) -> [KVCache] {
@@ -959,28 +1211,9 @@ internal class Qwen35Model: Module, LLMModel, KVCacheDimensionProvider, NativeMT
     }
 
     internal func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
-        var sanitized = [String: MLXArray]()
-        for (key, value) in weights {
-            if key.hasPrefix("vision_tower") || key.hasPrefix("model.visual") {
-                continue
-            }
-
-            var key = key
-            if key.hasPrefix("model.language_model.mtp.") {
-                key = "language_model.mtp."
-                    + key.dropFirst("model.language_model.mtp.".count)
-            } else if key.hasPrefix("model.mtp.") {
-                key = "language_model.mtp." + key.dropFirst("model.mtp.".count)
-            } else if key.hasPrefix("model.language_model") {
-                key = key.replacingOccurrences(
-                    of: "model.language_model", with: "language_model.model")
-            } else if !key.hasPrefix("language_model.") {
-                key = "language_model." + key
-            }
-            sanitized[key] = value
-        }
-
-        return languageModel.sanitize(weights: sanitized)
+        languageModel.sanitize(
+            weights: Qwen35TopLevelWeightMapper.languageModelWeights(from: weights)
+        )
     }
 }
 

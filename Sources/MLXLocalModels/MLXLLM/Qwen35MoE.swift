@@ -1,12 +1,3 @@
-//
-//  Qwen35MoE.swift
-//  mlx-swift-lm
-//
-//  Created by John Mai on 2026/2/9.
-//
-//  Port of https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/models/qwen3_5_moe.py
-//
-
 import Foundation
 import MLX
 import MLXNN
@@ -37,25 +28,7 @@ internal struct Qwen35Configuration: Codable, Sendable {
 internal class Qwen35MoEModel: Qwen35Model {
 
     override internal func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
-        var newWeights = [String: MLXArray]()
-        for (key, value) in weights {
-            if key.hasPrefix("vision_tower") || key.hasPrefix("model.visual") {
-                continue
-            }
-            var key = key
-            if key.hasPrefix("model.language_model.mtp.") {
-                key = "language_model.mtp."
-                    + key.dropFirst("model.language_model.mtp.".count)
-            } else if key.hasPrefix("model.mtp.") {
-                key = "language_model.mtp." + key.dropFirst("model.mtp.".count)
-            } else if key.hasPrefix("model.language_model") {
-                key = key.replacingOccurrences(
-                    of: "model.language_model", with: "language_model.model")
-            } else if !key.hasPrefix("language_model.") {
-                key = "language_model." + key
-            }
-            newWeights[key] = value
-        }
+        var newWeights = Qwen35TopLevelWeightMapper.languageModelWeights(from: weights)
 
         for l in 0 ..< languageModel.configuration.hiddenLayers {
             let prefix = "language_model.model.layers.\(l).mlp"
