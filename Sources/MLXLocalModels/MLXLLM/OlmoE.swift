@@ -1,240 +1,338 @@
-//  Olmo2.swift
-//  LLM
-//
-//  Created by Sachin Desai on 9/11/25.
-//
-
-// Port of https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/models/olmoe.py
-
 import Foundation
 import MLX
 import MLXNN
 
-// MARK: - Attention
+// MARK: - Plans
 
-class OlmoEAttention: Module {
-    let args: OlmoEConfiguration
-    let nHeads: Int
-    let nKVHeads: Int
-    let headDim: Int
-    let scale: Float
+internal struct OlmoEAttentionLayout: Equatable, Sendable {
+    internal let hiddenSize: Int
+    internal let attentionHeads: Int
+    internal let keyValueHeads: Int
+    internal let headDimensions: Int
+    internal let attentionScale: Float
 
-    @ModuleInfo(key: "q_proj") var wq: Linear
-    @ModuleInfo(key: "k_proj") var wk: Linear
-    @ModuleInfo(key: "v_proj") var wv: Linear
-    @ModuleInfo(key: "o_proj") var wo: Linear
+    internal init(_ config: OlmoEConfiguration) {
+        let headDimensions = config.headDimensions ?? (config.hiddenSize / config.attentionHeads)
+        precondition(config.attentionHeads > 0, "OLMoE attention heads must be positive")
+        precondition(config.kvHeads > 0, "OLMoE KV heads must be positive")
+        precondition(headDimensions > 0, "OLMoE head dimensions must be positive")
+        precondition(
+            config.attentionHeads.isMultiple(of: config.kvHeads),
+            "OLMoE attention heads must group KV heads"
+        )
+
+        self.hiddenSize = config.hiddenSize
+        self.attentionHeads = config.attentionHeads
+        self.keyValueHeads = config.kvHeads
+        self.headDimensions = headDimensions
+        self.attentionScale = pow(Float(headDimensions), -0.5)
+    }
+
+    internal var queryProjectionSize: Int { attentionHeads * headDimensions }
+    internal var keyValueProjectionSize: Int { keyValueHeads * headDimensions }
+}
+
+internal struct OlmoERoutingPlan: Equatable, Sendable {
+    internal let expertCount: Int
+    internal let selectedExpertCount: Int
+    internal let normalizesSelectedProbabilities: Bool
+
+    internal init(_ config: OlmoEConfiguration) {
+        precondition(config.numExperts > 0, "OLMoE expert count must be positive")
+        precondition(config.numExpertsPerToken > 0, "OLMoE selected expert count must be positive")
+        precondition(
+            config.numExpertsPerToken <= config.numExperts,
+            "OLMoE cannot select more experts than it owns"
+        )
+
+        self.expertCount = config.numExperts
+        self.selectedExpertCount = config.numExpertsPerToken
+        self.normalizesSelectedProbabilities = config.normTopkProb
+    }
+
+    internal func route(_ logits: MLXArray) -> (scores: MLXArray, indices: MLXArray) {
+        let probabilities = MLX.softmax(logits, axis: -1, precise: true)
+        let indices = MLX.argPartition(
+            -probabilities,
+            kth: selectedExpertCount - 1,
+            axis: -1
+        )[.ellipsis, ..<selectedExpertCount]
+
+        var scores = MLX.takeAlong(probabilities, indices, axis: -1)
+        if normalizesSelectedProbabilities {
+            scores = scores / MLX.sum(scores, axis: -1, keepDims: true)
+        }
+        return (scores, indices)
+    }
+}
+
+private enum OlmoEExpertProjection: String, CaseIterable {
+    case up = "up_proj"
+    case down = "down_proj"
+    case gate = "gate_proj"
+}
+
+internal struct OlmoEExpertPackingPlan: Equatable, Sendable {
+    internal let layerCount: Int
+    internal let expertCount: Int
+
+    internal init(_ config: OlmoEConfiguration) {
+        self.layerCount = config.hiddenLayers
+        self.expertCount = config.numExperts
+    }
+
+    internal func pack(_ weights: [String: MLXArray]) -> [String: MLXArray] {
+        var packed = weights
+        guard packed["model.layers.0.mlp.experts.0.up_proj.weight"] != nil else {
+            return packed
+        }
+
+        for layerIndex in 0 ..< layerCount {
+            let prefix = "model.layers.\(layerIndex).mlp"
+            for projection in OlmoEExpertProjection.allCases {
+                for tensorName in ["weight", "scales", "biases"] {
+                    let firstKey = "\(prefix).experts.0.\(projection.rawValue).\(tensorName)"
+                    guard packed[firstKey] != nil else { continue }
+
+                    let tensors = (0 ..< expertCount).map { expertIndex in
+                        packed.removeValue(
+                            forKey: "\(prefix).experts.\(expertIndex).\(projection.rawValue).\(tensorName)"
+                        )!
+                    }
+                    packed["\(prefix).switch_mlp.\(projection.rawValue).\(tensorName)"] =
+                        MLX.stacked(tensors)
+                }
+            }
+        }
+
+        return packed
+    }
+}
+
+// MARK: - Model Components
+
+internal final class OlmoEAttention: Module {
+    let layout: OlmoEAttentionLayout
+
+    @ModuleInfo(key: "q_proj") var qProj: Linear
+    @ModuleInfo(key: "k_proj") var kProj: Linear
+    @ModuleInfo(key: "v_proj") var vProj: Linear
+    @ModuleInfo(key: "o_proj") var oProj: Linear
 
     @ModuleInfo(key: "q_norm") var qNorm: RMSNorm
     @ModuleInfo(key: "k_norm") var kNorm: RMSNorm
 
     let rope: RoPELayer
 
-    init(_ args: OlmoEConfiguration) {
-        self.args = args
+    init(_ config: OlmoEConfiguration) {
+        self.layout = OlmoEAttentionLayout(config)
 
-        let dim = args.hiddenSize
-        self.nHeads = args.attentionHeads
-        self.nKVHeads = args.kvHeads
-        self.headDim = args.resolvedHeadDimensions
-        self.scale = pow(Float(headDim), -0.5)
+        _qProj.wrappedValue = Linear(
+            config.hiddenSize,
+            layout.queryProjectionSize,
+            bias: config.attentionBias
+        )
+        _kProj.wrappedValue = Linear(
+            config.hiddenSize,
+            layout.keyValueProjectionSize,
+            bias: config.attentionBias
+        )
+        _vProj.wrappedValue = Linear(
+            config.hiddenSize,
+            layout.keyValueProjectionSize,
+            bias: config.attentionBias
+        )
+        _oProj.wrappedValue = Linear(
+            layout.queryProjectionSize,
+            config.hiddenSize,
+            bias: config.attentionBias
+        )
 
-        self._wq.wrappedValue = Linear(dim, nHeads * headDim, bias: args.attentionBias)
-        self._wk.wrappedValue = Linear(dim, nKVHeads * headDim, bias: args.attentionBias)
-        self._wv.wrappedValue = Linear(dim, nKVHeads * headDim, bias: args.attentionBias)
-        self._wo.wrappedValue = Linear(nHeads * headDim, dim, bias: args.attentionBias)
-
-        self._qNorm.wrappedValue = RMSNorm(dimensions: nHeads * headDim, eps: args.rmsNormEps)
-        self._kNorm.wrappedValue = RMSNorm(dimensions: nKVHeads * headDim, eps: args.rmsNormEps)
+        _qNorm.wrappedValue = RMSNorm(dimensions: layout.queryProjectionSize, eps: config.rmsNormEps)
+        _kNorm.wrappedValue = RMSNorm(dimensions: layout.keyValueProjectionSize, eps: config.rmsNormEps)
 
         self.rope = initializeRope(
-            dims: headDim, base: args.ropeTheta,
-            traditional: args.ropeTraditional,
-            scalingConfig: args.ropeScaling,
-            maxPositionEmbeddings: args.maxPositionEmbeddings)
+            dims: layout.headDimensions,
+            base: config.ropeTheta,
+            traditional: config.ropeTraditional,
+            scalingConfig: config.ropeScaling,
+            maxPositionEmbeddings: config.maxPositionEmbeddings
+        )
     }
 
     func callAsFunction(
-        _ x: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode, cache: KVCache?
+        _ x: MLXArray,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode,
+        cache: KVCache?
     ) -> MLXArray {
-        let (B, L) = (x.dim(0), x.dim(1))
+        let batchSize = x.dim(0)
+        let tokenCount = x.dim(1)
 
-        var queries = qNorm(wq(x))
-        var keys = kNorm(wk(x))
-        var values = wv(x)
+        var queryStates = qNorm(qProj(x))
+            .reshaped(batchSize, tokenCount, layout.attentionHeads, layout.headDimensions)
+            .transposed(0, 2, 1, 3)
+        var keyStates = kNorm(kProj(x))
+            .reshaped(batchSize, tokenCount, layout.keyValueHeads, layout.headDimensions)
+            .transposed(0, 2, 1, 3)
+        let valueStates = vProj(x)
+            .reshaped(batchSize, tokenCount, layout.keyValueHeads, layout.headDimensions)
+            .transposed(0, 2, 1, 3)
 
-        queries = queries.reshaped(B, L, nHeads, -1).transposed(0, 2, 1, 3)
-        keys = keys.reshaped(B, L, nKVHeads, -1).transposed(0, 2, 1, 3)
-        values = values.reshaped(B, L, nKVHeads, -1).transposed(0, 2, 1, 3)
-
-        queries = applyRotaryPosition(rope, to: queries, cache: cache)
-        keys = applyRotaryPosition(rope, to: keys, cache: cache)
+        queryStates = applyRotaryPosition(rope, to: queryStates, cache: cache)
+        keyStates = applyRotaryPosition(rope, to: keyStates, cache: cache)
 
         let output = attentionWithCacheUpdate(
-            queries: queries,
-            keys: keys,
-            values: values,
+            queries: queryStates,
+            keys: keyStates,
+            values: valueStates,
             cache: cache,
-            scale: scale,
+            scale: layout.attentionScale,
             mask: mask
         )
         .transposed(0, 2, 1, 3)
-        .reshaped(B, L, -1)
+        .reshaped(batchSize, tokenCount, -1)
 
-        return wo(output)
+        return oProj(output)
     }
 }
 
-// MARK: - Sparse MoE Block
-
-class OlmoeSparseMoeBlock: Module, UnaryLayer {
-    let numExperts: Int
-    let topK: Int
-    let normTopkProb: Bool
+internal final class OlmoESparseMoeBlock: Module, UnaryLayer {
+    let routingPlan: OlmoERoutingPlan
 
     @ModuleInfo(key: "gate") var gate: Linear
     @ModuleInfo(key: "switch_mlp") var switchMLP: SwitchGLU
 
-    init(_ args: OlmoEConfiguration) {
-        self.numExperts = args.numExperts
-        self.topK = args.numExpertsPerToken
-        self.normTopkProb = args.normTopkProb
+    init(_ config: OlmoEConfiguration) {
+        self.routingPlan = OlmoERoutingPlan(config)
 
-        self._gate.wrappedValue = Linear(args.hiddenSize, numExperts, bias: false)
-        self._switchMLP.wrappedValue = SwitchGLU(
-            inputDims: args.hiddenSize, hiddenDims: args.intermediateSize, numExperts: numExperts,
-            bias: args.mlpBias
+        _gate.wrappedValue = Linear(config.hiddenSize, routingPlan.expertCount, bias: false)
+        _switchMLP.wrappedValue = SwitchGLU(
+            inputDims: config.hiddenSize,
+            hiddenDims: config.intermediateSize,
+            numExperts: routingPlan.expertCount,
+            bias: config.mlpBias
         )
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        let routerLogits = gate(x)
-        let routingWeights = MLX.softmax(routerLogits, axis: -1, precise: true)
-
-        let k = topK
-        let inds = MLX.argPartition(-routingWeights, kth: k - 1, axis: -1)[.ellipsis, ..<k]
-        var scores = MLX.takeAlong(routingWeights, inds, axis: -1)
-
-        if normTopkProb {
-            scores = scores / MLX.sum(scores, axis: -1, keepDims: true)
-        }
-
-        let y = switchMLP(x, inds)
-        return (y * scores[.ellipsis, .newAxis]).sum(axis: -2)
+        let routed = routingPlan.route(gate(x))
+        let expertOutput = switchMLP(x, routed.indices)
+        return (expertOutput * routed.scores[.ellipsis, .newAxis]).sum(axis: -2)
     }
 }
 
-// MARK: - Transformer Block
-
-class OlmoETransformerBlock: Module {
-    @ModuleInfo(key: "self_attn") var attention: OlmoEAttention
-    @ModuleInfo(key: "mlp") var mlp: OlmoeSparseMoeBlock
+internal final class OlmoEBlock: Module {
+    @ModuleInfo(key: "self_attn") fileprivate var attention: OlmoEAttention
+    @ModuleInfo(key: "mlp") fileprivate var feedForward: OlmoESparseMoeBlock
 
     @ModuleInfo(key: "input_layernorm") var inputLayerNorm: RMSNorm
     @ModuleInfo(key: "post_attention_layernorm") var postAttentionLayerNorm: RMSNorm
 
-    init(_ args: OlmoEConfiguration) {
-        self._attention.wrappedValue = OlmoEAttention(args)
-        self._mlp.wrappedValue = OlmoeSparseMoeBlock(args)
-        self._inputLayerNorm.wrappedValue = RMSNorm(
-            dimensions: args.hiddenSize, eps: args.rmsNormEps)
-        self._postAttentionLayerNorm.wrappedValue = RMSNorm(
-            dimensions: args.hiddenSize, eps: args.rmsNormEps)
+    init(_ config: OlmoEConfiguration) {
+        _attention.wrappedValue = OlmoEAttention(config)
+        _feedForward.wrappedValue = OlmoESparseMoeBlock(config)
+        _inputLayerNorm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
+        _postAttentionLayerNorm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
     }
 
     func callAsFunction(
-        _ x: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode, cache: KVCache?
+        _ x: MLXArray,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode,
+        cache: KVCache?
     ) -> MLXArray {
-        var x = x + attention(inputLayerNorm(x), mask: mask, cache: cache)
-        x = x + mlp(postAttentionLayerNorm(x))
-        return x
+        var hidden = x + attention(inputLayerNorm(x), mask: mask, cache: cache)
+        hidden = hidden + feedForward(postAttentionLayerNorm(hidden))
+        return hidden
     }
 }
 
-// MARK: - Model
-
-internal class OlmoEModelInner: Module {
+internal final class OlmoEBackbone: Module {
     @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding
+    @ModuleInfo var layers: [OlmoEBlock]
+    @ModuleInfo(key: "norm") var norm: RMSNorm
 
-    let layers: [OlmoETransformerBlock]
-    let norm: RMSNorm
+    init(_ config: OlmoEConfiguration) {
+        precondition(config.vocabularySize > 0, "OLMoE vocabulary size must be positive")
 
-    init(_ args: OlmoEConfiguration) {
-        precondition(args.vocabularySize > 0)
-
-        self._embedTokens.wrappedValue = Embedding(
-            embeddingCount: args.vocabularySize, dimensions: args.hiddenSize)
-
-        self.layers = (0 ..< args.hiddenLayers).map { _ in OlmoETransformerBlock(args) }
-        self.norm = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
+        _embedTokens.wrappedValue = Embedding(
+            embeddingCount: config.vocabularySize,
+            dimensions: config.hiddenSize
+        )
+        _layers.wrappedValue = (0 ..< config.hiddenLayers).map { _ in OlmoEBlock(config) }
+        _norm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
     }
 
     func callAsFunction(_ inputs: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
-        var h = embedTokens(inputs)
+        var hidden = embedTokens(inputs)
+        let mask = createAttentionMask(h: hidden, cache: cache?.first)
 
-        let mask = createAttentionMask(h: h, cache: cache?.first)
-
-        for (i, layer) in layers.enumerated() {
-            h = layer(h, mask: mask, cache: cache?[i])
+        for (layerIndex, layer) in layers.enumerated() {
+            hidden = layer(hidden, mask: mask, cache: cache?[layerIndex])
         }
 
-        return norm(h)
+        return norm(hidden)
     }
 }
 
-internal class OlmoEModel: Module, LLMModel, KVCacheDimensionProvider {
+internal final class OlmoEModel: Module, LLMModel, KVCacheDimensionProvider, GreedyTokenModel {
     internal let vocabularySize: Int
     internal let kvHeads: [Int]
 
-    internal let model: OlmoEModelInner
-    let configuration: OlmoEConfiguration
-
+    @ModuleInfo(key: "model") private var model: OlmoEBackbone
     @ModuleInfo(key: "lm_head") var lmHead: Linear?
 
-    internal init(_ args: OlmoEConfiguration) {
-        self.configuration = args
-        self.vocabularySize = args.vocabularySize
-        self.kvHeads = (0 ..< args.hiddenLayers).map { _ in args.kvHeads }
-        self.model = OlmoEModelInner(args)
-        if !args.tieWordEmbeddings {
-            self._lmHead.wrappedValue = Linear(args.hiddenSize, args.vocabularySize, bias: false)
+    private let configuration: OlmoEConfiguration
+    let modelType: String
+
+    internal init(_ config: OlmoEConfiguration) {
+        self.configuration = config
+        self.vocabularySize = config.vocabularySize
+        self.kvHeads = Array(repeating: config.kvHeads, count: config.hiddenLayers)
+        self.modelType = config.modelType
+        self._model.wrappedValue = OlmoEBackbone(config)
+
+        if !config.tieWordEmbeddings {
+            _lmHead.wrappedValue = Linear(config.hiddenSize, config.vocabularySize, bias: false)
         }
     }
 
     internal func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
-        let out = model(inputs, cache: cache)
-        if let lmHead {
-            return lmHead(out)
-        } else {
-            return model.embedTokens.asLinear(out)
-        }
+        logits(from: model(inputs, cache: cache))
+    }
+
+    internal func greedyToken(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?
+    ) -> GreedyTokenOutput {
+        let hiddenStates = lastTokenHiddenState(model(input[text: .newAxis].tokens, cache: cache))
+        return greedyTokenOutput(logits: logits(from: hiddenStates), state: state)
+    }
+
+    internal func newCache(parameters: GenerateParameters?) -> [KVCache] {
+        (0 ..< configuration.hiddenLayers).map { _ in KVCacheSimple() }
     }
 
     internal func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
         var sanitized = weights
-        if sanitized["model.layers.0.mlp.experts.0.up_proj.weight"] == nil {
-            return sanitized
+        if configuration.tieWordEmbeddings {
+            sanitized["lm_head.weight"] = nil
         }
-        for l in 0 ..< configuration.hiddenLayers {
-            let prefix = "model.layers.\(l)"
-            for n in ["up_proj", "down_proj", "gate_proj"] {
-                for k in ["weight", "scales", "biases"] {
-                    let key = "\(prefix).mlp.experts.0.\(n).\(k)"
-                    if sanitized[key] != nil {
-                        let toJoin = (0 ..< configuration.numExperts).map { e in
-                            sanitized.removeValue(forKey: "\(prefix).mlp.experts.\(e).\(n).\(k)")!
-                        }
-                        sanitized["\(prefix).mlp.switch_mlp.\(n).\(k)"] = MLX.stacked(toJoin)
-                    }
-                }
-            }
+        return OlmoEExpertPackingPlan(configuration).pack(sanitized)
+    }
+
+    private func logits(from hiddenStates: MLXArray) -> MLXArray {
+        if let lmHead {
+            return lmHead(hiddenStates)
         }
-        return sanitized
+        return model.embedTokens.asLinear(hiddenStates)
     }
 }
 
 // MARK: - Configuration
 
-internal struct OlmoEConfiguration: Codable, Sendable {
+internal struct OlmoEConfiguration: Codable, Sendable, Equatable {
+    var modelType: String
     var hiddenSize: Int
     var hiddenLayers: Int
     var intermediateSize: Int
@@ -244,20 +342,60 @@ internal struct OlmoEConfiguration: Codable, Sendable {
     var vocabularySize: Int
     var kvHeads: Int
     var maxPositionEmbeddings: Int?
-    var ropeTheta: Float = 10_000
-    var ropeTraditional: Bool = false
+    var ropeTheta: Float
+    var ropeTraditional: Bool
     var ropeScaling: [String: StringOrNumber]?
-    var tieWordEmbeddings: Bool = true
-    var attentionBias: Bool = false
-    var mlpBias: Bool = false
-
+    var tieWordEmbeddings: Bool
+    var attentionBias: Bool
+    var mlpBias: Bool
     var numExperts: Int
     var numExpertsPerToken: Int
-    var normTopkProb: Bool = false
+    var normTopkProb: Bool
 
-    var resolvedHeadDimensions: Int { headDimensions ?? (hiddenSize / attentionHeads) }
+    internal init(
+        modelType: String = "olmoe",
+        hiddenSize: Int,
+        hiddenLayers: Int,
+        intermediateSize: Int,
+        attentionHeads: Int,
+        headDimensions: Int? = nil,
+        rmsNormEps: Float,
+        vocabularySize: Int,
+        kvHeads: Int? = nil,
+        maxPositionEmbeddings: Int? = nil,
+        ropeTheta: Float = 10_000,
+        ropeTraditional: Bool = false,
+        ropeScaling: [String: StringOrNumber]? = nil,
+        tieWordEmbeddings: Bool = true,
+        attentionBias: Bool = false,
+        mlpBias: Bool = false,
+        numExperts: Int,
+        numExpertsPerToken: Int,
+        normTopkProb: Bool = false
+    ) {
+        self.modelType = modelType
+        self.hiddenSize = hiddenSize
+        self.hiddenLayers = hiddenLayers
+        self.intermediateSize = intermediateSize
+        self.attentionHeads = attentionHeads
+        self.headDimensions = headDimensions
+        self.rmsNormEps = rmsNormEps
+        self.vocabularySize = vocabularySize
+        self.kvHeads = kvHeads ?? attentionHeads
+        self.maxPositionEmbeddings = maxPositionEmbeddings
+        self.ropeTheta = ropeTheta
+        self.ropeTraditional = ropeTraditional
+        self.ropeScaling = ropeScaling
+        self.tieWordEmbeddings = tieWordEmbeddings
+        self.attentionBias = attentionBias
+        self.mlpBias = mlpBias
+        self.numExperts = numExperts
+        self.numExpertsPerToken = numExpertsPerToken
+        self.normTopkProb = normTopkProb
+    }
 
     enum CodingKeys: String, CodingKey {
+        case modelType = "model_type"
         case hiddenSize = "hidden_size"
         case hiddenLayers = "num_hidden_layers"
         case intermediateSize = "intermediate_size"
@@ -280,41 +418,41 @@ internal struct OlmoEConfiguration: Codable, Sendable {
 
     internal init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let attentionHeads = try container.decode(Int.self, forKey: .attentionHeads)
 
-        hiddenSize = try container.decode(Int.self, forKey: .hiddenSize)
-        hiddenLayers = try container.decode(Int.self, forKey: .hiddenLayers)
-        intermediateSize = try container.decode(Int.self, forKey: .intermediateSize)
-        attentionHeads = try container.decode(Int.self, forKey: .attentionHeads)
-        headDimensions = try container.decodeIfPresent(Int.self, forKey: .headDimensions)
-        rmsNormEps = try container.decode(Float.self, forKey: .rmsNormEps)
-        vocabularySize = try container.decode(Int.self, forKey: .vocabularySize)
-        let maybeKV = try container.decodeIfPresent(Int.self, forKey: .kvHeads)
-        kvHeads = maybeKV ?? attentionHeads
-        maxPositionEmbeddings = try container.decodeIfPresent(
-            Int.self, forKey: .maxPositionEmbeddings)
-        if let ropeTheta = try container.decodeIfPresent(Float.self, forKey: .ropeTheta) {
-            self.ropeTheta = ropeTheta
-        }
-        if let ropeTraditional = try container.decodeIfPresent(Bool.self, forKey: .ropeTraditional)
-        {
-            self.ropeTraditional = ropeTraditional
-        }
-        ropeScaling = try container.decodeIfPresent(
-            [String: StringOrNumber].self, forKey: .ropeScaling)
-        if let tieWordEmbeddings = try container.decodeIfPresent(
-            Bool.self, forKey: .tieWordEmbeddings)
-        {
-            self.tieWordEmbeddings = tieWordEmbeddings
-        }
-        if let attentionBias = try container.decodeIfPresent(Bool.self, forKey: .attentionBias) {
-            self.attentionBias = attentionBias
-        }
-        if let mlpBias = try container.decodeIfPresent(Bool.self, forKey: .mlpBias) {
-            self.mlpBias = mlpBias
-        }
-        numExperts = try container.decode(Int.self, forKey: .numExperts)
-        numExpertsPerToken = try container.decode(Int.self, forKey: .numExpertsPerToken)
-        normTopkProb = try container.decodeIfPresent(Bool.self, forKey: .normTopkProb) ?? false
+        self.init(
+            modelType: try container.decodeIfPresent(String.self, forKey: .modelType) ?? "olmoe",
+            hiddenSize: try container.decode(Int.self, forKey: .hiddenSize),
+            hiddenLayers: try container.decode(Int.self, forKey: .hiddenLayers),
+            intermediateSize: try container.decode(Int.self, forKey: .intermediateSize),
+            attentionHeads: attentionHeads,
+            headDimensions: try container.decodeIfPresent(Int.self, forKey: .headDimensions),
+            rmsNormEps: try container.decode(Float.self, forKey: .rmsNormEps),
+            vocabularySize: try container.decode(Int.self, forKey: .vocabularySize),
+            kvHeads: try container.decodeIfPresent(Int.self, forKey: .kvHeads) ?? attentionHeads,
+            maxPositionEmbeddings: try container.decodeIfPresent(
+                Int.self,
+                forKey: .maxPositionEmbeddings
+            ),
+            ropeTheta: try container.decodeIfPresent(Float.self, forKey: .ropeTheta) ?? 10_000,
+            ropeTraditional: try container.decodeIfPresent(Bool.self, forKey: .ropeTraditional)
+                ?? false,
+            ropeScaling: try container.decodeIfPresent(
+                [String: StringOrNumber].self,
+                forKey: .ropeScaling
+            ),
+            tieWordEmbeddings: try container.decodeIfPresent(
+                Bool.self,
+                forKey: .tieWordEmbeddings
+            ) ?? true,
+            attentionBias: try container.decodeIfPresent(Bool.self, forKey: .attentionBias)
+                ?? false,
+            mlpBias: try container.decodeIfPresent(Bool.self, forKey: .mlpBias) ?? false,
+            numExperts: try container.decode(Int.self, forKey: .numExperts),
+            numExpertsPerToken: try container.decode(Int.self, forKey: .numExpertsPerToken),
+            normTopkProb: try container.decodeIfPresent(Bool.self, forKey: .normTopkProb)
+                ?? false
+        )
     }
 }
 
@@ -323,5 +461,9 @@ internal struct OlmoEConfiguration: Codable, Sendable {
 extension OlmoEModel: LoRAModel {
     internal var loraLayers: [Module] {
         model.layers
+    }
+
+    internal func loraLinearLayers() -> LoRALinearLayers {
+        model.layers.map { ($0.attention, ["q_proj", "v_proj"]) }
     }
 }
