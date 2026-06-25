@@ -1,50 +1,92 @@
-//  AfMoE.swift
-//  mlx-swift-lm
-//
-//  Created by Sachin Desai on 12/2/25.
-//
-
-// Port of https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/models/afmoe.py
-
 import Foundation
 import MLX
 import MLXNN
 
 // MARK: - Configuration
 
-internal struct AfMoEConfiguration: Codable, Sendable {
-    var modelType: String = "afmoe"
-    var vocabularySize: Int = 200192
-    var hiddenSize: Int = 2048
-    var intermediateSize: Int = 6144
-    var moeIntermediateSize: Int = 1024
-    var hiddenLayers: Int = 32
-    var attentionHeads: Int = 32
-    var kvHeads: Int = 4
-    var headDim: Int = 64
-    var maxPositionEmbeddings: Int = 131072
-    var rmsNormEps: Float = 1e-5
-    var ropeTheta: Float = 10000
-    var ropeScaling: [String: StringOrNumber]? = nil
-    var tieWordEmbeddings: Bool = false
-
-    // MoE config
-    var numExperts: Int = 128
-    var numExpertsPerToken: Int = 8
-    var numSharedExperts: Int = 1
-    var numDenseLayers: Int = 2
-    var routeNorm: Bool = true
-    var routeScale: Float = 2.826
-    var scoreFunc: String = "sigmoid"
-    var nGroup: Int = 1
-    var topkGroup: Int = 1
-
-    // Attention config
+internal struct AfMoEConfiguration: Codable, Sendable, Equatable {
+    var modelType: String
+    var vocabularySize: Int
+    var hiddenSize: Int
+    var intermediateSize: Int
+    var moeIntermediateSize: Int
+    var hiddenLayers: Int
+    var attentionHeads: Int
+    var kvHeads: Int
+    var headDim: Int
+    var maxPositionEmbeddings: Int
+    var rmsNormEps: Float
+    var ropeTheta: Float
+    var ropeScaling: [String: StringOrNumber]?
+    var tieWordEmbeddings: Bool
+    var numExperts: Int
+    var numExpertsPerToken: Int
+    var numSharedExperts: Int
+    var numDenseLayers: Int
+    var routeNorm: Bool
+    var routeScale: Float
+    var scoreFunc: String
+    var nGroup: Int
+    var topkGroup: Int
     var layerTypes: [String]
-    var slidingWindow: Int = 2048
+    var slidingWindow: Int
+    var mupEnabled: Bool
 
-    // muP config
-    var mupEnabled: Bool = true
+    internal init(
+        modelType: String = "afmoe",
+        vocabularySize: Int = 200_192,
+        hiddenSize: Int = 2_048,
+        intermediateSize: Int = 6_144,
+        moeIntermediateSize: Int = 1_024,
+        hiddenLayers: Int = 32,
+        attentionHeads: Int = 32,
+        kvHeads: Int = 4,
+        headDim: Int = 64,
+        maxPositionEmbeddings: Int = 131_072,
+        rmsNormEps: Float = 1e-5,
+        ropeTheta: Float = 10_000,
+        ropeScaling: [String: StringOrNumber]? = nil,
+        tieWordEmbeddings: Bool = false,
+        numExperts: Int = 128,
+        numExpertsPerToken: Int = 8,
+        numSharedExperts: Int = 1,
+        numDenseLayers: Int = 2,
+        routeNorm: Bool = true,
+        routeScale: Float = 2.826,
+        scoreFunc: String = "sigmoid",
+        nGroup: Int = 1,
+        topkGroup: Int? = nil,
+        layerTypes: [String]? = nil,
+        slidingWindow: Int = 2_048,
+        mupEnabled: Bool = true
+    ) {
+        self.modelType = modelType
+        self.vocabularySize = vocabularySize
+        self.hiddenSize = hiddenSize
+        self.intermediateSize = intermediateSize
+        self.moeIntermediateSize = moeIntermediateSize
+        self.hiddenLayers = hiddenLayers
+        self.attentionHeads = attentionHeads
+        self.kvHeads = kvHeads
+        self.headDim = headDim
+        self.maxPositionEmbeddings = maxPositionEmbeddings
+        self.rmsNormEps = rmsNormEps
+        self.ropeTheta = ropeTheta
+        self.ropeScaling = ropeScaling
+        self.tieWordEmbeddings = tieWordEmbeddings
+        self.numExperts = numExperts
+        self.numExpertsPerToken = numExpertsPerToken
+        self.numSharedExperts = numSharedExperts
+        self.numDenseLayers = numDenseLayers
+        self.routeNorm = routeNorm
+        self.routeScale = routeScale
+        self.scoreFunc = scoreFunc
+        self.nGroup = nGroup
+        self.topkGroup = topkGroup ?? nGroup
+        self.layerTypes = layerTypes ?? Array(repeating: "full_attention", count: hiddenLayers)
+        self.slidingWindow = slidingWindow
+        self.mupEnabled = mupEnabled
+    }
 
     enum CodingKeys: String, CodingKey {
         case modelType = "model_type"
@@ -77,96 +119,327 @@ internal struct AfMoEConfiguration: Codable, Sendable {
 
     internal init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let hiddenLayers = try container.decodeIfPresent(Int.self, forKey: .hiddenLayers) ?? 32
+        let nGroup = try container.decodeIfPresent(Int.self, forKey: .nGroup) ?? 1
 
-        self.modelType = try container.decodeIfPresent(String.self, forKey: .modelType) ?? "afmoe"
-        self.vocabularySize =
-            try container.decodeIfPresent(Int.self, forKey: .vocabularySize) ?? 200192
-        self.hiddenSize = try container.decodeIfPresent(Int.self, forKey: .hiddenSize) ?? 2048
-        self.intermediateSize =
-            try container.decodeIfPresent(Int.self, forKey: .intermediateSize) ?? 6144
-        self.moeIntermediateSize =
-            try container.decodeIfPresent(Int.self, forKey: .moeIntermediateSize) ?? 1024
-        self.hiddenLayers =
-            try container.decodeIfPresent(Int.self, forKey: .hiddenLayers) ?? 32
-        self.attentionHeads =
-            try container.decodeIfPresent(Int.self, forKey: .attentionHeads) ?? 32
-        self.kvHeads = try container.decodeIfPresent(Int.self, forKey: .kvHeads) ?? 4
-        self.headDim = try container.decodeIfPresent(Int.self, forKey: .headDim) ?? 64
-        self.maxPositionEmbeddings =
-            try container.decodeIfPresent(Int.self, forKey: .maxPositionEmbeddings) ?? 131072
-        self.rmsNormEps = try container.decodeIfPresent(Float.self, forKey: .rmsNormEps) ?? 1e-5
-        self.ropeTheta = try container.decodeIfPresent(Float.self, forKey: .ropeTheta) ?? 10000
-        self.ropeScaling = try container.decodeIfPresent(
-            [String: StringOrNumber].self, forKey: .ropeScaling)
-        self.tieWordEmbeddings =
-            try container.decodeIfPresent(Bool.self, forKey: .tieWordEmbeddings) ?? false
-        self.numExperts = try container.decodeIfPresent(Int.self, forKey: .numExperts) ?? 128
-        self.numExpertsPerToken =
-            try container.decodeIfPresent(Int.self, forKey: .numExpertsPerToken) ?? 8
-        self.numSharedExperts =
-            try container.decodeIfPresent(Int.self, forKey: .numSharedExperts) ?? 1
-        self.numDenseLayers =
-            try container.decodeIfPresent(Int.self, forKey: .numDenseLayers) ?? 2
-        self.routeNorm = try container.decodeIfPresent(Bool.self, forKey: .routeNorm) ?? true
-        self.routeScale = try container.decodeIfPresent(Float.self, forKey: .routeScale) ?? 2.826
-        self.scoreFunc = try container.decodeIfPresent(String.self, forKey: .scoreFunc) ?? "sigmoid"
-        self.nGroup = try container.decodeIfPresent(Int.self, forKey: .nGroup) ?? 1
-        self.topkGroup = try container.decodeIfPresent(Int.self, forKey: .topkGroup) ?? 1
-        self.layerTypes = try container.decode([String].self, forKey: .layerTypes)
-        self.slidingWindow =
-            try container.decodeIfPresent(Int.self, forKey: .slidingWindow) ?? 2048
-        self.mupEnabled = try container.decodeIfPresent(Bool.self, forKey: .mupEnabled) ?? true
+        self.init(
+            modelType: try container.decodeIfPresent(String.self, forKey: .modelType) ?? "afmoe",
+            vocabularySize: try container.decodeIfPresent(Int.self, forKey: .vocabularySize)
+                ?? 200_192,
+            hiddenSize: try container.decodeIfPresent(Int.self, forKey: .hiddenSize) ?? 2_048,
+            intermediateSize: try container.decodeIfPresent(Int.self, forKey: .intermediateSize)
+                ?? 6_144,
+            moeIntermediateSize: try container.decodeIfPresent(
+                Int.self,
+                forKey: .moeIntermediateSize
+            ) ?? 1_024,
+            hiddenLayers: hiddenLayers,
+            attentionHeads: try container.decodeIfPresent(Int.self, forKey: .attentionHeads) ?? 32,
+            kvHeads: try container.decodeIfPresent(Int.self, forKey: .kvHeads) ?? 4,
+            headDim: try container.decodeIfPresent(Int.self, forKey: .headDim) ?? 64,
+            maxPositionEmbeddings: try container.decodeIfPresent(
+                Int.self,
+                forKey: .maxPositionEmbeddings
+            ) ?? 131_072,
+            rmsNormEps: try container.decodeIfPresent(Float.self, forKey: .rmsNormEps) ?? 1e-5,
+            ropeTheta: try container.decodeIfPresent(Float.self, forKey: .ropeTheta) ?? 10_000,
+            ropeScaling: try container.decodeIfPresent(
+                [String: StringOrNumber].self,
+                forKey: .ropeScaling
+            ),
+            tieWordEmbeddings: try container.decodeIfPresent(
+                Bool.self,
+                forKey: .tieWordEmbeddings
+            ) ?? false,
+            numExperts: try container.decodeIfPresent(Int.self, forKey: .numExperts) ?? 128,
+            numExpertsPerToken: try container.decodeIfPresent(
+                Int.self,
+                forKey: .numExpertsPerToken
+            ) ?? 8,
+            numSharedExperts: try container.decodeIfPresent(
+                Int.self,
+                forKey: .numSharedExperts
+            ) ?? 1,
+            numDenseLayers: try container.decodeIfPresent(Int.self, forKey: .numDenseLayers) ?? 2,
+            routeNorm: try container.decodeIfPresent(Bool.self, forKey: .routeNorm) ?? true,
+            routeScale: try container.decodeIfPresent(Float.self, forKey: .routeScale) ?? 2.826,
+            scoreFunc: try container.decodeIfPresent(String.self, forKey: .scoreFunc)
+                ?? "sigmoid",
+            nGroup: nGroup,
+            topkGroup: try container.decodeIfPresent(Int.self, forKey: .topkGroup) ?? nGroup,
+            layerTypes: try container.decodeIfPresent([String].self, forKey: .layerTypes),
+            slidingWindow: try container.decodeIfPresent(Int.self, forKey: .slidingWindow)
+                ?? 2_048,
+            mupEnabled: try container.decodeIfPresent(Bool.self, forKey: .mupEnabled) ?? true
+        )
     }
 }
 
-// MARK: - Attention
+// MARK: - Plans
 
-class AfMoEAttention: Module {
-    let hiddenSize: Int
-    let nHeads: Int
-    let nKVHeads: Int
-    let headDim: Int
-    let isLocalAttention: Bool
-    let scale: Float
+internal enum AfMoEAttentionKind: String, Equatable, Sendable {
+    case full = "full_attention"
+    case sliding = "sliding_attention"
 
-    @ModuleInfo(key: "q_proj") var qProj: Linear
-    @ModuleInfo(key: "k_proj") var kProj: Linear
-    @ModuleInfo(key: "v_proj") var vProj: Linear
-    @ModuleInfo(key: "o_proj") var oProj: Linear
+    internal init(_ value: String) {
+        self = AfMoEAttentionKind(rawValue: value) ?? .full
+    }
+}
 
-    // AfMoE specific: Q/K normalization
-    @ModuleInfo(key: "q_norm") var qNorm: RMSNorm
-    @ModuleInfo(key: "k_norm") var kNorm: RMSNorm
+internal struct AfMoEAttentionLayout: Equatable, Sendable {
+    internal let kind: AfMoEAttentionKind
+    internal let hiddenSize: Int
+    internal let attentionHeads: Int
+    internal let keyValueHeads: Int
+    internal let headDimensions: Int
+    internal let attentionScale: Float
+    internal let usesRotaryPosition: Bool
 
-    // AfMoE specific: attention gating
-    @ModuleInfo(key: "gate_proj") var gateProj: Linear
+    internal init(_ config: AfMoEConfiguration, kind: AfMoEAttentionKind) {
+        precondition(config.hiddenSize > 0, "AfMoE hidden size must be positive")
+        precondition(config.attentionHeads > 0, "AfMoE attention heads must be positive")
+        precondition(config.kvHeads > 0, "AfMoE KV heads must be positive")
+        precondition(config.headDim > 0, "AfMoE head dimension must be positive")
+        precondition(
+            config.attentionHeads.isMultiple(of: config.kvHeads),
+            "AfMoE attention heads must group KV heads"
+        )
 
-    // RoPE is only used for local (sliding window) attention
+        self.kind = kind
+        self.hiddenSize = config.hiddenSize
+        self.attentionHeads = config.attentionHeads
+        self.keyValueHeads = config.kvHeads
+        self.headDimensions = config.headDim
+        self.attentionScale = pow(Float(config.headDim), -0.5)
+        self.usesRotaryPosition = kind == .sliding
+    }
+
+    internal var queryProjectionSize: Int { attentionHeads * headDimensions }
+    internal var keyValueProjectionSize: Int { keyValueHeads * headDimensions }
+}
+
+internal struct AfMoELayerPlan: Equatable, Sendable {
+    internal let attentionKinds: [AfMoEAttentionKind]
+    internal let denseLayerCount: Int
+    internal let slidingWindow: Int
+
+    internal init(_ config: AfMoEConfiguration) {
+        precondition(config.hiddenLayers > 0, "AfMoE must have at least one layer")
+        precondition(
+            config.layerTypes.count == config.hiddenLayers,
+            "AfMoE layer_types must match hidden layer count"
+        )
+        precondition(config.numDenseLayers >= 0, "AfMoE dense-layer count is negative")
+        precondition(
+            config.numDenseLayers <= config.hiddenLayers,
+            "AfMoE dense-layer count exceeds layer count"
+        )
+        precondition(config.slidingWindow > 0, "AfMoE sliding window must be positive")
+
+        self.attentionKinds = config.layerTypes.map(AfMoEAttentionKind.init)
+        self.denseLayerCount = config.numDenseLayers
+        self.slidingWindow = config.slidingWindow
+    }
+
+    internal var layerCount: Int {
+        attentionKinds.count
+    }
+
+    internal var firstFullLayer: Int {
+        attentionKinds.firstIndex(of: .full) ?? 0
+    }
+
+    internal var firstSlidingLayer: Int? {
+        attentionKinds.firstIndex(of: .sliding)
+    }
+
+    internal func attentionKind(layerIndex: Int) -> AfMoEAttentionKind {
+        attentionKinds[layerIndex]
+    }
+
+    internal func usesSparseExperts(layerIndex: Int) -> Bool {
+        layerIndex >= denseLayerCount
+    }
+}
+
+internal enum AfMoEScoreFunction: String, Equatable, Sendable {
+    case sigmoid
+    case softmax
+
+    internal init(_ rawValue: String) {
+        self = AfMoEScoreFunction(rawValue: rawValue) ?? .sigmoid
+    }
+
+    internal func scores(from logits: MLXArray) -> MLXArray {
+        switch self {
+        case .sigmoid:
+            MLX.sigmoid(logits.asType(.float32))
+        case .softmax:
+            MLX.softmax(logits.asType(.float32), axis: -1)
+        }
+    }
+}
+
+internal struct AfMoERoutingPlan: Equatable, Sendable {
+    internal let expertCount: Int
+    internal let selectedExpertCount: Int
+    internal let groupCount: Int
+    internal let keptGroupCount: Int
+    internal let normalizesSelectedProbabilities: Bool
+    internal let routedScalingFactor: Float
+    internal let scoreFunction: AfMoEScoreFunction
+
+    internal init(_ config: AfMoEConfiguration) {
+        let keptGroupCount = min(config.topkGroup, config.nGroup)
+
+        precondition(config.numExperts > 0, "AfMoE expert count must be positive")
+        precondition(config.numExpertsPerToken > 0, "AfMoE top-k must be positive")
+        precondition(config.nGroup > 0, "AfMoE group count must be positive")
+        precondition(
+            config.numExperts.isMultiple(of: config.nGroup),
+            "AfMoE experts must divide evenly into groups"
+        )
+        precondition(
+            config.numExpertsPerToken <= config.numExperts,
+            "AfMoE top-k cannot exceed expert count"
+        )
+        precondition(
+            keptGroupCount > 0 && keptGroupCount <= config.nGroup,
+            "AfMoE kept-group count must be within group count"
+        )
+
+        self.expertCount = config.numExperts
+        self.selectedExpertCount = config.numExpertsPerToken
+        self.groupCount = config.nGroup
+        self.keptGroupCount = keptGroupCount
+        self.normalizesSelectedProbabilities = config.routeNorm
+        self.routedScalingFactor = config.routeScale
+        self.scoreFunction = AfMoEScoreFunction(config.scoreFunc)
+    }
+
+    internal var expertsPerGroup: Int {
+        expertCount / groupCount
+    }
+
+    private var droppedGroupCount: Int {
+        groupCount - keptGroupCount
+    }
+
+    internal func route(
+        logits: MLXArray,
+        expertBias: MLXArray,
+        outputDType: DType
+    ) -> (scores: MLXArray, indices: MLXArray) {
+        let originalScores = scoreFunction.scores(from: logits)
+        var selectionScores = originalScores + expertBias
+
+        if groupCount > 1, droppedGroupCount > 0 {
+            selectionScores = unflatten(selectionScores, axis: -1, shape: [groupCount, -1])
+            let groupScores = top(selectionScores, k: min(2, expertsPerGroup), axis: -1)
+                .sum(axis: -1, keepDims: true)
+            let droppedGroups = argPartition(
+                groupScores,
+                kth: droppedGroupCount - 1,
+                axis: -2
+            )[.ellipsis, ..<droppedGroupCount, 0...]
+            selectionScores = putAlong(
+                selectionScores,
+                stopGradient(droppedGroups),
+                values: MLXArray(0.0),
+                axis: -2
+            )
+            selectionScores = flattened(selectionScores, start: -2, end: -1)
+        }
+
+        let indices = argPartition(
+            -selectionScores,
+            kth: selectedExpertCount - 1,
+            axis: -1
+        )[.ellipsis, ..<selectedExpertCount]
+        var selectedScores = takeAlong(originalScores, indices, axis: -1)
+
+        if selectedExpertCount > 1, normalizesSelectedProbabilities {
+            selectedScores = selectedScores / (selectedScores.sum(axis: -1, keepDims: true) + 1e-20)
+        }
+
+        return ((selectedScores * routedScalingFactor).asType(outputDType), indices)
+    }
+}
+
+private enum AfMoEExpertProjection: String, CaseIterable {
+    case gate = "gate_proj"
+    case down = "down_proj"
+    case up = "up_proj"
+}
+
+internal struct AfMoEExpertPackingPlan: Equatable, Sendable {
+    internal let layerPlan: AfMoELayerPlan
+    internal let expertCount: Int
+
+    internal init(_ config: AfMoEConfiguration) {
+        self.layerPlan = AfMoELayerPlan(config)
+        self.expertCount = config.numExperts
+    }
+
+    internal func pack(_ weights: [String: MLXArray]) -> [String: MLXArray] {
+        var packed = weights
+
+        for layerIndex in 0 ..< layerPlan.layerCount where layerPlan.usesSparseExperts(
+            layerIndex: layerIndex
+        ) {
+            let prefix = "model.layers.\(layerIndex).mlp"
+            for projection in AfMoEExpertProjection.allCases {
+                for tensorName in ["weight", "scales", "biases"] {
+                    let firstKey = "\(prefix).experts.0.\(projection.rawValue).\(tensorName)"
+                    guard packed[firstKey] != nil else { continue }
+
+                    let tensors = (0 ..< expertCount).map { expertIndex in
+                        packed.removeValue(
+                            forKey: "\(prefix).experts.\(expertIndex).\(projection.rawValue).\(tensorName)"
+                        )!
+                    }
+                    packed["\(prefix).experts.\(projection.rawValue).\(tensorName)"] =
+                        stacked(tensors)
+                }
+            }
+        }
+
+        return packed
+    }
+}
+
+// MARK: - Layers
+
+internal final class AfMoEAttention: Module {
+    let layout: AfMoEAttentionLayout
+
+    @ModuleInfo(key: "q_proj") var query: Linear
+    @ModuleInfo(key: "k_proj") var key: Linear
+    @ModuleInfo(key: "v_proj") var value: Linear
+    @ModuleInfo(key: "o_proj") var output: Linear
+    @ModuleInfo(key: "q_norm") var queryNorm: RMSNorm
+    @ModuleInfo(key: "k_norm") var keyNorm: RMSNorm
+    @ModuleInfo(key: "gate_proj") var gate: Linear
+
     let rope: RoPELayer?
 
-    init(_ args: AfMoEConfiguration, isLocalAttention: Bool = false) {
-        self.hiddenSize = args.hiddenSize
-        self.nHeads = args.attentionHeads
-        self.nKVHeads = args.kvHeads
-        self.headDim = args.headDim
-        self.isLocalAttention = isLocalAttention
-        self.scale = pow(Float(headDim), -0.5)
+    init(_ config: AfMoEConfiguration, kind: AfMoEAttentionKind) {
+        self.layout = AfMoEAttentionLayout(config, kind: kind)
 
-        self._qProj.wrappedValue = Linear(hiddenSize, nHeads * headDim, bias: false)
-        self._kProj.wrappedValue = Linear(hiddenSize, nKVHeads * headDim, bias: false)
-        self._vProj.wrappedValue = Linear(hiddenSize, nKVHeads * headDim, bias: false)
-        self._oProj.wrappedValue = Linear(nHeads * headDim, hiddenSize, bias: false)
+        _query.wrappedValue = Linear(config.hiddenSize, layout.queryProjectionSize, bias: false)
+        _key.wrappedValue = Linear(config.hiddenSize, layout.keyValueProjectionSize, bias: false)
+        _value.wrappedValue = Linear(config.hiddenSize, layout.keyValueProjectionSize, bias: false)
+        _output.wrappedValue = Linear(layout.queryProjectionSize, config.hiddenSize, bias: false)
+        _queryNorm.wrappedValue = RMSNorm(dimensions: layout.headDimensions, eps: config.rmsNormEps)
+        _keyNorm.wrappedValue = RMSNorm(dimensions: layout.headDimensions, eps: config.rmsNormEps)
+        _gate.wrappedValue = Linear(config.hiddenSize, layout.queryProjectionSize, bias: false)
 
-        self._qNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: args.rmsNormEps)
-        self._kNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: args.rmsNormEps)
-
-        self._gateProj.wrappedValue = Linear(hiddenSize, nHeads * headDim, bias: false)
-
-        // RoPE is only used for local (sliding window) attention
-        if isLocalAttention {
+        if layout.usesRotaryPosition {
             self.rope = initializeRope(
-                dims: headDim, base: args.ropeTheta,
-                traditional: false, scalingConfig: args.ropeScaling,
+                dims: layout.headDimensions,
+                base: config.ropeTheta,
+                traditional: false,
+                scalingConfig: config.ropeScaling,
                 maxPositionEmbeddings: nil
             )
         } else {
@@ -179,71 +452,64 @@ class AfMoEAttention: Module {
         mask: MLXFast.ScaledDotProductAttentionMaskMode,
         cache: KVCache?
     ) -> MLXArray {
-        let (B, L, _) = (x.dim(0), x.dim(1), x.dim(2))
+        let batchSize = x.dim(0)
+        let tokenCount = x.dim(1)
 
-        var queries = qProj(x)
-        var keys = kProj(x)
-        var values = vProj(x)
+        var queryStates = query(x)
+            .reshaped(batchSize, tokenCount, layout.attentionHeads, layout.headDimensions)
+            .transposed(0, 2, 1, 3)
+        var keyStates = key(x)
+            .reshaped(batchSize, tokenCount, layout.keyValueHeads, layout.headDimensions)
+            .transposed(0, 2, 1, 3)
+        let valueStates = value(x)
+            .reshaped(batchSize, tokenCount, layout.keyValueHeads, layout.headDimensions)
+            .transposed(0, 2, 1, 3)
 
-        // Reshape for multi-head attention
-        queries = queries.reshaped(B, L, nHeads, headDim).transposed(0, 2, 1, 3)
-        keys = keys.reshaped(B, L, nKVHeads, headDim).transposed(0, 2, 1, 3)
-        values = values.reshaped(B, L, nKVHeads, headDim).transposed(0, 2, 1, 3)
+        queryStates = queryNorm(queryStates)
+        keyStates = keyNorm(keyStates)
 
-        // Apply Q/K normalization
-        queries = qNorm(queries)
-        keys = kNorm(keys)
-
-        // Apply RoPE only for local (sliding window) attention
-        if isLocalAttention, let rope = rope {
-            queries = applyRotaryPosition(rope, to: queries, cache: cache)
-            keys = applyRotaryPosition(rope, to: keys, cache: cache)
+        if let rope {
+            queryStates = applyRotaryPosition(rope, to: queryStates, cache: cache)
+            keyStates = applyRotaryPosition(rope, to: keyStates, cache: cache)
         }
 
-        var output = attentionWithCacheUpdate(
-            queries: queries,
-            keys: keys,
-            values: values,
+        var attentionOutput = attentionWithCacheUpdate(
+            queries: queryStates,
+            keys: keyStates,
+            values: valueStates,
             cache: cache,
-            scale: scale,
+            scale: layout.attentionScale,
             mask: mask
         )
+        .transposed(0, 2, 1, 3)
+        .reshaped(batchSize, tokenCount, -1)
 
-        output = output.transposed(0, 2, 1, 3).reshaped(B, L, -1)
-
-        // Apply attention gating: gate_proj(x) -> sigmoid -> multiply
-        let gate = sigmoid(gateProj(x))
-        output = output * gate
-
-        return oProj(output)
+        attentionOutput = attentionOutput * sigmoid(gate(x))
+        return output(attentionOutput)
     }
 }
 
-// MARK: - MLP
-
-class AfMoEMLP: Module, UnaryLayer {
-    @ModuleInfo(key: "gate_proj") var gateProj: Linear
-    @ModuleInfo(key: "down_proj") var downProj: Linear
-    @ModuleInfo(key: "up_proj") var upProj: Linear
+internal final class AfMoEMLP: Module, UnaryLayer {
+    @ModuleInfo(key: "gate_proj") var gate: Linear
+    @ModuleInfo(key: "down_proj") var down: Linear
+    @ModuleInfo(key: "up_proj") var up: Linear
 
     init(dimensions: Int, hiddenDimensions: Int) {
-        _gateProj.wrappedValue = Linear(dimensions, hiddenDimensions, bias: false)
-        _downProj.wrappedValue = Linear(hiddenDimensions, dimensions, bias: false)
-        _upProj.wrappedValue = Linear(dimensions, hiddenDimensions, bias: false)
+        _gate.wrappedValue = Linear(dimensions, hiddenDimensions, bias: false)
+        _down.wrappedValue = Linear(hiddenDimensions, dimensions, bias: false)
+        _up.wrappedValue = Linear(dimensions, hiddenDimensions, bias: false)
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        downProj(silu(gateProj(x)) * upProj(x))
+        down(silu(gate(x)) * up(x))
     }
 }
 
-// MARK: - MoE Router
-
-class MoERouter: Module {
+internal final class AfMoERouter: Module {
     @ModuleInfo(key: "gate") var gate: Linear
 
-    init(_ args: AfMoEConfiguration) {
-        self._gate.wrappedValue = Linear(args.hiddenSize, args.numExperts, bias: false)
+    init(_ config: AfMoEConfiguration) {
+        _gate.wrappedValue = Linear(config.hiddenSize, config.numExperts, bias: false)
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
@@ -251,141 +517,84 @@ class MoERouter: Module {
     }
 }
 
-// MARK: - AfMoE MoE
+internal final class AfMoESparseBlock: Module, UnaryLayer {
+    let routingPlan: AfMoERoutingPlan
 
-class AfMoEMoE: Module, UnaryLayer {
-    let numExperts: Int
-    let numExpertsPerTok: Int
-    let routeNorm: Bool
-    let routeScale: Float
-    let scoreFunc: String
-    let nGroup: Int
-    let topkGroup: Int
-    let numSharedExperts: Int
-
-    @ModuleInfo var router: MoERouter
+    @ModuleInfo var router: AfMoERouter
     @ParameterInfo(key: "expert_bias") var expertBias: MLXArray
     @ModuleInfo(key: "experts") var experts: SwitchGLU
     @ModuleInfo(key: "shared_experts") var sharedExperts: AfMoEMLP?
 
-    init(_ args: AfMoEConfiguration) {
-        self.numExperts = args.numExperts
-        self.numExpertsPerTok = args.numExpertsPerToken
-        self.routeNorm = args.routeNorm
-        self.routeScale = args.routeScale
-        self.scoreFunc = args.scoreFunc
-        self.nGroup = args.nGroup
-        self.topkGroup = args.topkGroup
-        self.numSharedExperts = args.numSharedExperts
+    init(_ config: AfMoEConfiguration) {
+        self.routingPlan = AfMoERoutingPlan(config)
 
-        _router.wrappedValue = MoERouter(args)
-        self._expertBias.wrappedValue = MLXArray.zeros([args.numExperts])
-        self._experts.wrappedValue = SwitchGLU(
-            inputDims: args.hiddenSize,
-            hiddenDims: args.moeIntermediateSize,
-            numExperts: args.numExperts
+        _router.wrappedValue = AfMoERouter(config)
+        _expertBias.wrappedValue = MLXArray.zeros([config.numExperts])
+        _experts.wrappedValue = SwitchGLU(
+            inputDims: config.hiddenSize,
+            hiddenDims: config.moeIntermediateSize,
+            numExperts: config.numExperts
         )
 
-        if args.numSharedExperts > 0 {
-            let sharedIntermediateSize = args.moeIntermediateSize * args.numSharedExperts
-            self._sharedExperts.wrappedValue = AfMoEMLP(
-                dimensions: args.hiddenSize, hiddenDimensions: sharedIntermediateSize)
+        if config.numSharedExperts > 0 {
+            _sharedExperts.wrappedValue = AfMoEMLP(
+                dimensions: config.hiddenSize,
+                hiddenDimensions: config.moeIntermediateSize * config.numSharedExperts
+            )
         }
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        // Get routing scores
-        let gates = router(x)
-
-        var scores: MLXArray
-        if scoreFunc == "sigmoid" {
-            scores = sigmoid(gates.asType(.float32))
-        } else {
-            scores = softmax(gates.asType(.float32), axis: -1)
+        let routed = routingPlan.route(
+            logits: router(x),
+            expertBias: expertBias,
+            outputDType: x.dtype
+        )
+        var output = experts(x, routed.indices)
+        output = (output * routed.scores[.ellipsis, .newAxis]).sum(axis: -2).asType(output.dtype)
+        if let sharedExperts {
+            output = output + sharedExperts(x)
         }
-
-        // Add expert bias for selection
-        var selectionScores = scores + expertBias
-
-        // Group-based expert selection if nGroup > 1
-        if nGroup > 1 {
-            selectionScores = unflatten(selectionScores, axis: -1, shape: [nGroup, -1])
-            let groupScores = top(selectionScores, k: 2, axis: -1).sum(axis: -1, keepDims: true)
-            let k = nGroup - topkGroup
-            let groupIdx = argPartition(groupScores, kth: k - 1, axis: -2)[.ellipsis, ..<k, 0...]
-            selectionScores = putAlong(
-                selectionScores, stopGradient(groupIdx), values: MLXArray(0.0), axis: -2)
-            selectionScores = flattened(selectionScores, start: -2, end: -1)
-        }
-
-        // Select top-k experts
-        let k = numExpertsPerTok
-        let inds = argPartition(-selectionScores, kth: k - 1, axis: -1)[.ellipsis, ..<k]
-
-        // Get original scores for selected experts (without bias)
-        var selectedScores = takeAlong(scores, inds, axis: -1)
-
-        // Normalize scores if enabled
-        if routeNorm && numExpertsPerTok > 1 {
-            let denominator = selectedScores.sum(axis: -1, keepDims: true)
-            selectedScores = selectedScores / denominator
-        }
-
-        // Apply route scale
-        selectedScores = selectedScores * routeScale
-
-        // Apply experts
-        var y = experts(x, inds)
-        y = (y * selectedScores[.ellipsis, .newAxis]).sum(axis: -2).asType(y.dtype)
-
-        // Add shared expert output
-        if let sharedExperts = sharedExperts {
-            y = y + sharedExperts(x)
-        }
-
-        return y
+        return output
     }
 }
 
-// MARK: - Decoder Layer
+internal final class AfMoEDecoderLayer: Module {
+    let attentionKind: AfMoEAttentionKind
 
-class AfMoEDecoderLayer: Module {
-    let hiddenSize: Int
-    let useSliding: Bool
-    let layerIdx: Int
-
-    @ModuleInfo(key: "self_attn") var selfAttn: AfMoEAttention
-    var mlp: UnaryLayer
-
-    // Dual normalization: 4 layer norms total
+    @ModuleInfo(key: "self_attn") var attention: AfMoEAttention
+    @ModuleInfo(key: "mlp") private var feedForward: Module & UnaryLayer
     @ModuleInfo(key: "input_layernorm") var inputLayerNorm: RMSNorm
     @ModuleInfo(key: "post_attention_layernorm") var postAttentionLayerNorm: RMSNorm
-    @ModuleInfo(key: "pre_mlp_layernorm") var preMlpLayerNorm: RMSNorm
-    @ModuleInfo(key: "post_mlp_layernorm") var postMlpLayerNorm: RMSNorm
+    @ModuleInfo(key: "pre_mlp_layernorm") var preMLPLayerNorm: RMSNorm
+    @ModuleInfo(key: "post_mlp_layernorm") var postMLPLayerNorm: RMSNorm
 
-    init(_ args: AfMoEConfiguration, layerIdx: Int, useSliding: Bool = false) {
-        self.hiddenSize = args.hiddenSize
-        self.useSliding = useSliding
-        self.layerIdx = layerIdx
+    init(_ config: AfMoEConfiguration, layerIndex: Int, layerPlan: AfMoELayerPlan) {
+        self.attentionKind = layerPlan.attentionKind(layerIndex: layerIndex)
 
-        self._selfAttn.wrappedValue = AfMoEAttention(args, isLocalAttention: useSliding)
-
-        // First numDenseLayers use regular MLP, rest use MoE
-        if layerIdx < args.numDenseLayers {
-            self.mlp = AfMoEMLP(
-                dimensions: args.hiddenSize, hiddenDimensions: args.intermediateSize)
+        _attention.wrappedValue = AfMoEAttention(config, kind: attentionKind)
+        if layerPlan.usesSparseExperts(layerIndex: layerIndex) {
+            _feedForward.wrappedValue = AfMoESparseBlock(config)
         } else {
-            self.mlp = AfMoEMoE(args)
+            _feedForward.wrappedValue = AfMoEMLP(
+                dimensions: config.hiddenSize,
+                hiddenDimensions: config.intermediateSize
+            )
         }
 
-        self._inputLayerNorm.wrappedValue = RMSNorm(
-            dimensions: args.hiddenSize, eps: args.rmsNormEps)
-        self._postAttentionLayerNorm.wrappedValue = RMSNorm(
-            dimensions: args.hiddenSize, eps: args.rmsNormEps)
-        self._preMlpLayerNorm.wrappedValue = RMSNorm(
-            dimensions: args.hiddenSize, eps: args.rmsNormEps)
-        self._postMlpLayerNorm.wrappedValue = RMSNorm(
-            dimensions: args.hiddenSize, eps: args.rmsNormEps)
+        _inputLayerNorm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
+        _postAttentionLayerNorm.wrappedValue = RMSNorm(
+            dimensions: config.hiddenSize,
+            eps: config.rmsNormEps
+        )
+        _preMLPLayerNorm.wrappedValue = RMSNorm(
+            dimensions: config.hiddenSize,
+            eps: config.rmsNormEps
+        )
+        _postMLPLayerNorm.wrappedValue = RMSNorm(
+            dimensions: config.hiddenSize,
+            eps: config.rmsNormEps
+        )
     }
 
     func callAsFunction(
@@ -393,184 +602,143 @@ class AfMoEDecoderLayer: Module {
         mask: MLXFast.ScaledDotProductAttentionMaskMode,
         cache: KVCache?
     ) -> MLXArray {
-        // Self-attention with pre and post normalization
-        var r = selfAttn(inputLayerNorm(x), mask: mask, cache: cache)
-        r = postAttentionLayerNorm(r)
-        let h = x + r
+        var residual = attention(inputLayerNorm(x), mask: mask, cache: cache)
+        residual = postAttentionLayerNorm(residual)
+        let hidden = x + residual
 
-        // MLP with pre and post normalization
-        r = mlp(preMlpLayerNorm(h))
-        r = postMlpLayerNorm(r)
-        return h + r
+        residual = feedForward(preMLPLayerNorm(hidden))
+        residual = postMLPLayerNorm(residual)
+        return hidden + residual
     }
 }
 
-// MARK: - AfMoE Model Inner
-
-private class AfMoEModelInner: Module {
-    let args: AfMoEConfiguration
-    let slidingWindow: Int
-    let mupEnabled: Bool
-    let hiddenSize: Int
-
+internal final class AfMoEBackbone: Module {
     @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding
     @ModuleInfo var layers: [AfMoEDecoderLayer]
-    @ModuleInfo var norm: RMSNorm
+    @ModuleInfo(key: "norm") var norm: RMSNorm
 
-    // Indices for full and sliding attention layers
-    let faIdx: Int
-    let swaIdx: Int?
+    let layerPlan: AfMoELayerPlan
+    let usesMupScaling: Bool
+    let embeddingScale: Float
 
-    init(_ args: AfMoEConfiguration) {
-        self.args = args
-        self.slidingWindow = args.slidingWindow
-        self.mupEnabled = args.mupEnabled
-        self.hiddenSize = args.hiddenSize
+    init(_ config: AfMoEConfiguration) {
+        precondition(config.vocabularySize > 0, "AfMoE vocabulary size must be positive")
 
-        precondition(args.vocabularySize > 0)
+        let plan = AfMoELayerPlan(config)
+        self.layerPlan = plan
+        self.usesMupScaling = config.mupEnabled
+        self.embeddingScale = sqrt(Float(config.hiddenSize))
 
         _embedTokens.wrappedValue = Embedding(
-            embeddingCount: args.vocabularySize, dimensions: args.hiddenSize)
-
-        // Build layers based on layer_types
-        var layerList: [AfMoEDecoderLayer] = []
-        for (idx, layerType) in args.layerTypes.enumerated() {
-            let useSliding = layerType == "sliding_attention"
-            layerList.append(AfMoEDecoderLayer(args, layerIdx: idx, useSliding: useSliding))
+            embeddingCount: config.vocabularySize,
+            dimensions: config.hiddenSize
+        )
+        _layers.wrappedValue = (0 ..< plan.layerCount).map { layerIndex in
+            AfMoEDecoderLayer(config, layerIndex: layerIndex, layerPlan: plan)
         }
-        self.layers = layerList
-
-        self.norm = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
-
-        // Find indices for attention mask creation
-        if let idx = args.layerTypes.firstIndex(of: "full_attention") {
-            self.faIdx = idx
-        } else {
-            self.faIdx = 0
-        }
-
-        self.swaIdx = layerList.firstIndex(where: { $0.useSliding })
+        _norm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
     }
 
     func callAsFunction(_ inputs: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
-        var h = embedTokens(inputs)
-
-        // muP scaling: scale embeddings by sqrt(hiddenSize)
-        if mupEnabled {
-            h = h * sqrt(Float(hiddenSize))
+        var hidden = embedTokens(inputs)
+        if usesMupScaling {
+            hidden = hidden * embeddingScale
         }
 
-        var layerCache = cache
-        if layerCache == nil {
-            layerCache = Array(repeating: nil as KVCache?, count: layers.count) as? [KVCache]
+        let fullMask = createAttentionMask(
+            h: hidden,
+            cache: cache?[layerPlan.firstFullLayer]
+        )
+        let slidingMask = layerPlan.firstSlidingLayer.map { layerIndex in
+            createAttentionMask(
+                h: hidden,
+                cache: cache?[layerIndex],
+                windowSize: layerPlan.slidingWindow
+            )
         }
 
-        // Create attention masks
-        let faMask = createAttentionMask(h: h, cache: layerCache?[faIdx])
-
-        var swaMask: MLXFast.ScaledDotProductAttentionMaskMode = .none
-        if let swaIdx = swaIdx, let layerCache = layerCache {
-            // Create mask with sliding window
-            swaMask = createAttentionMask(
-                h: h, cache: layerCache[swaIdx], windowSize: slidingWindow)
+        for (layerIndex, layer) in layers.enumerated() {
+            let mask: MLXFast.ScaledDotProductAttentionMaskMode =
+                layer.attentionKind == .sliding ? (slidingMask ?? fullMask) : fullMask
+            hidden = layer(hidden, mask: mask, cache: cache?[layerIndex])
         }
 
-        for (i, layer) in layers.enumerated() {
-            let mask = layer.useSliding ? swaMask : faMask
-            h = layer(h, mask: mask, cache: layerCache?[i])
-        }
-
-        return norm(h)
+        return norm(hidden)
     }
 }
 
-// MARK: - AfMoE Model (Public)
-
-internal class AfMoEModel: Module, LLMModel, KVCacheDimensionProvider {
+internal final class AfMoEModel: Module, LLMModel, KVCacheDimensionProvider, GreedyTokenModel {
     internal let vocabularySize: Int
     internal let kvHeads: [Int]
-    let slidingWindow: Int
 
-    fileprivate let model: AfMoEModelInner
-    let configuration: AfMoEConfiguration
-    fileprivate let layerUsesSliding: [Bool]
-
+    @ModuleInfo(key: "model") fileprivate var model: AfMoEBackbone
     @ModuleInfo(key: "lm_head") var lmHead: Linear?
 
-    internal init(_ args: AfMoEConfiguration) {
-        self.configuration = args
-        self.vocabularySize = args.vocabularySize
-        self.kvHeads = (0 ..< args.hiddenLayers).map { _ in args.kvHeads }
-        self.slidingWindow = args.slidingWindow
-        self.model = AfMoEModelInner(args)
+    private let configuration: AfMoEConfiguration
+    let modelType: String
 
-        // Track which layers use sliding attention
-        self.layerUsesSliding = args.layerTypes.map { $0 == "sliding_attention" }
+    internal init(_ config: AfMoEConfiguration) {
+        self.configuration = config
+        self.vocabularySize = config.vocabularySize
+        self.kvHeads = Array(repeating: config.kvHeads, count: config.hiddenLayers)
+        self.modelType = config.modelType
+        _model.wrappedValue = AfMoEBackbone(config)
 
-        if !args.tieWordEmbeddings {
-            _lmHead.wrappedValue = Linear(args.hiddenSize, args.vocabularySize, bias: false)
+        if !config.tieWordEmbeddings {
+            _lmHead.wrappedValue = Linear(config.hiddenSize, config.vocabularySize, bias: false)
         }
     }
 
     internal func callAsFunction(_ inputs: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
-        var out = model(inputs, cache: cache)
-        if let lmHead = lmHead {
-            out = lmHead(out)
-        } else {
-            out = model.embedTokens.asLinear(out)
-        }
-        return out
+        logits(from: model(inputs, cache: cache))
+    }
+
+    internal func greedyToken(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?
+    ) -> GreedyTokenOutput {
+        let hiddenStates = lastTokenHiddenState(model(input[text: .newAxis].tokens, cache: cache))
+        return greedyTokenOutput(logits: logits(from: hiddenStates), state: state)
     }
 
     internal func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
-        var sanitizedWeights = weights
+        var sanitized = MLXQuantizedWeightSanitizer.sanitize(
+            weights,
+            strategy: .automatic(),
+            sidecarPolicy: .dropActivationScale
+        ).weights
 
-        // Remove unused precomputed rotary freqs
-        sanitizedWeights = sanitizedWeights.filter { !$0.key.contains("rotary_emb.inv_freq") }
-
-        // Remove lm_head if tied embeddings
+        sanitized = sanitized.filter { !$0.key.contains("rotary_emb.inv_freq") }
         if configuration.tieWordEmbeddings {
-            sanitizedWeights["lm_head.weight"] = nil
+            sanitized["lm_head.weight"] = nil
         }
-
-        // Stack expert weights for SwitchGLU
-        for l in 0 ..< configuration.hiddenLayers {
-            if l < configuration.numDenseLayers {
-                continue
-            }
-            let prefix = "model.layers.\(l)"
-            for n in ["up_proj", "down_proj", "gate_proj"] {
-                for k in ["weight", "scales", "biases"] {
-                    if sanitizedWeights["\(prefix).mlp.experts.0.\(n).\(k)"] != nil {
-                        let toJoin = (0 ..< configuration.numExperts).map { e in
-                            sanitizedWeights.removeValue(
-                                forKey: "\(prefix).mlp.experts.\(e).\(n).\(k)")!
-                        }
-                        sanitizedWeights["\(prefix).mlp.experts.\(n).\(k)"] = MLX.stacked(toJoin)
-                    }
-                }
-            }
-        }
-
-        return sanitizedWeights
+        return AfMoEExpertPackingPlan(configuration).pack(sanitized)
     }
 
     internal func newCache(parameters: GenerateParameters?) -> [KVCache] {
-        // Create cache based on layer type (rotating for sliding attention, simple for full attention)
-        layerUsesSliding.map { usesSliding in
-            if usesSliding {
-                RotatingKVCache(maxSize: slidingWindow)
-            } else {
+        AfMoELayerPlan(configuration).attentionKinds.map { kind in
+            switch kind {
+            case .full:
                 KVCacheSimple()
+            case .sliding:
+                RotatingKVCache(maxSize: configuration.slidingWindow)
             }
         }
     }
+
+    private func logits(from hiddenStates: MLXArray) -> MLXArray {
+        if let lmHead {
+            return lmHead(hiddenStates)
+        }
+        return model.embedTokens.asLinear(hiddenStates)
+    }
 }
 
-// MARK: - LoRA Extension
+// MARK: - LoRA
 
 extension AfMoEModel: LoRAModel {
-    internal var loraLayers: [Module] {
-        model.layers
+    internal func loraLinearLayers() -> LoRALinearLayers {
+        model.layers.map { ($0.attention, ["q_proj", "v_proj"]) }
     }
 }
