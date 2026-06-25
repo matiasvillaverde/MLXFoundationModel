@@ -38,7 +38,6 @@ Highest priority:
 - `longcat_flash`, `longcat_flash_ngram`
 - `seed_oss`
 - `step3p5`
-- `minicpm3`
 - `mixtral`
 - `dbrx`
 

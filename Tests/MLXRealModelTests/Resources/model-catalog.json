@@ -708,6 +708,19 @@
     "tags": ["registry-only"]
   },
   {
+    "id": "minicpm3-4b-4bit",
+    "displayName": "MiniCPM3 4B 4-bit",
+    "architecture": "minicpm3",
+    "repository": "mlx-community/MiniCPM3-4B-4bit",
+    "relativePath": "MiniCPM3-4B-4bit",
+    "prompt": "Write one short sentence about compact reasoning models.",
+    "expectedTokens": ["compact", "reasoning", "model"],
+    "maxTokens": 12,
+    "minimumMemoryGB": 12,
+    "minimumDiskGB": 3,
+    "tags": ["main", "relevant", "latest", "small", "parity"]
+  },
+  {
     "id": "minimax",
     "displayName": "MiniMax",
     "architecture": "minimax",

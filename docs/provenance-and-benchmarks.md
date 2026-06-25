@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 95 | Safe area for normal refactors. |
+| Files with no source-port marker | 96 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -40,6 +40,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/BailingMoe.swift` | Bailing MoE attention layout, sparse routing plan, grouped expert selection, expert packing, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Mistral3Text.swift` | Mistral 3 attention layout, Llama 4 position scaling, full/sliding layer scheduling, cache planning, VLM weight unwrapping, greedy-token fast path, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/MiniCPM.swift` | MiniCPM attention layout, residual/embedding/logit scaling plans, stable checkpoint keys, tied-head sanitizing, greedy-token fast path, cache dimensions, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/MiniCPM3.swift` | MiniCPM3 MLA attention layout, LongRoPE runtime frequencies, residual/embedding/logit scaling, tied-head sanitizing, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/MiniMax.swift` | MiniMax attention layout, sparse routing plan, expert weight packing, stable checkpoint keys, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/MiMoV2Flash.swift` | MiMo v2 Flash full/sliding attention layout, layer scheduling, grouped routing, attention sinks, expert packing, per-layer cache and KV-head planning, greedy-token fast path, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/OlmoE.swift` | OLMoE attention layout, sparse routing plan, expert packing, stable checkpoint keys, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
@@ -109,6 +110,7 @@ Current independence pass:
 - Replaced LFM2 MoE with typed layer planning, explicit attention/convolution layouts, guarded layer dispatch, complete expert packing, attention-only LoRA targeting, and focused plan/cache/sanitizer coverage.
 - Replaced Phi MoE with explicit attention and router plans, centralized LongRoPE support, safe expert packing, stable `model.*` parameter keys, greedy-token fast path, and focused config/layout/forward/sanitizer coverage.
 - Replaced MiniCPM with explicit attention and scaling plans, registered checkpoint-compatible module keys, tied-head sanitizing, greedy-token fast path, and focused config/layout/forward/sanitizer coverage.
+- Added MiniCPM3 with explicit MLA attention, non-loadable LongRoPE runtime frequencies, MiniCPM scaling, tied-head cleanup, greedy-token fast path, and focused config/layout/forward/sanitizer coverage.
 - Replaced Mistral 3 text with explicit attention and layer-schedule plans, Llama 4 position scaling, VLM weight unwrapping, mixed cache creation, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 - Replaced OLMo2 with explicit attention layout, q/k normalization, stable `model.*` parameter keys, tied-head sanitizing, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 - Replaced NanoChat with explicit attention, rotary-frequency, RMSNorm, and logit-softcap plans; preserved transformer checkpoint keys; added greedy-token fast path, simple cache creation, and focused config/layout/forward/softcap coverage.
@@ -178,6 +180,10 @@ Qwen2 MoE parity was added with
 `mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit`. The checkpoint is 7.9 GB on disk
 and passed targeted real-model generation, rendered session requests, token
 grammar constraints, and the serialized `main` architecture sweep on this host.
+
+MiniCPM3 parity was added with `mlx-community/MiniCPM3-4B-4bit`. The checkpoint
+is 2.2 GB on disk and passed targeted real-model generation, rendered session
+requests, and token grammar constraints on this host.
 
 The selected `deepseek-r1-distill-qwen-7b-4bit` checkpoint is a Qwen-distilled
 model; its local `config.json` declares `model_type: qwen2`. The full
@@ -250,6 +256,14 @@ targeted architecture check; the 4-token row is from the serialized
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | `qwen2_moe` | `qwen1.5-moe-a2.7b-chat-4bit` | 8 | 29 | 0.7086 | 0.6075 | 0.1011 | 79.14 | 11.29 |
 | `qwen2_moe` | `qwen1.5-moe-a2.7b-chat-4bit` | 4 | 29 | 0.1902 | 0.0991 | 0.0911 | 43.92 | 21.04 |
+
+## MiniCPM3 Parity Check
+
+This row comes from the targeted MiniCPM3 real-model run on 2026-06-25.
+
+| Architecture | Model | Generated | Prompt | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `minicpm3` | `minicpm3-4b-4bit` | 8 | 18 | 0.2570 | 0.0973 | 0.1597 | 50.09 | 31.13 |
 
 ## Small-Fit Stress Baseline
 

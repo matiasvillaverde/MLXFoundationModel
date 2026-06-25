@@ -76,6 +76,9 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
                 Qwen35TextModel($0)
             },
             modelType("minicpm", configuration: MiniCPMConfiguration.self) { MiniCPMModel($0) },
+            modelType("minicpm3", configuration: MiniCPM3Configuration.self) {
+                MiniCPM3Model($0)
+            },
             modelType("starcoder2", configuration: Starcoder2Configuration.self) {
                 Starcoder2Model($0)
             },

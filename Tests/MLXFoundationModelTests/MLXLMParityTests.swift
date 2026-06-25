@@ -154,7 +154,6 @@ struct MLXLMParityTests {
         "mamba",
         "mamba2",
         "mellum",
-        "minicpm3",
         "mixtral",
         "nemotron",
         "nemotron-nas",

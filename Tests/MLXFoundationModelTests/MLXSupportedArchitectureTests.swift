@@ -48,6 +48,7 @@ struct MLXSupportedArchitectureTests {
         "mimo",
         "mimo_v2_flash",
         "minicpm",
+        "minicpm3",
         "minimax",
         "mistral",
         "mistral3",
