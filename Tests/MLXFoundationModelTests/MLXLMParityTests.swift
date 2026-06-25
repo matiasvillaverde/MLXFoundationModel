@@ -22,6 +22,7 @@ struct MLXLMParityTests {
     // embedding, reranker, and helper modules are not part of the Foundation
     // Models-compatible text parity target.
     private static let mlxLMTextModelTypes: Set<String> = [
+        "Klear",
         "afm7",
         "afmoe",
         "apertus",
@@ -72,6 +73,7 @@ struct MLXLMParityTests {
         "kimi_linear",
         "lfm2",
         "lfm2_moe",
+        "lille-130m",
         "llama",
         "llama4",
         "llama4_text",
@@ -125,6 +127,7 @@ struct MLXLMParityTests {
     ]
 
     private static let expectedDeferredTextModelTypes: Set<String> = [
+        "Klear",
         "afm7",
         "bailing_moe_linear",
         "cohere2",

@@ -43,6 +43,7 @@ Highest priority:
 
 MoE and recent family gaps:
 
+- `Klear`
 - `cohere2`
 - `ernie4_5_moe`
 - `exaone`, `exaone_moe`
