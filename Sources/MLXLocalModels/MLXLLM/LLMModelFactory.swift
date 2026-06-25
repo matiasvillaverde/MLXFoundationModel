@@ -140,7 +140,7 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
             },
             modelType("afmoe", configuration: AfMoEConfiguration.self) { AfMoEModel($0) },
             modelType("jamba_3b", configuration: JambaConfiguration.self) { JambaModel($0) },
-            modelType("mistral3", configuration: Mistral3TextConfiguration.self) {
+            modelType("mistral3", "ministral3", configuration: Mistral3TextConfiguration.self) {
                 Mistral3TextModel($0)
             },
             modelType("apertus", configuration: ApertusConfiguration.self) {

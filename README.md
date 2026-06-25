@@ -11,6 +11,10 @@ Nothing is uploaded. Real-model tests are part of the repo. The goal is
 practical: app code can use Apple APIs while model support comes from open MLX
 weights.
 
+The scope is intentionally narrow: match Apple's Foundation Models interface
+shape, and bring `mlx-lm` text-model coverage behind it. This is not a dashboard,
+server, embedding service, OCR stack, or general MLX runtime.
+
 > Alpha. Direct MLX generation works on current SDKs. The
 > `LanguageModelSession(model:)` provider path requires Xcode 27 and an OS 27
 > SDK.
@@ -124,6 +128,7 @@ make test-provider
 - `Tests/MLXRealModelTests`: opt-in tests with downloaded models.
 - `docs/observability-usage.md`: metrics and logging.
 - `docs/apple-profiling.md`: Instruments workflows.
+- `docs/model-parity.md`: `mlx-lm` architecture parity target.
 
 ## Commands
 
