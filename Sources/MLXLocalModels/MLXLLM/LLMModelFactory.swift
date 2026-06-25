@@ -126,6 +126,7 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
             },
             modelType("exaone4", configuration: Exaone4Configuration.self) { Exaone4Model($0) },
             modelType("gpt_oss", configuration: GPTOSSConfiguration.self) { GPTOSSModel($0) },
+            modelType("gpt2", configuration: GPT2Configuration.self) { GPT2Model($0) },
             modelType("lille-130m", configuration: Lille130mConfiguration.self) {
                 Lille130mModel($0)
             },

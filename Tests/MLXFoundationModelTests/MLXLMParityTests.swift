@@ -138,7 +138,6 @@ struct MLXLMParityTests {
         "exaone",
         "exaone_moe",
         "glm",
-        "gpt2",
         "gpt_bigcode",
         "gpt_neox",
         "granitemoe",

@@ -660,6 +660,19 @@
     "tags": []
   },
   {
+    "id": "gpt2-base-mlx",
+    "displayName": "GPT-2 Base MLX",
+    "architecture": "gpt2",
+    "repository": "mlx-community/gpt2-base-mlx",
+    "relativePath": "gpt2-base-mlx",
+    "prompt": "The capital of France is",
+    "expectedTokens": ["Paris"],
+    "maxTokens": 8,
+    "minimumMemoryGB": 4,
+    "minimumDiskGB": 1,
+    "tags": ["main", "relevant", "small", "parity", "stress"]
+  },
+  {
     "id": "gpt-oss",
     "displayName": "GPT OSS",
     "architecture": "gpt_oss",

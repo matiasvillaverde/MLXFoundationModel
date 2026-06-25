@@ -58,7 +58,7 @@ Legacy and compatibility gaps:
 - `qwen`
 - `deepseek`, `deepseek_v2`
 - `glm`
-- `gpt2`, `gpt_bigcode`, `gpt_neox`
+- `gpt_bigcode`, `gpt_neox`
 - `mamba`, `mamba2`
 - `recurrent_gemma`
 - `rwkv7`

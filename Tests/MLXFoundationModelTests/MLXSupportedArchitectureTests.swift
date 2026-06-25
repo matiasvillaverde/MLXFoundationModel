@@ -36,6 +36,7 @@ struct MLXSupportedArchitectureTests {
         "glm4_moe",
         "glm4_moe_lite",
         "glm_moe_dsa",
+        "gpt2",
         "gpt_oss",
         "granite",
         "granitemoehybrid",
