@@ -1,315 +1,498 @@
-//
-//  GLM4MOE.swift
-//  LLM
-//
-//  Port of https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/models/glm4_moe.py
-//  Created by Ronald Mannak on 2025/1/7.
-//
-
 import Foundation
 import MLX
 import MLXNN
 
-class GLM4MoEAttention: Module {
-    let args: GLM4MoEConfiguration
-    let scale: Float
+// MARK: - Plans
 
-    @ModuleInfo(key: "q_proj") var wq: Linear
-    @ModuleInfo(key: "k_proj") var wk: Linear
-    @ModuleInfo(key: "v_proj") var wv: Linear
-    @ModuleInfo(key: "o_proj") var wo: Linear
+internal struct GLM4MoEAttentionLayout: Equatable, Sendable {
+    internal let hiddenSize: Int
+    internal let attentionHeads: Int
+    internal let keyValueHeads: Int
+    internal let headDimensions: Int
+    internal let rotaryDimensions: Int
+    internal let attentionScale: Float
 
-    @ModuleInfo(key: "q_norm") var qNorm: RMSNorm?
-    @ModuleInfo(key: "k_norm") var kNorm: RMSNorm?
+    internal init(_ config: GLM4MoEConfiguration) {
+        let headDimensions = config.headDim > 0
+            ? config.headDim
+            : config.hiddenSize / config.attentionHeads
 
-    let rope: RoPELayer
-
-    init(_ args: GLM4MoEConfiguration) {
-        self.args = args
-
-        let headDim = args.headDim > 0 ? args.headDim : args.hiddenSize / args.attentionHeads
-        self.scale = pow(Float(headDim), -0.5)
-
-        _wq.wrappedValue = Linear(
-            args.hiddenSize, args.attentionHeads * headDim, bias: args.attentionBias)
-        _wk.wrappedValue = Linear(args.hiddenSize, args.kvHeads * headDim, bias: args.attentionBias)
-        _wv.wrappedValue = Linear(args.hiddenSize, args.kvHeads * headDim, bias: args.attentionBias)
-        _wo.wrappedValue = Linear(args.attentionHeads * headDim, args.hiddenSize, bias: false)
-
-        if args.useQkNorm {
-            _qNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: args.rmsNormEps)
-            _kNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: args.rmsNormEps)
-        }
-
-        self.rope = initializeRope(
-            dims: Int(Float(headDim) * args.partialRotaryFactor),
-            base: args.ropeTheta,
-            traditional: false, scalingConfig: args.ropeScaling,
-            maxPositionEmbeddings: args.maxPositionEmbeddings)
-    }
-
-    func callAsFunction(
-        _ x: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode, cache: KVCache?
-    ) -> MLXArray {
-        let (B, L) = (x.dim(0), x.dim(1))
-
-        var queries = wq(x)
-        var keys = wk(x)
-        var values = wv(x)
-
-        queries = queries.reshaped(B, L, args.attentionHeads, -1)
-        keys = keys.reshaped(B, L, args.kvHeads, -1)
-
-        if let qNorm, let kNorm {
-            queries = qNorm(queries)
-            keys = kNorm(keys)
-        }
-
-        queries = queries.transposed(0, 2, 1, 3)
-        keys = keys.transposed(0, 2, 1, 3)
-        values = values.reshaped(B, L, args.kvHeads, -1).transposed(0, 2, 1, 3)
-
-        queries = applyRotaryPosition(rope, to: queries, cache: cache)
-        keys = applyRotaryPosition(rope, to: keys, cache: cache)
-
-        let output = attentionWithCacheUpdate(
-            queries: queries,
-            keys: keys,
-            values: values,
-            cache: cache,
-            scale: scale,
-            mask: mask
+        precondition(config.hiddenSize > 0, "GLM4 MoE hidden size must be positive")
+        precondition(config.attentionHeads > 0, "GLM4 MoE attention heads must be positive")
+        precondition(config.kvHeads > 0, "GLM4 MoE KV heads must be positive")
+        precondition(headDimensions > 0, "GLM4 MoE head dimensions must be positive")
+        precondition(
+            config.attentionHeads.isMultiple(of: config.kvHeads),
+            "GLM4 MoE attention heads must group KV heads"
         )
-        .transposed(0, 2, 1, 3)
-        .reshaped(B, L, -1)
+        precondition(
+            config.partialRotaryFactor > 0,
+            "GLM4 MoE partial rotary factor must be positive"
+        )
 
-        return wo(output)
+        self.hiddenSize = config.hiddenSize
+        self.attentionHeads = config.attentionHeads
+        self.keyValueHeads = config.kvHeads
+        self.headDimensions = headDimensions
+        self.rotaryDimensions = max(1, Int(Float(headDimensions) * config.partialRotaryFactor))
+        self.attentionScale = pow(Float(headDimensions), -0.5)
+    }
+
+    internal var queryProjectionSize: Int { attentionHeads * headDimensions }
+    internal var keyValueProjectionSize: Int { keyValueHeads * headDimensions }
+    internal var outputProjectionInputSize: Int { queryProjectionSize }
+}
+
+internal struct GLM4MoELayerPlan: Equatable, Sendable {
+    internal let layerCount: Int
+    internal let firstSparseLayer: Int
+    internal let routedExpertCount: Int?
+
+    internal init(_ config: GLM4MoEConfiguration) {
+        precondition(config.hiddenLayers > 0, "GLM4 MoE must have at least one layer")
+        precondition(config.firstKDenseReplace >= 0, "GLM4 MoE dense-layer count is negative")
+        precondition(
+            config.firstKDenseReplace <= config.hiddenLayers,
+            "GLM4 MoE dense-layer count exceeds layer count"
+        )
+
+        self.layerCount = config.hiddenLayers
+        self.firstSparseLayer = config.firstKDenseReplace
+        self.routedExpertCount = config.nRoutedExperts
+    }
+
+    internal func usesSparseExperts(layerIndex: Int) -> Bool {
+        (routedExpertCount ?? 0) > 0 && layerIndex >= firstSparseLayer
     }
 }
 
-class GLM4MoEMLP: Module, UnaryLayer {
-    let hiddenSize: Int
-    let intermediateSize: Int
+internal enum GLM4MoEScoreFunction: String, Equatable, Sendable {
+    case sigmoid
+    case softmax
 
-    @ModuleInfo(key: "gate_proj") var gateProj: Linear
-    @ModuleInfo(key: "up_proj") var upProj: Linear
-    @ModuleInfo(key: "down_proj") var downProj: Linear
-
-    init(_ config: GLM4MoEConfiguration, hiddenSize: Int? = nil, intermediateSize: Int? = nil) {
-        self.hiddenSize = hiddenSize ?? config.hiddenSize
-        self.intermediateSize = intermediateSize ?? config.intermediateSize
-
-        _gateProj.wrappedValue = Linear(self.hiddenSize, self.intermediateSize, bias: false)
-        _upProj.wrappedValue = Linear(self.hiddenSize, self.intermediateSize, bias: false)
-        _downProj.wrappedValue = Linear(self.intermediateSize, self.hiddenSize, bias: false)
+    internal init(_ rawValue: String) {
+        self = GLM4MoEScoreFunction(rawValue: rawValue) ?? .sigmoid
     }
 
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
-        downProj(silu(gateProj(x)) * upProj(x))
-    }
-}
-
-class GLM4MoEGate: Module {
-    let topK: Int
-    let normTopkProb: Bool
-    let nRoutedExperts: Int
-    let routedScalingFactor: Float
-    let nGroup: Int
-    let topkGroup: Int
-    let scoringFunc: String
-
-    @ParameterInfo(key: "weight") var weight: MLXArray
-    @ParameterInfo(key: "e_score_correction_bias") var eScoreCorrectionBias: MLXArray
-
-    init(_ config: GLM4MoEConfiguration) {
-        guard let nRoutedExperts = config.nRoutedExperts else {
-            fatalError("GLM4MoEGate requires nRoutedExperts")
+    internal func scores(from logits: MLXArray) -> MLXArray {
+        switch self {
+        case .sigmoid:
+            MLX.sigmoid(logits.asType(.float32))
+        case .softmax:
+            MLX.softmax(logits.asType(.float32), axis: -1)
         }
+    }
+}
 
-        precondition(config.topkMethod == "noaux_tc", "Unsupported topk method.")
+internal struct GLM4MoERoutingPlan: Equatable, Sendable {
+    internal let expertCount: Int
+    internal let selectedExpertCount: Int
+    internal let groupCount: Int
+    internal let keptGroupCount: Int
+    internal let normalizesSelectedProbabilities: Bool
+    internal let routedScalingFactor: Float
+    internal let scoreFunction: GLM4MoEScoreFunction
 
-        self.topK = config.numExpertsPerTok
-        self.normTopkProb = config.normTopkProb
-        self.nRoutedExperts = nRoutedExperts
+    internal init(_ config: GLM4MoEConfiguration) {
+        let expertCount = config.nRoutedExperts ?? 0
+        let keptGroupCount = min(config.topkGroup, config.nGroup)
+
+        precondition(expertCount > 0, "GLM4 MoE routed expert count must be positive")
+        precondition(
+            config.topkMethod == "noaux_tc",
+            "GLM4 MoE only supports noaux_tc routing"
+        )
+        precondition(config.numExpertsPerTok > 0, "GLM4 MoE top-k must be positive")
+        precondition(config.nGroup > 0, "GLM4 MoE group count must be positive")
+        precondition(
+            expertCount.isMultiple(of: config.nGroup),
+            "GLM4 MoE experts must divide evenly into groups"
+        )
+        precondition(
+            config.numExpertsPerTok <= expertCount,
+            "GLM4 MoE top-k cannot exceed routed expert count"
+        )
+        precondition(
+            keptGroupCount > 0 && keptGroupCount <= config.nGroup,
+            "GLM4 MoE kept-group count must be within group count"
+        )
+
+        self.expertCount = expertCount
+        self.selectedExpertCount = config.numExpertsPerTok
+        self.groupCount = config.nGroup
+        self.keptGroupCount = keptGroupCount
+        self.normalizesSelectedProbabilities = config.normTopkProb
         self.routedScalingFactor = config.routedScalingFactor
-        self.nGroup = config.nGroup
-        self.topkGroup = config.topkGroup
-        self.scoringFunc = config.scoringFunc
-
-        _weight.wrappedValue = zeros([nRoutedExperts, config.hiddenSize])
-        _eScoreCorrectionBias.wrappedValue = zeros([nRoutedExperts])
-
-        super.init()
+        self.scoreFunction = GLM4MoEScoreFunction(config.scoringFunc)
     }
 
-    func callAsFunction(_ x: MLXArray) -> (MLXArray, MLXArray) {
-        let hiddenStates = x.matmul(weight.T)
-        var scores: MLXArray
-        if scoringFunc == "sigmoid" {
-            scores = sigmoid(hiddenStates.asType(.float32))
-        } else {
-            scores = softmax(hiddenStates.asType(.float32), axis: -1)
-        }
+    internal var expertsPerGroup: Int {
+        expertCount / groupCount
+    }
 
-        let originalScores = scores
-        var selectionScores = scores + eScoreCorrectionBias
+    private var droppedGroupCount: Int {
+        groupCount - keptGroupCount
+    }
 
-        if nGroup > 1 {
-            selectionScores = unflatten(selectionScores, axis: -1, shape: [nGroup, -1])
-            let groupScores = top(selectionScores, k: 2, axis: -1).sum(axis: -1, keepDims: true)
-            let k = nGroup - topkGroup
-            let groupIdx = argPartition(groupScores, kth: k - 1, axis: -2)[.ellipsis, ..<k, 0...]
+    internal func route(
+        logits: MLXArray,
+        correctionBias: MLXArray,
+        outputDType: DType
+    ) -> (scores: MLXArray, indices: MLXArray) {
+        let originalScores = scoreFunction.scores(from: logits)
+        var selectionScores = originalScores + correctionBias
+
+        if groupCount > 1, droppedGroupCount > 0 {
+            selectionScores = unflatten(selectionScores, axis: -1, shape: [groupCount, -1])
+            let groupScores = top(selectionScores, k: min(2, expertsPerGroup), axis: -1)
+                .sum(axis: -1, keepDims: true)
+            let droppedGroups = argPartition(
+                groupScores,
+                kth: droppedGroupCount - 1,
+                axis: -2
+            )[.ellipsis, ..<droppedGroupCount, 0...]
             selectionScores = putAlong(
-                selectionScores, stopGradient(groupIdx), values: MLXArray(0.0), axis: -2)
+                selectionScores,
+                stopGradient(droppedGroups),
+                values: MLXArray(0.0),
+                axis: -2
+            )
             selectionScores = flattened(selectionScores, start: -2, end: -1)
         }
 
-        let k = topK
-        let inds = argPartition(-selectionScores, kth: k - 1, axis: -1)[.ellipsis, ..<k]
-        var selectedScores = takeAlong(originalScores, inds, axis: -1)
+        let indices = argPartition(
+            -selectionScores,
+            kth: selectedExpertCount - 1,
+            axis: -1
+        )[.ellipsis, ..<selectedExpertCount]
+        var selectedScores = takeAlong(originalScores, indices, axis: -1)
 
-        if topK > 1, normTopkProb {
-            let denominator = selectedScores.sum(axis: -1, keepDims: true)
-            selectedScores = selectedScores / denominator
+        if selectedExpertCount > 1, normalizesSelectedProbabilities {
+            selectedScores = selectedScores / (selectedScores.sum(axis: -1, keepDims: true) + 1e-20)
         }
-        selectedScores = selectedScores * routedScalingFactor
 
-        return (inds, selectedScores)
+        return ((selectedScores * routedScalingFactor).asType(outputDType), indices)
     }
 }
 
-class GLM4MoE: Module, UnaryLayer {
-    let numExpertsPerTok: Int
-    let gate: GLM4MoEGate
+private enum GLM4MoEExpertProjection: String, CaseIterable {
+    case gate = "gate_proj"
+    case down = "down_proj"
+    case up = "up_proj"
+}
 
+internal struct GLM4MoEExpertPackingPlan: Equatable, Sendable {
+    internal let layerCount: Int
+    internal let expertCount: Int
+
+    internal init(_ config: GLM4MoEConfiguration) {
+        self.layerCount = config.hiddenLayers
+        self.expertCount = config.nRoutedExperts ?? 0
+    }
+
+    internal func pack(_ weights: [String: MLXArray]) -> [String: MLXArray] {
+        guard expertCount > 0 else { return weights }
+
+        var packed = weights
+        for layerIndex in 0 ..< layerCount {
+            let prefix = "model.layers.\(layerIndex).mlp"
+            for projection in GLM4MoEExpertProjection.allCases {
+                for tensorName in ["weight", "scales", "biases"] {
+                    let firstKey = "\(prefix).experts.0.\(projection.rawValue).\(tensorName)"
+                    guard packed[firstKey] != nil else { continue }
+
+                    let tensors = (0 ..< expertCount).map { expertIndex in
+                        packed.removeValue(
+                            forKey: "\(prefix).experts.\(expertIndex).\(projection.rawValue).\(tensorName)"
+                        )!
+                    }
+                    packed["\(prefix).switch_mlp.\(projection.rawValue).\(tensorName)"] =
+                        stacked(tensors)
+                }
+            }
+        }
+        return packed
+    }
+}
+
+// MARK: - Model Components
+
+internal final class GLM4MoEAttention: Module {
+    let layout: GLM4MoEAttentionLayout
+
+    @ModuleInfo(key: "q_proj") var query: Linear
+    @ModuleInfo(key: "k_proj") var key: Linear
+    @ModuleInfo(key: "v_proj") var value: Linear
+    @ModuleInfo(key: "o_proj") var output: Linear
+
+    @ModuleInfo(key: "q_norm") var queryNorm: RMSNorm?
+    @ModuleInfo(key: "k_norm") var keyNorm: RMSNorm?
+
+    let rope: RoPELayer
+
+    init(_ config: GLM4MoEConfiguration) {
+        self.layout = GLM4MoEAttentionLayout(config)
+
+        _query.wrappedValue = Linear(
+            config.hiddenSize,
+            layout.queryProjectionSize,
+            bias: config.attentionBias
+        )
+        _key.wrappedValue = Linear(
+            config.hiddenSize,
+            layout.keyValueProjectionSize,
+            bias: config.attentionBias
+        )
+        _value.wrappedValue = Linear(
+            config.hiddenSize,
+            layout.keyValueProjectionSize,
+            bias: config.attentionBias
+        )
+        _output.wrappedValue = Linear(
+            layout.outputProjectionInputSize,
+            config.hiddenSize,
+            bias: false
+        )
+
+        if config.useQkNorm {
+            _queryNorm.wrappedValue = RMSNorm(
+                dimensions: layout.headDimensions,
+                eps: config.rmsNormEps
+            )
+            _keyNorm.wrappedValue = RMSNorm(
+                dimensions: layout.headDimensions,
+                eps: config.rmsNormEps
+            )
+        }
+
+        self.rope = initializeRope(
+            dims: layout.rotaryDimensions,
+            base: config.ropeTheta,
+            traditional: false,
+            scalingConfig: config.ropeScaling,
+            maxPositionEmbeddings: config.maxPositionEmbeddings
+        )
+    }
+
+    func callAsFunction(
+        _ x: MLXArray,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode,
+        cache: KVCache?
+    ) -> MLXArray {
+        let batchSize = x.dim(0)
+        let tokenCount = x.dim(1)
+
+        var queryStates = query(x)
+            .reshaped(batchSize, tokenCount, layout.attentionHeads, layout.headDimensions)
+        var keyStates = key(x)
+            .reshaped(batchSize, tokenCount, layout.keyValueHeads, layout.headDimensions)
+        let valueStates = value(x)
+            .reshaped(batchSize, tokenCount, layout.keyValueHeads, layout.headDimensions)
+            .transposed(0, 2, 1, 3)
+
+        if let queryNorm {
+            queryStates = queryNorm(queryStates)
+        }
+        if let keyNorm {
+            keyStates = keyNorm(keyStates)
+        }
+
+        queryStates = queryStates.transposed(0, 2, 1, 3)
+        keyStates = keyStates.transposed(0, 2, 1, 3)
+
+        queryStates = applyRotaryPosition(rope, to: queryStates, cache: cache)
+        keyStates = applyRotaryPosition(rope, to: keyStates, cache: cache)
+
+        let attentionOutput = attentionWithCacheUpdate(
+            queries: queryStates,
+            keys: keyStates,
+            values: valueStates,
+            cache: cache,
+            scale: layout.attentionScale,
+            mask: mask
+        )
+        .transposed(0, 2, 1, 3)
+        .reshaped(batchSize, tokenCount, -1)
+
+        return output(attentionOutput)
+    }
+}
+
+internal final class GLM4MoEMLP: Module, UnaryLayer {
+    @ModuleInfo(key: "gate_proj") var gate: Linear
+    @ModuleInfo(key: "up_proj") var up: Linear
+    @ModuleInfo(key: "down_proj") var down: Linear
+
+    init(_ config: GLM4MoEConfiguration, hiddenSize: Int? = nil, intermediateSize: Int? = nil) {
+        let hiddenSize = hiddenSize ?? config.hiddenSize
+        let intermediateSize = intermediateSize ?? config.intermediateSize
+
+        _gate.wrappedValue = Linear(hiddenSize, intermediateSize, bias: false)
+        _up.wrappedValue = Linear(hiddenSize, intermediateSize, bias: false)
+        _down.wrappedValue = Linear(intermediateSize, hiddenSize, bias: false)
+    }
+
+    func callAsFunction(_ x: MLXArray) -> MLXArray {
+        down(silu(gate(x)) * up(x))
+    }
+}
+
+internal final class GLM4MoEGate: Module {
+    let routingPlan: GLM4MoERoutingPlan
+
+    @ParameterInfo(key: "weight") var weight: MLXArray
+    @ParameterInfo(key: "e_score_correction_bias") var correctionBias: MLXArray
+
+    init(_ config: GLM4MoEConfiguration) {
+        self.routingPlan = GLM4MoERoutingPlan(config)
+        _weight.wrappedValue = MLXArray.zeros([routingPlan.expertCount, config.hiddenSize])
+        _correctionBias.wrappedValue = MLXArray.zeros([routingPlan.expertCount])
+        super.init()
+    }
+
+    func route(_ x: MLXArray) -> (scores: MLXArray, indices: MLXArray) {
+        routingPlan.route(
+            logits: x.matmul(weight.T),
+            correctionBias: correctionBias,
+            outputDType: x.dtype
+        )
+    }
+}
+
+internal final class GLM4MoESparseBlock: Module, UnaryLayer {
     @ModuleInfo(key: "switch_mlp") var switchMLP: SwitchGLU
+    @ModuleInfo(key: "gate") var gate: GLM4MoEGate
     @ModuleInfo(key: "shared_experts") var sharedExperts: GLM4MoEMLP?
 
     init(_ config: GLM4MoEConfiguration) {
-        guard let nRoutedExperts = config.nRoutedExperts else {
-            fatalError("GLM4MoE requires nRoutedExperts")
-        }
-
-        self.numExpertsPerTok = config.numExpertsPerTok
-        self.gate = GLM4MoEGate(config)
+        let expertCount = config.nRoutedExperts ?? 0
+        precondition(expertCount > 0, "GLM4 MoE sparse block requires routed experts")
 
         _switchMLP.wrappedValue = SwitchGLU(
             inputDims: config.hiddenSize,
             hiddenDims: config.moeIntermediateSize,
-            numExperts: nRoutedExperts
+            numExperts: expertCount
         )
+        _gate.wrappedValue = GLM4MoEGate(config)
 
-        if let shared = config.nSharedExperts, shared > 0 {
-            let intermediateSize = config.moeIntermediateSize * shared
+        if let sharedExpertCount = config.nSharedExperts, sharedExpertCount > 0 {
             _sharedExperts.wrappedValue = GLM4MoEMLP(
-                config, intermediateSize: intermediateSize
+                config,
+                intermediateSize: config.moeIntermediateSize * sharedExpertCount
             )
         }
-
-        super.init()
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        let (inds, scores) = gate(x)
-        var y = switchMLP(x, inds)
-        y = (y * scores[.ellipsis, .newAxis]).sum(axis: -2).asType(y.dtype)
+        let routed = gate.route(x)
+        let expertOutput = switchMLP(x, routed.indices)
+        var output = (expertOutput * routed.scores[.ellipsis, .newAxis]).sum(axis: -2)
         if let sharedExperts {
-            y = y + sharedExperts(x)
+            output = output + sharedExperts(x)
         }
-        return y
+        return output
     }
 }
 
-class GLM4MoEDecoderLayer: Module {
+internal final class GLM4MoEDecoderLayer: Module {
     @ModuleInfo(key: "self_attn") var attention: GLM4MoEAttention
-    let mlp: UnaryLayer
-
+    @ModuleInfo(key: "mlp") private var feedForward: Module & UnaryLayer
     @ModuleInfo(key: "input_layernorm") var inputLayerNorm: RMSNorm
     @ModuleInfo(key: "post_attention_layernorm") var postAttentionLayerNorm: RMSNorm
 
-    init(_ args: GLM4MoEConfiguration, layerIdx: Int) {
-        _attention.wrappedValue = GLM4MoEAttention(args)
-
-        if args.nRoutedExperts != nil && layerIdx >= args.firstKDenseReplace {
-            self.mlp = GLM4MoE(args)
+    init(_ config: GLM4MoEConfiguration, layerIndex: Int, layerPlan: GLM4MoELayerPlan) {
+        _attention.wrappedValue = GLM4MoEAttention(config)
+        if layerPlan.usesSparseExperts(layerIndex: layerIndex) {
+            _feedForward.wrappedValue = GLM4MoESparseBlock(config)
         } else {
-            self.mlp = GLM4MoEMLP(args)
+            _feedForward.wrappedValue = GLM4MoEMLP(config)
         }
-
-        _inputLayerNorm.wrappedValue = RMSNorm(
-            dimensions: args.hiddenSize, eps: args.rmsNormEps)
+        _inputLayerNorm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
         _postAttentionLayerNorm.wrappedValue = RMSNorm(
-            dimensions: args.hiddenSize, eps: args.rmsNormEps)
+            dimensions: config.hiddenSize,
+            eps: config.rmsNormEps
+        )
     }
 
     func callAsFunction(
-        _ x: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode, cache: KVCache?
+        _ x: MLXArray,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode,
+        cache: KVCache?
     ) -> MLXArray {
-        let r = attention(inputLayerNorm(x), mask: mask, cache: cache)
-        let h = x + r
-        let r2 = mlp(postAttentionLayerNorm(h))
-        return h + r2
+        var hidden = x + attention(inputLayerNorm(x), mask: mask, cache: cache)
+        hidden = hidden + feedForward(postAttentionLayerNorm(hidden))
+        return hidden
     }
 }
 
-internal class GLM4MoEModelInner: Module {
+internal final class GLM4MoEBackbone: Module {
     @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding
+    @ModuleInfo var layers: [GLM4MoEDecoderLayer]
+    @ModuleInfo(key: "norm") var norm: RMSNorm
 
-    let layers: [GLM4MoEDecoderLayer]
-    let norm: RMSNorm
+    init(_ config: GLM4MoEConfiguration) {
+        precondition(config.vocabularySize > 0, "GLM4 MoE vocabulary size must be positive")
 
-    init(_ args: GLM4MoEConfiguration) {
-        precondition(args.vocabularySize > 0)
-
+        let layerPlan = GLM4MoELayerPlan(config)
         _embedTokens.wrappedValue = Embedding(
-            embeddingCount: args.vocabularySize, dimensions: args.hiddenSize)
-
-        self.layers = (0 ..< args.hiddenLayers)
-            .map { idx in
-                GLM4MoEDecoderLayer(args, layerIdx: idx)
-            }
-        self.norm = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
+            embeddingCount: config.vocabularySize,
+            dimensions: config.hiddenSize
+        )
+        _layers.wrappedValue = (0 ..< config.hiddenLayers).map { layerIndex in
+            GLM4MoEDecoderLayer(config, layerIndex: layerIndex, layerPlan: layerPlan)
+        }
+        _norm.wrappedValue = RMSNorm(dimensions: config.hiddenSize, eps: config.rmsNormEps)
     }
 
     func callAsFunction(_ inputs: MLXArray, cache: [KVCache]? = nil) -> MLXArray {
-        var h = embedTokens(inputs)
+        var hidden = embedTokens(inputs)
+        let mask = createAttentionMask(h: hidden, cache: cache?.first)
 
-        let mask = createAttentionMask(h: h, cache: cache?.first)
-
-        for (i, layer) in layers.enumerated() {
-            h = layer(h, mask: mask, cache: cache?[i])
+        for (layerIndex, layer) in layers.enumerated() {
+            hidden = layer(hidden, mask: mask, cache: cache?[layerIndex])
         }
 
-        return norm(h)
+        return norm(hidden)
     }
 }
 
-internal class GLM4MoEModel: Module, LLMModel, KVCacheDimensionProvider {
+internal final class GLM4MoEModel: Module, LLMModel, KVCacheDimensionProvider, GreedyTokenModel {
     internal let vocabularySize: Int
     internal let kvHeads: [Int]
 
-    internal let model: GLM4MoEModelInner
-    let configuration: GLM4MoEConfiguration
-
+    @ModuleInfo(key: "model") internal var model: GLM4MoEBackbone
     @ModuleInfo(key: "lm_head") var lmHead: Linear?
 
-    internal init(_ args: GLM4MoEConfiguration) {
-        self.configuration = args
-        self.vocabularySize = args.vocabularySize
-        self.kvHeads = (0 ..< args.hiddenLayers).map { _ in args.kvHeads }
-        self.model = GLM4MoEModelInner(args)
+    private let configuration: GLM4MoEConfiguration
+    let modelType: String
 
-        if !args.tieWordEmbeddings {
-            _lmHead.wrappedValue = Linear(args.hiddenSize, args.vocabularySize, bias: false)
+    internal init(_ config: GLM4MoEConfiguration) {
+        self.configuration = config
+        self.vocabularySize = config.vocabularySize
+        self.kvHeads = Array(repeating: config.kvHeads, count: config.hiddenLayers)
+        self.modelType = config.modelType
+        _model.wrappedValue = GLM4MoEBackbone(config)
+
+        if !config.tieWordEmbeddings {
+            _lmHead.wrappedValue = Linear(config.hiddenSize, config.vocabularySize, bias: false)
         }
     }
 
     internal func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
-        let out = model(inputs, cache: cache)
-        if let lmHead {
-            return lmHead(out)
-        }
-        return model.embedTokens.asLinear(out)
+        logits(from: model(inputs, cache: cache))
+    }
+
+    internal func greedyToken(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?
+    ) -> GreedyTokenOutput {
+        let hiddenStates = lastTokenHiddenState(model(input[text: .newAxis].tokens, cache: cache))
+        return greedyTokenOutput(logits: logits(from: hiddenStates), state: state)
+    }
+
+    internal func newCache(parameters: GenerateParameters?) -> [KVCache] {
+        (0 ..< configuration.hiddenLayers).map { _ in KVCacheSimple() }
     }
 
     internal func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
@@ -323,30 +506,24 @@ internal class GLM4MoEModel: Module, LLMModel, KVCacheDimensionProvider {
             sanitized["lm_head.weight"] = nil
         }
 
-        for l in 0 ..< configuration.hiddenLayers {
-            let prefix = "model.layers.\(l)"
-            for n in ["gate_proj", "down_proj", "up_proj"] {
-                for k in ["weight", "scales", "biases"] {
-                    let key = "\(prefix).mlp.experts.0.\(n).\(k)"
-                    if sanitized[key] != nil, let nRoutedExperts = configuration.nRoutedExperts {
-                        let toJoin = (0 ..< nRoutedExperts).map { e in
-                            sanitized.removeValue(
-                                forKey: "\(prefix).mlp.experts.\(e).\(n).\(k)")!
-                        }
-                        sanitized["\(prefix).mlp.switch_mlp.\(n).\(k)"] = MLX.stacked(toJoin)
-                    }
-                }
-            }
+        sanitized = sanitized.filter {
+            !$0.key.contains("attention.rotary_emb.inv_freq")
+                && !$0.key.hasPrefix("model.layers.\(configuration.hiddenLayers)")
         }
+        return GLM4MoEExpertPackingPlan(configuration).pack(sanitized)
+    }
 
-        let mptLayerPrefix = "model.layers.\(configuration.hiddenLayers)"
-        sanitized = sanitized.filter { !($0.key.hasPrefix(mptLayerPrefix)) }
-
-        return sanitized
+    private func logits(from hiddenStates: MLXArray) -> MLXArray {
+        if let lmHead {
+            return lmHead(hiddenStates)
+        }
+        return model.embedTokens.asLinear(hiddenStates)
     }
 }
 
-internal struct GLM4MoEConfiguration: Codable, Sendable {
+// MARK: - Configuration
+
+internal struct GLM4MoEConfiguration: Codable, Sendable, Equatable {
     var modelType: String
     var vocabularySize: Int
     var hiddenSize: Int
@@ -372,8 +549,66 @@ internal struct GLM4MoEConfiguration: Codable, Sendable {
     var tieWordEmbeddings: Bool
     var attentionBias: Bool
     var partialRotaryFactor: Float
-    var scoringFunc: String = "sigmoid"
-    var topkMethod: String = "noaux_tc"
+    var scoringFunc: String
+    var topkMethod: String
+
+    internal init(
+        modelType: String = "glm4_moe",
+        vocabularySize: Int,
+        hiddenSize: Int,
+        intermediateSize: Int,
+        maxPositionEmbeddings: Int = 32_768,
+        moeIntermediateSize: Int? = nil,
+        normTopkProb: Bool = false,
+        attentionHeads: Int,
+        nGroup: Int = 1,
+        headDim: Int? = nil,
+        topkGroup: Int? = nil,
+        nSharedExperts: Int? = nil,
+        nRoutedExperts: Int? = nil,
+        routedScalingFactor: Float = 1,
+        numExpertsPerTok: Int = 1,
+        firstKDenseReplace: Int = 0,
+        hiddenLayers: Int,
+        kvHeads: Int? = nil,
+        rmsNormEps: Float = 1e-5,
+        ropeTheta: Float = 10_000,
+        ropeScaling: [String: StringOrNumber]? = nil,
+        useQkNorm: Bool = false,
+        tieWordEmbeddings: Bool = false,
+        attentionBias: Bool = false,
+        partialRotaryFactor: Float = 1.0,
+        scoringFunc: String = "sigmoid",
+        topkMethod: String = "noaux_tc"
+    ) {
+        self.modelType = modelType
+        self.vocabularySize = vocabularySize
+        self.hiddenSize = hiddenSize
+        self.intermediateSize = intermediateSize
+        self.maxPositionEmbeddings = maxPositionEmbeddings
+        self.moeIntermediateSize = moeIntermediateSize ?? intermediateSize
+        self.normTopkProb = normTopkProb
+        self.attentionHeads = attentionHeads
+        self.nGroup = nGroup
+        self.headDim = headDim ?? (hiddenSize / attentionHeads)
+        self.topkGroup = topkGroup ?? nGroup
+        self.nSharedExperts = nSharedExperts
+        self.nRoutedExperts = nRoutedExperts
+        self.routedScalingFactor = routedScalingFactor
+        self.numExpertsPerTok = numExpertsPerTok
+        self.firstKDenseReplace = firstKDenseReplace
+        self.hiddenLayers = hiddenLayers
+        self.kvHeads = kvHeads ?? attentionHeads
+        self.rmsNormEps = rmsNormEps
+        self.ropeTheta = ropeTheta
+        self.ropeScaling = ropeScaling
+        self.useQkNorm = useQkNorm
+        self.tieWordEmbeddings = tieWordEmbeddings
+        self.attentionBias = attentionBias
+        self.partialRotaryFactor = partialRotaryFactor
+        self.scoringFunc = scoringFunc
+        self.topkMethod = topkMethod
+    }
 
     enum CodingKeys: String, CodingKey {
         case modelType = "model_type"
@@ -406,46 +641,77 @@ internal struct GLM4MoEConfiguration: Codable, Sendable {
     }
 
     internal init(from decoder: Decoder) throws {
-        let container: KeyedDecodingContainer<GLM4MoEConfiguration.CodingKeys> =
-            try decoder.container(keyedBy: GLM4MoEConfiguration.CodingKeys.self)
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let hiddenSize = try container.decode(Int.self, forKey: .hiddenSize)
+        let attentionHeads = try container.decode(Int.self, forKey: .attentionHeads)
+        let intermediateSize = try container.decode(Int.self, forKey: .intermediateSize)
+        let nGroup = try container.decodeIfPresent(Int.self, forKey: .nGroup) ?? 1
 
-        self.modelType = try container.decode(String.self, forKey: .modelType)
-        self.vocabularySize = try container.decode(Int.self, forKey: .vocabularySize)
-        self.hiddenSize = try container.decode(Int.self, forKey: .hiddenSize)
-        self.intermediateSize = try container.decode(Int.self, forKey: .intermediateSize)
-        self.maxPositionEmbeddings = try container.decode(Int.self, forKey: .maxPositionEmbeddings)
-        self.moeIntermediateSize = try container.decode(Int.self, forKey: .moeIntermediateSize)
-        self.normTopkProb = try container.decode(Bool.self, forKey: .normTopkProb)
-        self.attentionHeads = try container.decode(Int.self, forKey: .attentionHeads)
-        self.nGroup = try container.decode(Int.self, forKey: .nGroup)
-        self.headDim = try container.decode(Int.self, forKey: .headDim)
-        self.topkGroup = try container.decode(Int.self, forKey: .topkGroup)
-        self.nSharedExperts = try container.decodeIfPresent(Int.self, forKey: .nSharedExperts)
-        self.nRoutedExperts = try container.decodeIfPresent(Int.self, forKey: .nRoutedExperts)
-        self.routedScalingFactor = try container.decode(Float.self, forKey: .routedScalingFactor)
-        self.numExpertsPerTok = try container.decode(Int.self, forKey: .numExpertsPerTok)
-        self.firstKDenseReplace = try container.decode(Int.self, forKey: .firstKDenseReplace)
-        self.hiddenLayers = try container.decode(Int.self, forKey: .hiddenLayers)
-        self.kvHeads = try container.decode(Int.self, forKey: .kvHeads)
-        self.rmsNormEps = try container.decode(Float.self, forKey: .rmsNormEps)
-        self.ropeTheta = try container.decode(Float.self, forKey: .ropeTheta)
-        self.ropeScaling = try container.decodeIfPresent(
-            [String: StringOrNumber].self, forKey: .ropeScaling)
-        self.useQkNorm = try container.decode(Bool.self, forKey: .useQkNorm)
-        self.tieWordEmbeddings = try container.decode(Bool.self, forKey: .tieWordEmbeddings)
-        self.attentionBias = try container.decode(Bool.self, forKey: .attentionBias)
-        self.partialRotaryFactor = try container.decode(Float.self, forKey: .partialRotaryFactor)
-        self.scoringFunc =
-            try container.decodeIfPresent(String.self, forKey: .scoringFunc) ?? "sigmoid"
-        self.topkMethod =
-            try container.decodeIfPresent(String.self, forKey: .topkMethod) ?? "noaux_tc"
+        self.init(
+            modelType: try container.decodeIfPresent(String.self, forKey: .modelType)
+                ?? "glm4_moe",
+            vocabularySize: try container.decode(Int.self, forKey: .vocabularySize),
+            hiddenSize: hiddenSize,
+            intermediateSize: intermediateSize,
+            maxPositionEmbeddings: try container.decodeIfPresent(
+                Int.self,
+                forKey: .maxPositionEmbeddings
+            ) ?? 32_768,
+            moeIntermediateSize: try container.decodeIfPresent(
+                Int.self,
+                forKey: .moeIntermediateSize
+            ) ?? intermediateSize,
+            normTopkProb: try container.decodeIfPresent(Bool.self, forKey: .normTopkProb)
+                ?? false,
+            attentionHeads: attentionHeads,
+            nGroup: nGroup,
+            headDim: try container.decodeIfPresent(Int.self, forKey: .headDim)
+                ?? (hiddenSize / attentionHeads),
+            topkGroup: try container.decodeIfPresent(Int.self, forKey: .topkGroup) ?? nGroup,
+            nSharedExperts: try container.decodeIfPresent(Int.self, forKey: .nSharedExperts),
+            nRoutedExperts: try container.decodeIfPresent(Int.self, forKey: .nRoutedExperts),
+            routedScalingFactor: try container.decodeIfPresent(
+                Float.self,
+                forKey: .routedScalingFactor
+            ) ?? 1,
+            numExpertsPerTok: try container.decodeIfPresent(Int.self, forKey: .numExpertsPerTok)
+                ?? 1,
+            firstKDenseReplace: try container.decodeIfPresent(
+                Int.self,
+                forKey: .firstKDenseReplace
+            ) ?? 0,
+            hiddenLayers: try container.decode(Int.self, forKey: .hiddenLayers),
+            kvHeads: try container.decodeIfPresent(Int.self, forKey: .kvHeads) ?? attentionHeads,
+            rmsNormEps: try container.decodeIfPresent(Float.self, forKey: .rmsNormEps)
+                ?? 1e-5,
+            ropeTheta: try container.decodeIfPresent(Float.self, forKey: .ropeTheta) ?? 10_000,
+            ropeScaling: try container.decodeIfPresent(
+                [String: StringOrNumber].self,
+                forKey: .ropeScaling
+            ),
+            useQkNorm: try container.decodeIfPresent(Bool.self, forKey: .useQkNorm) ?? false,
+            tieWordEmbeddings: try container.decodeIfPresent(
+                Bool.self,
+                forKey: .tieWordEmbeddings
+            ) ?? false,
+            attentionBias: try container.decodeIfPresent(Bool.self, forKey: .attentionBias)
+                ?? false,
+            partialRotaryFactor: try container.decodeIfPresent(
+                Float.self,
+                forKey: .partialRotaryFactor
+            ) ?? 1.0,
+            scoringFunc: try container.decodeIfPresent(String.self, forKey: .scoringFunc)
+                ?? "sigmoid",
+            topkMethod: try container.decodeIfPresent(String.self, forKey: .topkMethod)
+                ?? "noaux_tc"
+        )
     }
 }
 
 // MARK: - LoRA
 
 extension GLM4MoEModel: LoRAModel {
-    internal var loraLayers: [Module] {
-        model.layers
+    internal func loraLinearLayers() -> LoRALinearLayers {
+        model.layers.map { ($0.attention, ["q_proj", "v_proj"]) }
     }
 }
