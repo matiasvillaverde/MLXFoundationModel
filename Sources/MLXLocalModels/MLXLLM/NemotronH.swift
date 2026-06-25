@@ -103,10 +103,6 @@ internal struct NemotronHAttentionLayout: Sendable, Equatable {
         precondition(configuration.numKeyValueHeads > 0, "num_key_value_heads must be positive")
         precondition(headDimensions > 0, "head_dim must be positive")
         precondition(
-            configuration.hiddenSize == configuration.numAttentionHeads * headDimensions,
-            "hidden_size must equal num_attention_heads * head_dim"
-        )
-        precondition(
             configuration.numAttentionHeads.isMultiple(of: configuration.numKeyValueHeads),
             "attention heads must group key-value heads"
         )
@@ -361,7 +357,6 @@ internal final class NemotronHGatedRMSNorm: Module {
 
     private let eps: Float
     private let groupSize: Int
-    private let unitWeight: MLXArray
 
     init(dimensions: Int, eps: Float, groupSize: Int) {
         precondition(dimensions > 0, "dimensions must be positive")
@@ -370,7 +365,6 @@ internal final class NemotronHGatedRMSNorm: Module {
 
         self.eps = eps
         self.groupSize = groupSize
-        self.unitWeight = MLXArray.ones([groupSize])
         self._weight.wrappedValue = MLXArray.ones([dimensions])
         super.init()
     }
@@ -382,6 +376,7 @@ internal final class NemotronHGatedRMSNorm: Module {
         groupedShape.append(-1)
         groupedShape.append(groupSize)
 
+        let unitWeight = MLXArray.ones([groupSize])
         let normalized = MLXFast.rmsNorm(
             gated.reshaped(groupedShape),
             weight: unitWeight,
@@ -1100,7 +1095,42 @@ internal struct NemotronHConfiguration: Codable, Sendable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let hiddenLayers = try container.decode(Int.self, forKey: .numHiddenLayers)
         let pattern = try Self.decodePattern(from: container, hiddenLayers: hiddenLayers)
+        let containsRoutedFeedForward = pattern.contains(NemotronHBlockKind.routedFeedForward.rawValue)
         let limits = try Self.decodeTimeStepLimits(from: container)
+        let intermediateSize = try container.decode(Int.self, forKey: .intermediateSize)
+        let nSharedExperts = try container.decodeIfPresent(Int.self, forKey: .nSharedExperts)
+        let moeIntermediateSize: Int
+        let moeSharedExpertIntermediateSize: Int
+        let nRoutedExperts: Int
+        let numExpertsPerTok: Int
+
+        if containsRoutedFeedForward {
+            moeIntermediateSize = try container.decode(Int.self, forKey: .moeIntermediateSize)
+            nRoutedExperts = try container.decode(Int.self, forKey: .nRoutedExperts)
+            numExpertsPerTok = try container.decode(Int.self, forKey: .numExpertsPerTok)
+            if (nSharedExperts ?? 0) > 0 {
+                moeSharedExpertIntermediateSize = try container.decode(
+                    Int.self,
+                    forKey: .moeSharedExpertIntermediateSize
+                )
+            } else {
+                moeSharedExpertIntermediateSize = try container.decodeIfPresent(
+                    Int.self,
+                    forKey: .moeSharedExpertIntermediateSize
+                ) ?? moeIntermediateSize
+            }
+        } else {
+            moeIntermediateSize = try container.decodeIfPresent(
+                Int.self,
+                forKey: .moeIntermediateSize
+            ) ?? intermediateSize
+            moeSharedExpertIntermediateSize = try container.decodeIfPresent(
+                Int.self,
+                forKey: .moeSharedExpertIntermediateSize
+            ) ?? moeIntermediateSize
+            nRoutedExperts = try container.decodeIfPresent(Int.self, forKey: .nRoutedExperts) ?? 1
+            numExpertsPerTok = try container.decodeIfPresent(Int.self, forKey: .numExpertsPerTok) ?? 1
+        }
 
         self.init(
             modelType: try container.decodeIfPresent(String.self, forKey: .modelType)
@@ -1115,14 +1145,11 @@ internal struct NemotronHConfiguration: Codable, Sendable {
             ssmStateSize: try container.decode(Int.self, forKey: .ssmStateSize),
             convKernel: try container.decode(Int.self, forKey: .convKernel),
             nGroups: try container.decode(Int.self, forKey: .nGroups),
-            intermediateSize: try container.decode(Int.self, forKey: .intermediateSize),
-            moeIntermediateSize: try container.decode(Int.self, forKey: .moeIntermediateSize),
-            moeSharedExpertIntermediateSize: try container.decode(
-                Int.self,
-                forKey: .moeSharedExpertIntermediateSize
-            ),
-            nRoutedExperts: try container.decode(Int.self, forKey: .nRoutedExperts),
-            numExpertsPerTok: try container.decode(Int.self, forKey: .numExpertsPerTok),
+            intermediateSize: intermediateSize,
+            moeIntermediateSize: moeIntermediateSize,
+            moeSharedExpertIntermediateSize: moeSharedExpertIntermediateSize,
+            nRoutedExperts: nRoutedExperts,
+            numExpertsPerTok: numExpertsPerTok,
             hybridOverridePattern: pattern,
             layerNormEpsilon: try container.decodeIfPresent(
                 Float.self,
@@ -1143,7 +1170,7 @@ internal struct NemotronHConfiguration: Codable, Sendable {
             ropeTheta: try container.decodeIfPresent(Float.self, forKey: .ropeTheta)
                 ?? 10_000.0,
             headDim: try container.decodeIfPresent(Int.self, forKey: .headDim),
-            nSharedExperts: try container.decodeIfPresent(Int.self, forKey: .nSharedExperts),
+            nSharedExperts: nSharedExperts,
             nGroup: try container.decodeIfPresent(Int.self, forKey: .nGroup) ?? 1,
             topkGroup: try container.decodeIfPresent(Int.self, forKey: .topkGroup) ?? 1,
             normTopkProb: try container.decodeIfPresent(Bool.self, forKey: .normTopkProb)

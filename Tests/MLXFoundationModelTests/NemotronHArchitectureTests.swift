@@ -22,6 +22,24 @@ struct NemotronHArchitectureTests {
         #expect(plan.kvHeads == [0, 2])
     }
 
+    @Test("decodes dense-only Nano-style config without MoE fields")
+    func decodesDenseOnlyNanoStyleConfigWithoutMoEFields() throws {
+        let config = try JSONDecoder.json5().decode(
+            NemotronHConfiguration.self,
+            from: Data(Self.denseOnlyConfigJSON.utf8)
+        )
+
+        #expect(config.blockPattern == [.mamba, .attention, .feedForward])
+        #expect(config.moeIntermediateSize == config.intermediateSize)
+        #expect(config.moeSharedExpertIntermediateSize == config.intermediateSize)
+        #expect(config.nRoutedExperts == 1)
+        #expect(config.numExpertsPerTok == 1)
+
+        let layout = NemotronHAttentionLayout(config)
+        #expect(layout.queryDimensions == 40 * 128)
+        #expect(layout.keyValueDimensions == 8 * 128)
+    }
+
     @Test("rejects invalid block pattern")
     func rejectsInvalidBlockPattern() {
         let json = Self.configJSON(pattern: "M*")
@@ -184,6 +202,24 @@ struct NemotronHArchitectureTests {
         }
         """
     }
+
+    private static let denseOnlyConfigJSON = """
+    {
+        "vocab_size": 64,
+        "hidden_size": 16,
+        "num_hidden_layers": 3,
+        "num_attention_heads": 40,
+        "num_key_value_heads": 8,
+        "mamba_num_heads": 2,
+        "mamba_head_dim": 4,
+        "head_dim": 128,
+        "ssm_state_size": 2,
+        "conv_kernel": 3,
+        "n_groups": 1,
+        "intermediate_size": 32,
+        "hybrid_override_pattern": "M*-"
+    }
+    """
 
     private static func sanitizerWeights() -> [String: MLXArray] {
         [
