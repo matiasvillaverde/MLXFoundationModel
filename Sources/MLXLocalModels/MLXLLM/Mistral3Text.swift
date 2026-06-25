@@ -1,292 +1,380 @@
-// Port of https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/models/ministral3.py
-
 import Foundation
 import MLX
+import MLXFast
 import MLXNN
 
-// MARK: - Llama4 Attention Scaling
+internal struct Mistral3AttentionLayout: Equatable, Sendable {
+    internal let hiddenSize: Int
+    internal let queryHeads: Int
+    internal let keyValueHeads: Int
+    internal let headSize: Int
+    internal let queryProjectionSize: Int
+    internal let keyValueProjectionSize: Int
+    internal let attentionScale: Float
 
-/// Compute attention scale for Llama 4 style position-based scaling.
-///
-/// - Parameters:
-///   - start: Start position offset
-///   - stop: Stop position offset
-///   - beta: Scaling factor (llama_4_scaling_beta)
-///   - maxPositionEmbeddings: Original max position embeddings
-/// - Returns: Scaling tensor of shape [stop - start, 1]
-private func getLlama4AttentionScale(
-    start: Int, stop: Int, beta: Float, maxPositionEmbeddings: Int
-) -> MLXArray {
-    let positions = MLXArray(Int32(start) ..< Int32(stop))
-    let scaling =
-        1 + beta
-        * MLX.log(
-            1 + MLX.floor(positions.asType(.float32) / Float(maxPositionEmbeddings))
+    internal init(_ config: Mistral3TextConfiguration) {
+        precondition(config.hiddenSize > 0, "hidden_size must be positive")
+        precondition(config.attentionHeads > 0, "num_attention_heads must be positive")
+        precondition(config.kvHeads > 0, "num_key_value_heads must be positive")
+        if config.headDimensions == nil {
+            precondition(
+                config.hiddenSize.isMultiple(of: config.attentionHeads),
+                "hidden_size must be divisible by num_attention_heads"
+            )
+        }
+        precondition(
+            config.attentionHeads.isMultiple(of: config.kvHeads),
+            "num_attention_heads must be divisible by num_key_value_heads"
         )
-    return scaling[0..., .newAxis]
+        precondition(config.resolvedHeadDimensions > 0, "head_dim must be positive")
+
+        self.hiddenSize = config.hiddenSize
+        self.queryHeads = config.attentionHeads
+        self.keyValueHeads = config.kvHeads
+        self.headSize = config.resolvedHeadDimensions
+        self.queryProjectionSize = queryHeads * headSize
+        self.keyValueProjectionSize = keyValueHeads * headSize
+        self.attentionScale = 1 / Float(headSize).squareRoot()
+    }
 }
 
-// MARK: - Attention
+internal struct Mistral3LayerSchedule: Equatable, Sendable {
+    internal static let fullAttention = "full_attention"
+    internal static let slidingAttention = "sliding_attention"
 
-class Mistral3Attention: Module {
-    let args: Mistral3TextConfiguration
-    let nHeads: Int
-    let nKVHeads: Int
-    let headDim: Int
-    let scale: Float
+    internal let layerTypes: [String]
+    internal let fullAttentionMaskLayerIndex: Int
+    internal let slidingAttentionMaskLayerIndex: Int?
 
-    @ModuleInfo(key: "q_proj") var wq: Linear
-    @ModuleInfo(key: "k_proj") var wk: Linear
-    @ModuleInfo(key: "v_proj") var wv: Linear
-    @ModuleInfo(key: "o_proj") var wo: Linear
-
-    let rope: RoPELayer
-
-    init(_ args: Mistral3TextConfiguration) {
-        self.args = args
-
-        let dim = args.hiddenSize
-        self.nHeads = args.attentionHeads
-        self.nKVHeads = args.kvHeads
-
-        self.headDim = args.resolvedHeadDimensions
-        self.scale = pow(Float(headDim), -0.5)
-
-        self._wq.wrappedValue = Linear(dim, nHeads * headDim, bias: false)
-        self._wk.wrappedValue = Linear(dim, nKVHeads * headDim, bias: false)
-        self._wv.wrappedValue = Linear(dim, nKVHeads * headDim, bias: false)
-        self._wo.wrappedValue = Linear(nHeads * headDim, dim, bias: false)
-
-        // Initialize RoPE: prefer rope_parameters dict, fall back to direct ropeTheta
-        let ropeTheta = args.ropeParameters?["rope_theta"]?.asFloat() ?? args.ropeTheta
-        self.rope = initializeRope(
-            dims: headDim,
-            base: ropeTheta,
-            traditional: false,
-            scalingConfig: args.ropeParameters,
-            maxPositionEmbeddings: args.maxPositionEmbeddings
+    internal init(_ config: Mistral3TextConfiguration) {
+        precondition(config.hiddenLayers > 0, "num_hidden_layers must be positive")
+        let types = config.layerTypes.isEmpty
+            ? Array(repeating: Self.fullAttention, count: config.hiddenLayers)
+            : config.layerTypes
+        precondition(
+            types.count == config.hiddenLayers,
+            "layer_types count must match num_hidden_layers"
         )
 
-        super.init()
+        for type in types {
+            precondition(
+                type == Self.fullAttention || type == Self.slidingAttention,
+                "unsupported Mistral3 layer type: \(type)"
+            )
+        }
+
+        self.layerTypes = types
+        self.fullAttentionMaskLayerIndex = types.firstIndex(of: Self.fullAttention) ?? 0
+        self.slidingAttentionMaskLayerIndex = types.firstIndex(of: Self.slidingAttention)
+    }
+
+    internal func usesSlidingWindow(at layerIndex: Int) -> Bool {
+        layerTypes[layerIndex] == Self.slidingAttention
+    }
+}
+
+internal struct Mistral3AttentionScalePlan: Equatable, Sendable {
+    internal let beta: Float?
+    internal let originalMaxPositionEmbeddings: Int?
+
+    internal init(_ config: Mistral3TextConfiguration) {
+        self.beta = config.ropeParameters?["llama_4_scaling_beta"]?.asFloat()
+        self.originalMaxPositionEmbeddings = config.ropeParameters?[
+            "original_max_position_embeddings"
+        ]?.asInt()
+        if let originalMaxPositionEmbeddings {
+            precondition(
+                originalMaxPositionEmbeddings > 0,
+                "original_max_position_embeddings must be positive"
+            )
+        }
+    }
+
+    internal var usesPositionScaling: Bool {
+        beta != nil && originalMaxPositionEmbeddings != nil
+    }
+
+    internal func values(start: Int, count: Int, dtype: DType) -> MLXArray {
+        precondition(start >= 0, "attention scale start must be non-negative")
+        precondition(count >= 0, "attention scale count must be non-negative")
+        guard let beta, let originalMaxPositionEmbeddings else {
+            return MLXArray.ones([count, 1]).asType(dtype)
+        }
+
+        let positions = MLXArray(Int32(start) ..< Int32(start + count))
+        let blockIndex = MLX.floor(positions.asType(.float32) / Float(originalMaxPositionEmbeddings))
+        let scale = 1 + beta * MLX.log(1 + blockIndex)
+        return scale[0..., .newAxis].asType(dtype)
+    }
+}
+
+private final class Mistral3SelfAttention: Module {
+    private let layout: Mistral3AttentionLayout
+    private let rope: RoPELayer
+
+    @ModuleInfo(key: "q_proj") private var queryProjection: Linear
+    @ModuleInfo(key: "k_proj") private var keyProjection: Linear
+    @ModuleInfo(key: "v_proj") private var valueProjection: Linear
+    @ModuleInfo(key: "o_proj") private var outputProjection: Linear
+
+    init(_ config: Mistral3TextConfiguration) {
+        let layout = Mistral3AttentionLayout(config)
+        self.layout = layout
+        self._queryProjection.wrappedValue = Linear(
+            layout.hiddenSize,
+            layout.queryProjectionSize,
+            bias: false
+        )
+        self._keyProjection.wrappedValue = Linear(
+            layout.hiddenSize,
+            layout.keyValueProjectionSize,
+            bias: false
+        )
+        self._valueProjection.wrappedValue = Linear(
+            layout.hiddenSize,
+            layout.keyValueProjectionSize,
+            bias: false
+        )
+        self._outputProjection.wrappedValue = Linear(
+            layout.queryProjectionSize,
+            layout.hiddenSize,
+            bias: false
+        )
+
+        self.rope = initializeRope(
+            dims: layout.headSize,
+            base: config.ropeParameters?["rope_theta"]?.asFloat() ?? config.ropeTheta,
+            traditional: false,
+            scalingConfig: config.ropeParameters,
+            maxPositionEmbeddings: config.maxPositionEmbeddings
+        )
     }
 
     func callAsFunction(
-        _ x: MLXArray, attnScale: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode,
+        _ hiddenStates: MLXArray,
+        attentionScale: MLXArray,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode,
         cache: KVCache?
     ) -> MLXArray {
-        let (B, L, _) = (x.dim(0), x.dim(1), x.dim(2))
+        let batchSize = hiddenStates.dim(0)
+        let tokenCount = hiddenStates.dim(1)
 
-        var queries = wq(x)
-        var keys = wk(x)
-        var values = wv(x)
+        var queries = queryProjection(hiddenStates)
+            .reshaped(batchSize, tokenCount, layout.queryHeads, layout.headSize)
+            .transposed(0, 2, 1, 3)
+        var keys = keyProjection(hiddenStates)
+            .reshaped(batchSize, tokenCount, layout.keyValueHeads, layout.headSize)
+            .transposed(0, 2, 1, 3)
+        let values = valueProjection(hiddenStates)
+            .reshaped(batchSize, tokenCount, layout.keyValueHeads, layout.headSize)
+            .transposed(0, 2, 1, 3)
 
-        // Prepare the queries, keys and values for the attention computation
-        queries = queries.reshaped(B, L, nHeads, -1).transposed(0, 2, 1, 3)
-        keys = keys.reshaped(B, L, nKVHeads, -1).transposed(0, 2, 1, 3)
-        values = values.reshaped(B, L, nKVHeads, -1).transposed(0, 2, 1, 3)
-
-        // Apply RoPE
-        queries = applyRotaryPosition(rope, to: queries, cache: cache)
+        queries = applyRotaryPosition(rope, to: queries, cache: cache) * attentionScale
         keys = applyRotaryPosition(rope, to: keys, cache: cache)
 
-        // Apply attention scaling
-        queries = queries * attnScale
-
-        // Compute attention with automatic quantized/regular cache handling
-        let output = attentionWithCacheUpdate(
+        let attentionOutput = attentionWithCacheUpdate(
             queries: queries,
             keys: keys,
             values: values,
             cache: cache,
-            scale: scale,
+            scale: layout.attentionScale,
             mask: mask
         )
         .transposed(0, 2, 1, 3)
-        .reshaped(B, L, -1)
-        return wo(output)
+        .reshaped(batchSize, tokenCount, -1)
+
+        return outputProjection(attentionOutput)
     }
 }
 
-// MARK: - MLP
+private final class Mistral3FeedForward: Module, UnaryLayer {
+    @ModuleInfo(key: "gate_proj") private var gateProjection: Linear
+    @ModuleInfo(key: "down_proj") private var downProjection: Linear
+    @ModuleInfo(key: "up_proj") private var upProjection: Linear
 
-class Mistral3MLP: Module, UnaryLayer {
-    @ModuleInfo(key: "gate_proj") var gate: Linear
-    @ModuleInfo(key: "down_proj") var down: Linear
-    @ModuleInfo(key: "up_proj") var up: Linear
-
-    init(_ args: Mistral3TextConfiguration) {
-        let dim = args.hiddenSize
-        let hiddenDim = args.intermediateSize
-
-        self._gate.wrappedValue = Linear(dim, hiddenDim, bias: false)
-        self._down.wrappedValue = Linear(hiddenDim, dim, bias: false)
-        self._up.wrappedValue = Linear(dim, hiddenDim, bias: false)
+    init(_ config: Mistral3TextConfiguration) {
+        self._gateProjection.wrappedValue = Linear(
+            config.hiddenSize,
+            config.intermediateSize,
+            bias: false
+        )
+        self._downProjection.wrappedValue = Linear(
+            config.intermediateSize,
+            config.hiddenSize,
+            bias: false
+        )
+        self._upProjection.wrappedValue = Linear(
+            config.hiddenSize,
+            config.intermediateSize,
+            bias: false
+        )
     }
 
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
-        return down(silu(gate(x)) * up(x))
+    func callAsFunction(_ hiddenStates: MLXArray) -> MLXArray {
+        downProjection(silu(gateProjection(hiddenStates)) * upProjection(hiddenStates))
     }
 }
 
-// MARK: - Transformer Block
+private final class Mistral3TextTransformerBlock: Module {
+    fileprivate let usesSlidingWindow: Bool
 
-class Mistral3TextTransformerBlock: Module {
-    let numAttentionHeads: Int
-    let hiddenSize: Int
-    let useSliding: Bool
+    @ModuleInfo(key: "self_attn") fileprivate var selfAttention: Mistral3SelfAttention
+    @ModuleInfo(key: "mlp") private var feedForward: Mistral3FeedForward
+    @ModuleInfo(key: "input_layernorm") private var inputLayerNorm: RMSNorm
+    @ModuleInfo(key: "post_attention_layernorm") private var postAttentionLayerNorm: RMSNorm
 
-    @ModuleInfo(key: "self_attn") var attention: Mistral3Attention
-    @ModuleInfo(key: "mlp") var mlp: Mistral3MLP
-    @ModuleInfo(key: "input_layernorm") var inputLayerNorm: RMSNorm
-    @ModuleInfo(key: "post_attention_layernorm") var postAttentionLayerNorm: RMSNorm
-
-    init(_ args: Mistral3TextConfiguration, useSliding: Bool = false) {
-        self.numAttentionHeads = args.attentionHeads
-        self.hiddenSize = args.hiddenSize
-        self.useSliding = useSliding
-
-        self._attention.wrappedValue = Mistral3Attention(args)
-        self._mlp.wrappedValue = Mistral3MLP(args)
+    init(_ config: Mistral3TextConfiguration, usesSlidingWindow: Bool) {
+        self.usesSlidingWindow = usesSlidingWindow
+        self._selfAttention.wrappedValue = Mistral3SelfAttention(config)
+        self._feedForward.wrappedValue = Mistral3FeedForward(config)
         self._inputLayerNorm.wrappedValue = RMSNorm(
-            dimensions: args.hiddenSize, eps: args.rmsNormEps)
+            dimensions: config.hiddenSize,
+            eps: config.rmsNormEps
+        )
         self._postAttentionLayerNorm.wrappedValue = RMSNorm(
-            dimensions: args.hiddenSize, eps: args.rmsNormEps)
+            dimensions: config.hiddenSize,
+            eps: config.rmsNormEps
+        )
     }
 
     func callAsFunction(
-        _ x: MLXArray, attnScale: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode,
+        _ hiddenStates: MLXArray,
+        attentionScale: MLXArray,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode,
         cache: KVCache?
     ) -> MLXArray {
-        let r = attention(inputLayerNorm(x), attnScale: attnScale, mask: mask, cache: cache)
-        let h = x + r
-        let mlpOut = mlp(postAttentionLayerNorm(h))
-        let out = h + mlpOut
-        return out
+        let afterAttention = hiddenStates + selfAttention(
+            inputLayerNorm(hiddenStates),
+            attentionScale: attentionScale,
+            mask: mask,
+            cache: cache
+        )
+        return afterAttention + feedForward(postAttentionLayerNorm(afterAttention))
     }
 }
 
-// MARK: - Language Model (Inner)
+private final class Mistral3Backbone: Module {
+    private let schedule: Mistral3LayerSchedule
+    private let slidingWindow: Int?
+    private let attentionScalePlan: Mistral3AttentionScalePlan
 
-internal class Mistral3TextModelInner: Module {
-    let args: Mistral3TextConfiguration
-    let vocabularySize: Int
-    let numHiddenLayers: Int
-    let layerTypes: [String]
-    let slidingWindow: Int?
+    @ModuleInfo(key: "embed_tokens") fileprivate var tokenEmbeddings: Embedding
+    @ModuleInfo fileprivate var layers: [Mistral3TextTransformerBlock]
+    @ModuleInfo(key: "norm") private var finalNorm: RMSNorm
 
-    @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding
+    init(_ config: Mistral3TextConfiguration) {
+        precondition(config.vocabularySize > 0, "vocab_size must be positive")
 
-    let layers: [Mistral3TextTransformerBlock]
-    let norm: RMSNorm
-
-    // Indices for first full attention and sliding window attention layers
-    let faIdx: Int
-    let swaIdx: Int?
-
-    init(_ args: Mistral3TextConfiguration) {
-        self.args = args
-        self.vocabularySize = args.vocabularySize
-        self.numHiddenLayers = args.hiddenLayers
-        self.layerTypes = args.layerTypes
-        self.slidingWindow = args.slidingWindow
-
-        precondition(args.vocabularySize > 0)
-
-        self._embedTokens.wrappedValue = Embedding(
-            embeddingCount: args.vocabularySize, dimensions: args.hiddenSize)
-
-        // Create transformer blocks with appropriate attention type
-        self.layers = args.layerTypes.map { layerType in
-            Mistral3TextTransformerBlock(args, useSliding: layerType == "sliding_attention")
+        let schedule = Mistral3LayerSchedule(config)
+        self.schedule = schedule
+        self.slidingWindow = config.slidingWindow
+        self.attentionScalePlan = Mistral3AttentionScalePlan(config)
+        self._tokenEmbeddings.wrappedValue = Embedding(
+            embeddingCount: config.vocabularySize,
+            dimensions: config.hiddenSize
+        )
+        self.layers = schedule.layerTypes.enumerated().map { index, _ in
+            Mistral3TextTransformerBlock(
+                config,
+                usesSlidingWindow: schedule.usesSlidingWindow(at: index)
+            )
         }
-
-        self.norm = RMSNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
-
-        // Find the first full attention layer index
-        self.faIdx = args.layerTypes.firstIndex(of: "full_attention") ?? 0
-
-        // Find the first sliding window attention layer index
-        self.swaIdx = args.layerTypes.firstIndex(of: "sliding_attention")
-
-        super.init()
+        self._finalNorm.wrappedValue = RMSNorm(
+            dimensions: config.hiddenSize,
+            eps: config.rmsNormEps
+        )
     }
 
     func callAsFunction(
-        _ inputs: MLXArray, cache: [KVCache]? = nil, inputEmbeddings: MLXArray? = nil
+        _ tokens: MLXArray,
+        cache: [KVCache]? = nil,
+        inputEmbeddings: MLXArray? = nil
     ) -> MLXArray {
-        // Use provided embeddings or compute from inputs
-        var h: MLXArray
-        if let inputEmbeddings = inputEmbeddings {
-            h = inputEmbeddings
-        } else {
-            h = embedTokens(inputs)
+        var hiddenStates = inputEmbeddings ?? tokenEmbeddings(tokens)
+        let offset = cache?.first?.offset ?? 0
+
+        let fullAttentionMask = createAttentionMask(
+            h: hiddenStates,
+            cache: cache?[schedule.fullAttentionMaskLayerIndex]
+        )
+        let slidingAttentionMask = schedule.slidingAttentionMaskLayerIndex.map { index in
+            createAttentionMask(
+                h: hiddenStates,
+                cache: cache?[index],
+                windowSize: slidingWindow
+            )
+        } ?? MLXFast.ScaledDotProductAttentionMaskMode.none
+        let attentionScale = attentionScalePlan.values(
+            start: offset,
+            count: hiddenStates.dim(1),
+            dtype: hiddenStates.dtype
+        )
+
+        for (layerIndex, layer) in layers.enumerated() {
+            let mask = layer.usesSlidingWindow ? slidingAttentionMask : fullAttentionMask
+            hiddenStates = layer(
+                hiddenStates,
+                attentionScale: attentionScale,
+                mask: mask,
+                cache: cache?[layerIndex]
+            )
         }
 
-        let offset: Int
-        if let cache {
-            offset = cache[0].offset
-        } else {
-            offset = 0
-        }
-
-        // Create full attention mask
-        let faMask = createAttentionMask(h: h, cache: cache?[faIdx])
-
-        // Create sliding window attention mask
-        let swaMask: MLXFast.ScaledDotProductAttentionMaskMode
-        if let swaIdx = swaIdx {
-            swaMask = createAttentionMask(h: h, cache: cache?[swaIdx], windowSize: slidingWindow)
-        } else {
-            swaMask = .none
-        }
-
-        // Compute attention scale: use llama4 scaling if parameters are available,
-        // otherwise use a constant scale of 1.0
-        let attnScale: MLXArray
-        if let ropeParams = args.ropeParameters,
-            let llama4ScalingBeta = ropeParams["llama_4_scaling_beta"]?.asFloat(),
-            let originalMaxPosEmbed = ropeParams["original_max_position_embeddings"]?.asInt()
-        {
-            attnScale = getLlama4AttentionScale(
-                start: offset,
-                stop: offset + inputs.dim(1),
-                beta: llama4ScalingBeta,
-                maxPositionEmbeddings: originalMaxPosEmbed
-            ).asType(h.dtype)
-        } else {
-            attnScale = MLXArray.ones([inputs.dim(1), 1]).asType(h.dtype)
-        }
-
-        // Process through transformer layers
-        for (i, layer) in layers.enumerated() {
-            let mask = layer.useSliding ? swaMask : faMask
-            h = layer(h, attnScale: attnScale, mask: mask, cache: cache?[i])
-        }
-
-        return norm(h)
+        return finalNorm(hiddenStates)
     }
 }
 
-// MARK: - Model
+private struct Mistral3WeightSanitizer {
+    let tieWordEmbeddings: Bool
 
-/// Mistral3Text language model.
-internal class Mistral3TextModel: Module, LLMModel, KVCacheDimensionProvider {
+    func callAsFunction(_ weights: [String: MLXArray]) -> [String: MLXArray] {
+        var sanitized = Self.unwrapLanguageModelWeights(weights)
+        sanitized = sanitized.filter { !$0.key.contains("self_attn.rotary_emb.inv_freq") }
+        if tieWordEmbeddings {
+            sanitized["lm_head.weight"] = nil
+        }
+
+        return MLXQuantizedWeightSanitizer.sanitize(
+            sanitized,
+            strategy: .automatic(),
+            sidecarPolicy: .dropActivationScale
+        ).weights
+    }
+
+    private static func unwrapLanguageModelWeights(
+        _ weights: [String: MLXArray]
+    ) -> [String: MLXArray] {
+        let unflattened = ModuleParameters.unflattened(weights)
+        guard let languageModel = unflattened["language_model"] else {
+            return weights
+        }
+        return Dictionary(uniqueKeysWithValues: languageModel.flattened())
+    }
+}
+
+internal final class Mistral3TextModel: Module, LLMModel, KVCacheDimensionProvider,
+    GreedyTokenModel
+{
     internal let vocabularySize: Int
     internal let kvHeads: [Int]
 
-    internal let model: Mistral3TextModelInner
-    fileprivate let args: Mistral3TextConfiguration
+    fileprivate let model: Mistral3Backbone
+    private let config: Mistral3TextConfiguration
 
-    @ModuleInfo(key: "lm_head") var lmHead: Linear?
+    @ModuleInfo(key: "lm_head") private var lmHead: Linear?
 
-    internal init(_ args: Mistral3TextConfiguration) {
-        self.args = args
-        self.vocabularySize = args.vocabularySize
-        self.kvHeads = (0 ..< args.hiddenLayers).map { _ in args.kvHeads }
-        self.model = Mistral3TextModelInner(args)
+    internal init(_ config: Mistral3TextConfiguration) {
+        self.config = config
+        self.vocabularySize = config.vocabularySize
+        self.kvHeads = Array(repeating: config.kvHeads, count: config.hiddenLayers)
+        self.model = Mistral3Backbone(config)
 
-        if !args.tieWordEmbeddings {
-            self._lmHead.wrappedValue = Linear(args.hiddenSize, args.vocabularySize, bias: false)
+        if !config.tieWordEmbeddings {
+            self._lmHead.wrappedValue = Linear(
+                config.hiddenSize,
+                config.vocabularySize,
+                bias: false
+            )
         }
     }
 
@@ -295,62 +383,46 @@ internal class Mistral3TextModel: Module, LLMModel, KVCacheDimensionProvider {
     }
 
     internal func callAsFunction(
-        _ inputs: MLXArray, cache: [KVCache]?, inputEmbeddings: MLXArray?
+        _ inputs: MLXArray,
+        cache: [KVCache]?,
+        inputEmbeddings: MLXArray?
     ) -> MLXArray {
-        let out = model(inputs, cache: cache, inputEmbeddings: inputEmbeddings)
-        if let lmHead {
-            return lmHead(out)
-        } else {
-            return model.embedTokens.asLinear(out)
-        }
+        logits(from: model(inputs, cache: cache, inputEmbeddings: inputEmbeddings))
+    }
+
+    internal func greedyToken(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?
+    ) -> GreedyTokenOutput {
+        let hiddenStates = lastTokenHiddenState(model(input[text: .newAxis].tokens, cache: cache))
+        return greedyTokenOutput(logits: logits(from: hiddenStates), state: state)
     }
 
     internal func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
-        var processedWeights = weights
-
-        // VLM models converted using mlx_vlm.convert will have
-        // the weights under a language_model key
-        let unflattened = ModuleParameters.unflattened(weights)
-        if let lm = unflattened["language_model"] {
-            processedWeights = Dictionary(uniqueKeysWithValues: lm.flattened())
-        }
-
-        // Remove unused precomputed rotary frequencies
-        var sanitizedWeights = processedWeights.filter {
-            !$0.key.contains("self_attn.rotary_emb.inv_freq")
-        }
-
-        // Handle tied embeddings
-        if args.tieWordEmbeddings {
-            sanitizedWeights["lm_head.weight"] = nil
-        }
-
-        return MLXQuantizedWeightSanitizer.sanitize(
-            sanitizedWeights,
-            strategy: .automatic(),
-            sidecarPolicy: .dropActivationScale
-        ).weights
+        Mistral3WeightSanitizer(tieWordEmbeddings: config.tieWordEmbeddings)(weights)
     }
 
-    /// Create appropriate caches for each layer type.
-    ///
-    /// Sliding window attention layers use RotatingKVCache,
-    /// full attention layers use standard KVCacheSimple.
     internal func newCache(parameters: GenerateParameters?) -> [KVCache] {
-        return model.layers.map { layer in
-            if layer.useSliding, let slidingWindow = args.slidingWindow {
-                return RotatingKVCache(maxSize: slidingWindow)
+        model.layers.map { layer in
+            if layer.usesSlidingWindow, let slidingWindow = config.slidingWindow {
+                RotatingKVCache(maxSize: slidingWindow)
             } else {
-                return KVCacheSimple()
+                KVCacheSimple()
             }
         }
     }
+
+    private func logits(from hiddenStates: MLXArray) -> MLXArray {
+        if let lmHead {
+            return lmHead(hiddenStates)
+        }
+        return model.tokenEmbeddings.asLinear(hiddenStates)
+    }
 }
 
-// MARK: - Configuration
-
-internal struct Mistral3TextConfiguration: Codable, Sendable {
-    var modelType: String = "ministral3"
+internal struct Mistral3TextConfiguration: Codable, Sendable, Equatable {
+    var modelType: String
     var hiddenSize: Int
     var hiddenLayers: Int
     var intermediateSize: Int
@@ -360,9 +432,9 @@ internal struct Mistral3TextConfiguration: Codable, Sendable {
     var headDimensions: Int?
     var maxPositionEmbeddings: Int?
     var kvHeads: Int
-    var ropeTheta: Float = 10_000
+    var ropeTheta: Float
     var ropeParameters: [String: StringOrNumber]?
-    var tieWordEmbeddings: Bool = false
+    var tieWordEmbeddings: Bool
     var layerTypes: [String]
     var slidingWindow: Int?
 
@@ -394,46 +466,45 @@ internal struct Mistral3TextConfiguration: Codable, Sendable {
 
     internal init(from decoder: Decoder) throws {
         let topLevelContainer = try decoder.container(keyedBy: CodingKeys.self)
-        let nestedContainer = try decoder.container(keyedBy: VLMCodingKeys.self)
-
-        // In the case of VLM models converted using mlx_lm.convert,
-        // the configuration will still match the VLMs and be under text_config
-        let container =
-            if nestedContainer.contains(.textConfig) {
-                try nestedContainer.nestedContainer(keyedBy: CodingKeys.self, forKey: .textConfig)
-            } else {
-                try decoder.container(keyedBy: CodingKeys.self)
-            }
-
-        modelType = try container.decodeIfPresent(String.self, forKey: .modelType) ?? "ministral3"
-        hiddenSize = try container.decode(Int.self, forKey: .hiddenSize)
-        hiddenLayers = try container.decode(Int.self, forKey: .hiddenLayers)
-        intermediateSize = try container.decode(Int.self, forKey: .intermediateSize)
-        attentionHeads = try container.decode(Int.self, forKey: .attentionHeads)
-        rmsNormEps = try container.decode(Float.self, forKey: .rmsNormEps)
-        vocabularySize = try container.decode(Int.self, forKey: .vocabularySize)
-        headDimensions = try container.decodeIfPresent(Int.self, forKey: .headDimensions)
-        maxPositionEmbeddings = try container.decodeIfPresent(
-            Int.self, forKey: .maxPositionEmbeddings)
-        kvHeads = try container.decodeIfPresent(Int.self, forKey: .kvHeads) ?? attentionHeads
-        ropeTheta =
-            try container.decodeIfPresent(Float.self, forKey: .ropeTheta) ?? 10_000
-        ropeParameters = try container.decodeIfPresent(
-            [String: StringOrNumber].self, forKey: .ropeParameters)
-
-        tieWordEmbeddings =
-            try container.decodeIfPresent(Bool.self, forKey: .tieWordEmbeddings)
-            ?? (try topLevelContainer.decodeIfPresent(Bool.self, forKey: .tieWordEmbeddings))
-            ?? false
-
-        // Handle layer_types with default to all full_attention
-        if let types = try container.decodeIfPresent([String].self, forKey: .layerTypes) {
-            layerTypes = types
+        let vlmContainer = try decoder.container(keyedBy: VLMCodingKeys.self)
+        let container = if vlmContainer.contains(.textConfig) {
+            try vlmContainer.nestedContainer(keyedBy: CodingKeys.self, forKey: .textConfig)
         } else {
-            layerTypes = Array(repeating: "full_attention", count: hiddenLayers)
+            topLevelContainer
         }
 
-        slidingWindow = try container.decodeIfPresent(Int.self, forKey: .slidingWindow)
+        let attentionHeads = try container.decode(Int.self, forKey: .attentionHeads)
+        let hiddenLayers = try container.decode(Int.self, forKey: .hiddenLayers)
+
+        self.init(
+            modelType: try container.decodeIfPresent(String.self, forKey: .modelType)
+                ?? "ministral3",
+            hiddenSize: try container.decode(Int.self, forKey: .hiddenSize),
+            hiddenLayers: hiddenLayers,
+            intermediateSize: try container.decode(Int.self, forKey: .intermediateSize),
+            attentionHeads: attentionHeads,
+            rmsNormEps: try container.decode(Float.self, forKey: .rmsNormEps),
+            vocabularySize: try container.decode(Int.self, forKey: .vocabularySize),
+            headDimensions: try container.decodeIfPresent(Int.self, forKey: .headDimensions),
+            maxPositionEmbeddings: try container.decodeIfPresent(
+                Int.self,
+                forKey: .maxPositionEmbeddings
+            ),
+            kvHeads: try container.decodeIfPresent(Int.self, forKey: .kvHeads),
+            ropeTheta: try container.decodeIfPresent(Float.self, forKey: .ropeTheta) ?? 10_000,
+            ropeParameters: try container.decodeIfPresent(
+                [String: StringOrNumber].self,
+                forKey: .ropeParameters
+            ),
+            tieWordEmbeddings: try container.decodeIfPresent(
+                Bool.self,
+                forKey: .tieWordEmbeddings
+            ) ?? (try topLevelContainer.decodeIfPresent(Bool.self, forKey: .tieWordEmbeddings))
+                ?? false,
+            layerTypes: try container.decodeIfPresent([String].self, forKey: .layerTypes)
+                ?? Array(repeating: Mistral3LayerSchedule.fullAttention, count: hiddenLayers),
+            slidingWindow: try container.decodeIfPresent(Int.self, forKey: .slidingWindow)
+        )
     }
 
     internal init(
@@ -466,15 +537,14 @@ internal struct Mistral3TextConfiguration: Codable, Sendable {
         self.ropeTheta = ropeTheta
         self.ropeParameters = ropeParameters
         self.tieWordEmbeddings = tieWordEmbeddings
-        self.layerTypes = layerTypes ?? Array(repeating: "full_attention", count: hiddenLayers)
+        self.layerTypes = layerTypes
+            ?? Array(repeating: Mistral3LayerSchedule.fullAttention, count: hiddenLayers)
         self.slidingWindow = slidingWindow
     }
 }
 
-// MARK: - LoRA
-
 extension Mistral3TextModel: LoRAModel {
-    internal var loraLayers: [Module] {
-        model.layers
+    internal func loraLinearLayers() -> LoRALinearLayers {
+        model.layers.map { ($0.selfAttention, ["q_proj", "v_proj"]) }
     }
 }
