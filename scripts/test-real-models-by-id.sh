@@ -178,7 +178,9 @@ def estimated_runtime_bytes(model_load_bytes):
 
 def can_run_within_host_memory(model):
     minimum_memory_gb = model.get("minimumMemoryGB")
-    if minimum_memory_gb is not None and minimum_memory_gb > host_memory_gb:
+    if minimum_memory_gb is not None:
+        if minimum_memory_gb <= host_memory_gb:
+            return True
         print(
             "Skipping "
             f"{model['id']}: requires {minimum_memory_gb} GiB RAM, "
@@ -491,6 +493,14 @@ for MODEL in "${MODELS[@]}"; do
     "$MODEL_TIMEOUT_SECONDS" \
     "MLXRealModelTests.MLXRealModelConstrainedDecodingTests/selectedArchitecturesForceGrammarValidFirstToken" \
     "$ID"
+
+  if [[ "$TAGS" == *"stress"* ]]; then
+    run_swift_test \
+      "$ID stress generation" \
+      "$MODEL_TIMEOUT_SECONDS" \
+      "MLXRealModelTests.MLXRealModelStressTests/selectedModelsSurviveRepeatedGeneration" \
+      "$ID"
+  fi
 done
 
 echo

@@ -57,6 +57,19 @@
     "tags": ["relevant", "latest", "large"]
   },
   {
+    "id": "qwen3-moe-30b-a3b-3bit",
+    "displayName": "Qwen3 MoE 30B-A3B 3-bit",
+    "architecture": "qwen3_moe",
+    "repository": "mlx-community/Qwen3-30B-A3B-3bit",
+    "relativePath": "Qwen3-30B-A3B-3bit",
+    "prompt": "Write one short sentence about mixture-of-experts models.",
+    "expectedTokens": ["expert", "experts", "model"],
+    "maxTokens": 18,
+    "minimumMemoryGB": 28,
+    "minimumDiskGB": 13,
+    "tags": ["relevant", "latest", "small-fit", "stress"]
+  },
+  {
     "id": "qwen2.5-1.5b-4bit",
     "displayName": "Qwen2.5 1.5B Instruct 4-bit",
     "architecture": "qwen2",
@@ -178,6 +191,19 @@
     "minimumMemoryGB": 48,
     "minimumDiskGB": 16,
     "tags": ["relevant", "latest", "large"]
+  },
+  {
+    "id": "mistral-small-24b-2501-3bit",
+    "displayName": "Mistral Small 24B Instruct 2501 3-bit",
+    "architecture": "mistral",
+    "repository": "mlx-community/Mistral-Small-24B-Instruct-2501-3bit",
+    "relativePath": "Mistral-Small-24B-Instruct-2501-3bit",
+    "prompt": "Write one short sentence about helpful local assistants.",
+    "expectedTokens": ["helpful", "local", "assistant"],
+    "maxTokens": 18,
+    "minimumMemoryGB": 24,
+    "minimumDiskGB": 10,
+    "tags": ["relevant", "latest", "small-fit", "stress"]
   },
   {
     "id": "phi-2-hf-4bit-mlx",
@@ -489,7 +515,7 @@
   {
     "id": "deepseek-r1-distill-qwen-7b-4bit",
     "displayName": "DeepSeek R1 Distill Qwen 7B 4-bit",
-    "architecture": "deepseek_v3",
+    "architecture": "qwen2",
     "repository": "mlx-community/DeepSeek-R1-Distill-Qwen-7B-4bit",
     "relativePath": "DeepSeek-R1-Distill-Qwen-7B-4bit",
     "prompt": "What is deep learning?",
@@ -508,7 +534,7 @@
     "maxTokens": 18,
     "minimumMemoryGB": 256,
     "minimumDiskGB": 400,
-    "tags": ["large"]
+    "tags": ["relevant", "latest", "large"]
   },
   {
     "id": "mimo-7b-rl-4bit",
@@ -634,6 +660,19 @@
     "tags": ["relevant", "latest", "large"]
   },
   {
+    "id": "gpt-oss-20b-mxfp4-jinx",
+    "displayName": "GPT OSS 20B MXFP4",
+    "architecture": "gpt_oss",
+    "repository": "mlx-community/Jinx-gpt-oss-20b-mxfp4-mlx",
+    "relativePath": "Jinx-gpt-oss-20b-mxfp4-mlx",
+    "prompt": "Write one short sentence about open models.",
+    "expectedTokens": ["open", "model", "models"],
+    "maxTokens": 18,
+    "minimumMemoryGB": 32,
+    "minimumDiskGB": 14,
+    "tags": ["relevant", "latest", "small-fit", "stress"]
+  },
+  {
     "id": "falcon-h1-0.5b-instruct-4bit",
     "displayName": "Falcon H1 0.5B Instruct 4-bit",
     "architecture": "falcon_h1",
@@ -702,6 +741,19 @@
     "minimumMemoryGB": 48,
     "minimumDiskGB": 28,
     "tags": ["relevant", "latest", "large"]
+  },
+  {
+    "id": "qwen3.5-moe-35b-a3b-3bit",
+    "displayName": "Qwen3.5 MoE 35B-A3B 3-bit",
+    "architecture": "qwen3_5_moe",
+    "repository": "andrevp/Qwen3.5-35B-A3B-MLX-VLM-3bit",
+    "relativePath": "Qwen3.5-35B-A3B-MLX-VLM-3bit",
+    "prompt": "Write one short sentence about expert routing.",
+    "expectedTokens": ["expert", "routing", "model"],
+    "maxTokens": 18,
+    "minimumMemoryGB": 32,
+    "minimumDiskGB": 16,
+    "tags": ["relevant", "latest", "small-fit", "stress"]
   },
   {
     "id": "qwen3.5-text",
@@ -790,6 +842,19 @@
     "expectedTokens": ["hybrid", "reasoning", "model"],
     "maxTokens": 12,
     "tags": ["registry-only"]
+  },
+  {
+    "id": "nemotron-h-nano-4b-4bit",
+    "displayName": "Nemotron H Nano 4B 4-bit",
+    "architecture": "nemotron_h",
+    "repository": "mlx-community/NVIDIA-Nemotron-3-Nano-4B-4bit",
+    "relativePath": "NVIDIA-Nemotron-3-Nano-4B-4bit",
+    "prompt": "Write one short sentence about hybrid reasoning models.",
+    "expectedTokens": ["hybrid", "reasoning", "model"],
+    "maxTokens": 18,
+    "minimumMemoryGB": 8,
+    "minimumDiskGB": 3,
+    "tags": ["relevant", "latest", "small-fit", "stress", "small"]
   },
   {
     "id": "afmoe",

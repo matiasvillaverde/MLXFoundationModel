@@ -71,6 +71,9 @@ test-main-architectures: ## Run opt-in real-model tests for representative main 
 test-relevant-models: ## Run opt-in real-model tests for relevant/latest representative models
 	@$(MAKE) test-real-models MLX_REAL_MODEL_SCOPE=relevant
 
+test-small-fit-models: ## Run 32 GiB-oriented architecture coverage and stress tests
+	@$(MAKE) test-real-models MLX_REAL_MODEL_SCOPE=small-fit
+
 profile-real-model: ## Profile the release playground with Instruments/xctrace
 	@bash scripts/profile-real-model.sh
 
@@ -87,6 +90,9 @@ download-main-models: ## Download representative main architecture test models
 
 download-relevant-models: ## Download relevant/latest representative test models
 	@MLX_MODEL_FILTER=relevant bash scripts/download-test-models.sh
+
+download-small-fit-models: ## Download 32 GiB-oriented architecture coverage models
+	@MLX_MODEL_FILTER=small-fit bash scripts/download-test-models.sh
 
 models-size: ## Show downloaded model disk usage
 	@du -sh .models 2>/dev/null || echo "No downloaded models in .models"

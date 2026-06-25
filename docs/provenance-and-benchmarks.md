@@ -160,22 +160,22 @@ make test-all-architectures
 
 ## E2E Result
 
-The all-architecture sweep passed for every model selected by the memory gate.
-The test runner selected 46 downloadable models and skipped 10 oversized models
-on this 32 GB host. Each selected model ran serialized generation, rendered
-session requests, and token-level grammar constraint checks.
+The current all-architecture sweep passed for every model selected by the memory
+gate. The test runner selected 52 downloadable models and skipped 9 oversized
+models on this 32 GB host. Each selected model ran serialized generation,
+rendered session requests, and token-level grammar constraint checks.
 
-`nemotron_h` is still registry-only in the catalog, and no exact `nemotron-h`
-checkpoint was found on this host. The replacement has focused architecture
-tests; the table below is the downloadable-catalog regression sweep.
-`glm4_moe` and `glm4_moe_lite` are also registry-only in the catalog, and no
+The current sweep adds 32 GB-friendly checkpoints for `qwen3_moe`, `mistral`,
+`gpt_oss`, `qwen3_5_moe`, and `nemotron_h`. These entries also run the stress
+test, which preloads one session and repeats generation on that same session.
+
+`glm4_moe` and `glm4_moe_lite` are still registry-only in the catalog, and no
 exact `glm4-moe` or `glm4-moe-lite` checkpoint directory is present locally.
 
-The selected `deepseek-r1-distill-qwen-7b-4bit` checkpoint is cataloged as
-`deepseek_v3`, but its local `config.json` declares `model_type: qwen2`. It is
-kept in the table as a catalog regression check, not as proof of the true
-DeepSeek V3 MoE implementation. The full `deepseek-r1-4bit` checkpoint was
-skipped by the memory gate and was not found locally.
+The selected `deepseek-r1-distill-qwen-7b-4bit` checkpoint is a Qwen-distilled
+model; its local `config.json` declares `model_type: qwen2`. The full
+`deepseek-r1-4bit` checkpoint remains the true `deepseek_v3` coverage target,
+but it is skipped on this host because it requires 256 GiB RAM.
 
 ## Benchmarks
 
@@ -221,7 +221,7 @@ rather than a stable throughput claim.
 | `ernie4_5` | `ernie-4.5-0.3b-bf16` | 8 | 11 | 0.0596 | 0.0151 | 0.0446 | 179.51 | 134.19 |
 | `bitnet` | `bitnet-b1.58-2b-4t-4bit` | 8 | 10 | 0.1103 | 0.0344 | 0.0759 | 105.35 | 72.51 |
 | `baichuan_m1` | `baichuan-m1-14b-instruct-4bit` | 8 | 10 | 0.7869 | 0.4965 | 0.2904 | 27.55 | 10.17 |
-| `deepseek_v3` | `deepseek-r1-distill-qwen-7b-4bit` | 8 | 10 | 0.2339 | 0.0937 | 0.1401 | 57.09 | 34.21 |
+| `qwen2` | `deepseek-r1-distill-qwen-7b-4bit` | 8 | 10 | 0.2339 | 0.0937 | 0.1401 | 57.09 | 34.21 |
 | `mimo` | `mimo-7b-rl-4bit` | 8 | 28 | 0.2889 | 0.1018 | 0.1871 | 42.76 | 27.70 |
 | `glm4` | `glm-4-9b-0414-4bit` | 8 | 13 | 0.2746 | 0.1017 | 0.1729 | 46.26 | 29.13 |
 | `acereason` | `acereason-nemotron-1.1-7b-4bit` | 8 | 33 | 0.3704 | 0.1471 | 0.2232 | 35.84 | 21.60 |
@@ -232,6 +232,21 @@ rather than a stable throughput claim.
 | `qwen3_5` | `qwen3.5` | 8 | 18 | 0.2109 | 0.0963 | 0.1146 | 69.81 | 37.94 |
 | `olmo3` | `olmo3` | 8 | 85 | 0.4827 | 0.2317 | 0.2510 | 31.87 | 16.57 |
 | `apertus` | `apertus` | 8 | 76 | 0.5640 | 0.3200 | 0.2440 | 32.78 | 14.18 |
+
+## Small-Fit Stress Baseline
+
+These rows are the best warm iterations from
+`.build/benchmarks/test-all-architectures-2026-06-25-small-fit.log`. The stress
+test is intentionally serialized and keeps each model loaded for the repeated
+generations.
+
+| Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `qwen3_moe` | `qwen3-moe-30b-a3b-3bit` | 32 | 0.6304 | 0.1767 | 0.4537 | 70.53 | 50.76 |
+| `mistral` | `mistral-small-24b-2501-3bit` | 18 | 0.8913 | 0.2025 | 0.6888 | 26.13 | 20.20 |
+| `gpt_oss` | `gpt-oss-20b-mxfp4-jinx` | 32 | 1.5133 | 0.2260 | 1.2873 | 24.86 | 21.15 |
+| `qwen3_5_moe` | `qwen3.5-moe-35b-a3b-3bit` | 32 | 0.5631 | 0.1449 | 0.4182 | 76.52 | 56.83 |
+| `nemotron_h` | `nemotron-h-nano-4b-4bit` | 32 | 0.4026 | 0.0621 | 0.3405 | 93.99 | 79.48 |
 
 ## Skipped By Memory Gate
 
@@ -244,9 +259,8 @@ quantization levels.
 | `mistral-small-24b-2501-4bit` | Requires 48 GiB RAM. | No. | No. |
 | `phi-3.5-moe-instruct-4bit` | Requires 48 GiB RAM. | No. | No exact copy found in targeted checks on this host. |
 | `gemma-3n-e2b-it-lm-bf16` | Requires 48 GiB RAM. | No. | No; only the 4-bit sibling is present. |
-| `gemma-3n-e4b-it-lm-bf16` | Estimated runtime memory about 32 GiB; host budget is 24 GiB. | Yes, `gemma-3n-E4B-it-lm-bf16`. | No additional exact copy found. |
 | `deepseek-r1-4bit` | Requires 256 GiB RAM. | No. | No. |
 | `cohere-command-r-v01-4bit` | Estimated runtime memory about 53 GiB; host budget is 24 GiB. | Yes, `c4ai-command-r-v01-4bit`. | Yes, Patagonia/Think MLXSession resource copies. |
-| `gpt-oss` | Requires 48 GiB RAM. | No. | No exact model directory found. |
+| `gpt-oss` | Requires 48 GiB RAM. | No. | No exact copy; `gpt-oss-20b-mxfp4-jinx` is the 32 GB alternate. |
 | `qwen3-next` | Requires 64 GiB RAM. | No. | No. |
-| `qwen3.5-moe` | Requires 48 GiB RAM. | No. | No; only the non-MoE `qwen3.5` test model is present. |
+| `qwen3.5-moe` | Requires 48 GiB RAM. | No. | No exact copy; `qwen3.5-moe-35b-a3b-3bit` is the 32 GB alternate. |

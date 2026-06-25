@@ -16,13 +16,18 @@ struct MLXRealModelCatalogTests {
         #expect(models.contains { $0.tags.contains("smoke") })
     }
 
-    @Test("downloadable catalog entries have repositories")
-    func downloadableCatalogEntriesHaveRepositories() throws {
+    @Test("downloadable catalog entries have Hugging Face repositories")
+    func downloadableCatalogEntriesHaveHuggingFaceRepositories() throws {
         let models = try MLXRealModelCatalog.load()
         let downloadable = models.filter(\.isDownloadable)
 
         #expect(!downloadable.isEmpty)
-        #expect(downloadable.allSatisfy { $0.repository?.hasPrefix("mlx-community/") == true })
+        #expect(downloadable.allSatisfy { model in
+            guard let repository = model.repository else {
+                return false
+            }
+            return repository.split(separator: "/").count == 2
+        })
     }
 
     @Test("known oversized catalog entries declare memory requirements")
@@ -63,6 +68,7 @@ struct MLXRealModelCatalogTests {
         let small = Self.fixtureModel(id: "small")
         let large = Self.fixtureModel(id: "large")
         let explicitLarge = Self.fixtureModel(id: "explicit-large", minimumMemoryGB: 48)
+        let explicitFit = Self.fixtureModel(id: "explicit-fit", minimumMemoryGB: 24)
 
         #expect(MLXRealModelEnvironment.canRunWithinHostMemory(
             small,
@@ -77,6 +83,11 @@ struct MLXRealModelCatalogTests {
         #expect(!MLXRealModelEnvironment.canRunWithinHostMemory(
             explicitLarge,
             estimatedModelLoadBytes: 1 * Self.gib,
+            hostMemoryGB: 32
+        ))
+        #expect(MLXRealModelEnvironment.canRunWithinHostMemory(
+            explicitFit,
+            estimatedModelLoadBytes: 20 * Self.gib,
             hostMemoryGB: 32
         ))
         #expect(MLXRealModelEnvironment.estimatedRuntimeMemoryGB(

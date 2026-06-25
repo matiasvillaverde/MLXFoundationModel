@@ -38,6 +38,18 @@ enum MLXRealModelEnvironment {
         integerValue(for: "MLX_REAL_MODEL_GENERATION_TIMEOUT_SECONDS", defaultValue: 120, minimumValue: 1)
     }
 
+    static var stressIterationCount: Int {
+        integerValue(for: "MLX_REAL_MODEL_STRESS_ITERATIONS", defaultValue: 3, minimumValue: 1)
+    }
+
+    static var stressGenerationTokenLimit: Int {
+        integerValue(for: "MLX_REAL_MODEL_STRESS_TOKENS", defaultValue: 32, minimumValue: 1)
+    }
+
+    static var stressTimeoutSeconds: Int {
+        integerValue(for: "MLX_REAL_MODEL_STRESS_TIMEOUT_SECONDS", defaultValue: 240, minimumValue: 1)
+    }
+
     static func selectedModels(from models: [MLXRealModelCatalog.Model]) -> [MLXRealModelCatalog.Model] {
         let downloadable = models.filter(\.isDownloadable)
         let selectedIDs = selectedModelIDs
@@ -59,7 +71,7 @@ enum MLXRealModelEnvironment {
                 selected = downloadable.filter { hasModelFiles(for: $0) }
 
             default:
-                selected = downloadable.filter { $0.tags.contains("smoke") }
+                selected = downloadable.filter { matches(scope, model: $0) }
             }
         }
         guard environment["MLX_ALLOW_OVERSIZED_MODELS"] != "1" else {
@@ -92,8 +104,8 @@ enum MLXRealModelEnvironment {
         estimatedModelLoadBytes: Int64?,
         hostMemoryGB: Int
     ) -> Bool {
-        if let minimumMemoryGB = model.minimumMemoryGB, minimumMemoryGB > hostMemoryGB {
-            return false
+        if let minimumMemoryGB = model.minimumMemoryGB {
+            return minimumMemoryGB <= hostMemoryGB
         }
         guard let estimatedModelLoadBytes else {
             return true
@@ -121,6 +133,24 @@ enum MLXRealModelEnvironment {
 
     static func modelURL(for model: MLXRealModelCatalog.Model) -> URL {
         modelRoot.appendingPathComponent(model.relativePath, isDirectory: true)
+    }
+
+    private static func matches(_ filter: String, model: MLXRealModelCatalog.Model) -> Bool {
+        let normalizedFilter = filter.lowercased()
+        guard !normalizedFilter.isEmpty else {
+            return false
+        }
+        return [
+            model.id,
+            model.displayName,
+            model.architecture,
+            model.repository ?? "",
+            model.relativePath,
+            model.tags.joined(separator: ",")
+        ]
+        .joined(separator: " ")
+        .lowercased()
+        .contains(normalizedFilter)
     }
 
     static func hasModelFiles(for model: MLXRealModelCatalog.Model) -> Bool {
@@ -181,8 +211,11 @@ enum MLXRealModelEnvironment {
         case "all", "downloaded":
             return "MLX_ASSUME_YES=1 scripts/download-test-models.sh"
 
-        default:
+        case "main", "relevant", "smoke":
             return "MLX_ASSUME_YES=1 MLX_MODEL_FILTER=\(scope) scripts/download-test-models.sh"
+
+        default:
+            return "MLX_ASSUME_YES=1 MLX_MODEL_FILTER='\(scope)' scripts/download-test-models.sh"
         }
     }
 
