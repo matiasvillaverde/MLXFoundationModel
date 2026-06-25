@@ -1,15 +1,97 @@
-//
-//  LFM2MoE.swift
-//  mlx-swift-lm
-//
-//  Created by Sachin Desai on 10/08/25.
-//
-//  Port of https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/models/lfm2_moe.py
-//
-
 import Foundation
 import MLX
 import MLXNN
+
+internal enum LFM2MoELayerKind: String, Codable, Sendable, Equatable {
+    case convolution = "conv"
+    case fullAttention = "full_attention"
+}
+
+internal struct LFM2MoELayerPlan: Sendable, Equatable {
+    internal let kinds: [LFM2MoELayerKind]
+    internal let firstAttentionIndex: Int?
+    internal let firstConvolutionIndex: Int?
+
+    internal init(kinds: [LFM2MoELayerKind]) {
+        self.kinds = kinds
+        self.firstAttentionIndex = kinds.firstIndex(of: .fullAttention)
+        self.firstConvolutionIndex = kinds.firstIndex(of: .convolution)
+    }
+
+    internal var attentionIndices: [Int] {
+        kinds.enumerated().compactMap { index, kind in
+            kind == .fullAttention ? index : nil
+        }
+    }
+
+    internal func usesAttention(layerIndex: Int) -> Bool {
+        kinds[layerIndex] == .fullAttention
+    }
+}
+
+internal struct LFM2MoEAttentionLayout: Sendable, Equatable {
+    internal let hiddenSize: Int
+    internal let attentionHeads: Int
+    internal let keyValueHeads: Int
+    internal let headDimensions: Int
+    internal let queryDimensions: Int
+    internal let keyValueDimensions: Int
+    internal let scale: Float
+
+    internal init(_ configuration: LFM2MoEConfiguration) {
+        precondition(configuration.hiddenSize > 0, "hidden_size must be positive")
+        precondition(configuration.attentionHeads > 0, "num_attention_heads must be positive")
+        precondition(configuration.kvHeads > 0, "num_key_value_heads must be positive")
+        precondition(
+            configuration.hiddenSize % configuration.attentionHeads == 0,
+            "hidden_size must be divisible by num_attention_heads"
+        )
+
+        self.hiddenSize = configuration.hiddenSize
+        self.attentionHeads = configuration.attentionHeads
+        self.keyValueHeads = configuration.kvHeads
+        self.headDimensions = configuration.hiddenSize / configuration.attentionHeads
+        self.queryDimensions = attentionHeads * headDimensions
+        self.keyValueDimensions = keyValueHeads * headDimensions
+        self.scale = pow(Float(headDimensions), -0.5)
+    }
+}
+
+internal struct LFM2MoEConvolutionLayout: Sendable, Equatable {
+    internal let hiddenSize: Int
+    internal let stateLength: Int
+    internal let projectionDimensions: Int
+    internal let bias: Bool
+
+    internal init(_ configuration: LFM2MoEConfiguration) {
+        precondition(configuration.hiddenSize > 0, "hidden_size must be positive")
+        precondition(configuration.convLCache > 1, "conv_L_cache must exceed one")
+        self.hiddenSize = configuration.hiddenSize
+        self.stateLength = configuration.convLCache - 1
+        self.projectionDimensions = configuration.hiddenSize * 3
+        self.bias = configuration.convBias
+    }
+}
+
+private struct LFM2MoERouterPlan: Sendable, Equatable {
+    let topK: Int
+    let normalizesTopK: Bool
+    let usesExpertBias: Bool
+    let scalingFactor: Float
+
+    init(_ configuration: LFM2MoEConfiguration) {
+        precondition(configuration.numExperts > 0, "num_experts must be positive")
+        precondition(configuration.numExpertsPerToken > 0, "num_experts_per_tok must be positive")
+        precondition(
+            configuration.numExpertsPerToken <= configuration.numExperts,
+            "num_experts_per_tok must be less than or equal to num_experts"
+        )
+        self.topK = configuration.numExpertsPerToken
+        self.normalizesTopK = configuration.normTopkProb
+        self.usesExpertBias = configuration.useExpertBias
+        self.scalingFactor = configuration.routedScalingFactor
+    }
+}
 
 internal struct LFM2MoEConfiguration: Codable, Sendable {
     internal let modelType: String
@@ -33,17 +115,24 @@ internal struct LFM2MoEConfiguration: Codable, Sendable {
     internal let routedScalingFactor: Float
 
     private let _fullAttnIdxs: [Int]?
-    private let layerTypes: [String]?
+    private let layerTypes: [LFM2MoELayerKind]?
     private let ropeParameters: [String: StringOrNumber]?
 
     internal var fullAttnIdxs: [Int] {
-        if let explicit = _fullAttnIdxs {
-            return explicit
+        layerPlan.attentionIndices
+    }
+
+    internal var layerPlan: LFM2MoELayerPlan {
+        if let fullAttentionIndices = _fullAttnIdxs {
+            let attentionSet = Set(fullAttentionIndices)
+            return LFM2MoELayerPlan(kinds: (0 ..< hiddenLayers).map { layerIndex in
+                attentionSet.contains(layerIndex) ? .fullAttention : .convolution
+            })
         }
-        guard let layerTypes else { return [] }
-        return layerTypes.enumerated().compactMap { index, type in
-            type == "full_attention" ? index : nil
+        if let layerTypes {
+            return LFM2MoELayerPlan(kinds: layerTypes)
         }
+        return LFM2MoELayerPlan(kinds: Array(repeating: .convolution, count: hiddenLayers))
     }
 
     internal var headDimensions: Int { hiddenSize / attentionHeads }
@@ -101,14 +190,26 @@ internal struct LFM2MoEConfiguration: Codable, Sendable {
         let ropeTheta = try container.decodeIfPresent(Float.self, forKey: .ropeTheta) ?? 1000000.0
         self.ropeTheta = ropeParameters?["rope_theta"]?.asFloat() ?? ropeTheta
         self._fullAttnIdxs = try container.decodeIfPresent([Int].self, forKey: ._fullAttnIdxs)
-        self.layerTypes = try container.decodeIfPresent([String].self, forKey: .layerTypes)
+        if let layerTypes = try container.decodeIfPresent(
+            [LFM2MoELayerKind].self,
+            forKey: .layerTypes
+        ) {
+            guard layerTypes.count == self.hiddenLayers else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .layerTypes,
+                    in: container,
+                    debugDescription: "layer_types count must match num_hidden_layers"
+                )
+            }
+            self.layerTypes = layerTypes
+        } else {
+            self.layerTypes = nil
+        }
     }
 }
 
 class LFM2MoEAttention: Module {
-    let args: LFM2MoEConfiguration
-    let scale: Float
-    let headDim: Int
+    let layout: LFM2MoEAttentionLayout
 
     @ModuleInfo(key: "q_proj") var qProj: Linear
     @ModuleInfo(key: "k_proj") var kProj: Linear
@@ -121,21 +222,18 @@ class LFM2MoEAttention: Module {
     let rope: RoPE
 
     init(_ args: LFM2MoEConfiguration) {
-        self.args = args
-        self.headDim = args.headDimensions
-        self.scale = pow(Float(headDim), -0.5)
+        self.layout = LFM2MoEAttentionLayout(args)
 
-        let dim = args.hiddenSize
-        _qProj.wrappedValue = Linear(dim, args.attentionHeads * headDim, bias: false)
-        _kProj.wrappedValue = Linear(dim, args.kvHeads * headDim, bias: false)
-        _vProj.wrappedValue = Linear(dim, args.kvHeads * headDim, bias: false)
-        _outProj.wrappedValue = Linear(args.attentionHeads * headDim, dim, bias: false)
+        _qProj.wrappedValue = Linear(layout.hiddenSize, layout.queryDimensions, bias: false)
+        _kProj.wrappedValue = Linear(layout.hiddenSize, layout.keyValueDimensions, bias: false)
+        _vProj.wrappedValue = Linear(layout.hiddenSize, layout.keyValueDimensions, bias: false)
+        _outProj.wrappedValue = Linear(layout.queryDimensions, layout.hiddenSize, bias: false)
 
-        _qLayerNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: args.normEps)
-        _kLayerNorm.wrappedValue = RMSNorm(dimensions: headDim, eps: args.normEps)
+        _qLayerNorm.wrappedValue = RMSNorm(dimensions: layout.headDimensions, eps: args.normEps)
+        _kLayerNorm.wrappedValue = RMSNorm(dimensions: layout.headDimensions, eps: args.normEps)
 
         self.rope = RoPE(
-            dimensions: headDim,
+            dimensions: layout.headDimensions,
             traditional: false,
             base: args.ropeTheta
         )
@@ -153,9 +251,11 @@ class LFM2MoEAttention: Module {
         var keys = kProj(x)
         var values = vProj(x)
 
-        queries = qLayerNorm(queries.reshaped(B, L, args.attentionHeads, -1)).transposed(0, 2, 1, 3)
-        keys = kLayerNorm(keys.reshaped(B, L, args.kvHeads, -1)).transposed(0, 2, 1, 3)
-        values = values.reshaped(B, L, args.kvHeads, -1).transposed(0, 2, 1, 3)
+        queries = qLayerNorm(queries.reshaped(B, L, layout.attentionHeads, -1))
+            .transposed(0, 2, 1, 3)
+        keys = kLayerNorm(keys.reshaped(B, L, layout.keyValueHeads, -1))
+            .transposed(0, 2, 1, 3)
+        values = values.reshaped(B, L, layout.keyValueHeads, -1).transposed(0, 2, 1, 3)
 
         queries = applyRotaryPosition(rope, to: queries, cache: cache)
         keys = applyRotaryPosition(rope, to: keys, cache: cache)
@@ -165,7 +265,7 @@ class LFM2MoEAttention: Module {
             keys: keys,
             values: values,
             cache: cache,
-            scale: scale,
+            scale: layout.scale,
             mask: mask
         )
         .transposed(0, 2, 1, 3)
@@ -176,31 +276,31 @@ class LFM2MoEAttention: Module {
 }
 
 class LFM2MoEShortConv: Module {
-    let args: LFM2MoEConfiguration
+    let layout: LFM2MoEConvolutionLayout
     let layerIdx: Int
-    let lCache: Int
-    let bias: Bool
 
     @ModuleInfo(key: "conv") var conv: Conv1d
     @ModuleInfo(key: "in_proj") var inProj: Linear
     @ModuleInfo(key: "out_proj") var outProj: Linear
 
     init(_ args: LFM2MoEConfiguration, layerIdx: Int) {
-        self.args = args
+        self.layout = LFM2MoEConvolutionLayout(args)
         self.layerIdx = layerIdx
-        self.lCache = args.convLCache
-        self.bias = args.convBias
 
         _conv.wrappedValue = Conv1d(
-            inputChannels: args.hiddenSize,
-            outputChannels: args.hiddenSize,
-            kernelSize: lCache,
-            groups: args.hiddenSize,
-            bias: bias
+            inputChannels: layout.hiddenSize,
+            outputChannels: layout.hiddenSize,
+            kernelSize: layout.stateLength + 1,
+            groups: layout.hiddenSize,
+            bias: layout.bias
         )
 
-        _inProj.wrappedValue = Linear(args.hiddenSize, 3 * args.hiddenSize, bias: bias)
-        _outProj.wrappedValue = Linear(args.hiddenSize, args.hiddenSize, bias: bias)
+        _inProj.wrappedValue = Linear(
+            layout.hiddenSize,
+            layout.projectionDimensions,
+            bias: layout.bias
+        )
+        _outProj.wrappedValue = Linear(layout.hiddenSize, layout.hiddenSize, bias: layout.bias)
     }
 
     func callAsFunction(
@@ -223,12 +323,15 @@ class LFM2MoEShortConv: Module {
 
         var state = cache?[0]
         if state == nil {
-            state = MLXArray.zeros([Bx.dim(0), lCache - 1, args.hiddenSize], dtype: Bx.dtype)
+            state = MLXArray.zeros(
+                [Bx.dim(0), layout.stateLength, layout.hiddenSize],
+                dtype: Bx.dtype
+            )
         }
 
         Bx = concatenated([state!, Bx], axis: -2)
         if let cache {
-            let start = Bx.dim(1) - (lCache - 1)
+            let start = Bx.dim(1) - layout.stateLength
             cache[0] = Bx[0..., start..., 0...]
         }
 
@@ -257,25 +360,17 @@ class LFM2MoEMLP: Module, UnaryLayer {
     }
 }
 
-class Lfm2MoeSparseMoeBlock: Module, UnaryLayer {
-    let args: LFM2MoEConfiguration
+class LFM2MoESparseBlock: Module, UnaryLayer {
     let numExperts: Int
-    let topK: Int
-    let normTopKProb: Bool
-    let useExpertBias: Bool
-    let routedScalingFactor: Float
+    fileprivate let routerPlan: LFM2MoERouterPlan
 
     @ModuleInfo(key: "gate") var gate: Linear
     @ModuleInfo(key: "switch_mlp") var switchMLP: SwitchGLU
     @ModuleInfo(key: "expert_bias") var expertBias: MLXArray?
 
     init(_ args: LFM2MoEConfiguration) {
-        self.args = args
         self.numExperts = args.numExperts
-        self.topK = args.numExpertsPerToken
-        self.normTopKProb = args.normTopkProb
-        self.useExpertBias = args.useExpertBias
-        self.routedScalingFactor = args.routedScalingFactor
+        self.routerPlan = LFM2MoERouterPlan(args)
 
         _gate.wrappedValue = Linear(args.hiddenSize, numExperts, bias: false)
         _switchMLP.wrappedValue = SwitchGLU(
@@ -285,7 +380,7 @@ class Lfm2MoeSparseMoeBlock: Module, UnaryLayer {
             bias: false
         )
 
-        if useExpertBias {
+        if routerPlan.usesExpertBias {
             _expertBias.wrappedValue = MLXArray.zeros([numExperts])
         }
     }
@@ -294,10 +389,10 @@ class Lfm2MoeSparseMoeBlock: Module, UnaryLayer {
         let (indices, scores) = lfm2MoERouter(
             logits: gate(x),
             expertBias: expertBias,
-            topK: topK,
-            normTopKProb: normTopKProb,
-            useExpertBias: useExpertBias,
-            routedScalingFactor: routedScalingFactor
+            topK: routerPlan.topK,
+            normTopKProb: routerPlan.normalizesTopK,
+            useExpertBias: routerPlan.usesExpertBias,
+            routedScalingFactor: routerPlan.scalingFactor
         )
 
         let expertOutputs = switchMLP(x, indices)
@@ -333,7 +428,7 @@ internal func lfm2MoERouter(
 }
 
 class LFM2MoEDecoderLayer: Module {
-    let isAttentionLayer: Bool
+    let layerKind: LFM2MoELayerKind
     let usesDenseFeedForward: Bool
 
     @ModuleInfo(key: "self_attn") var attention: LFM2MoEAttention?
@@ -343,10 +438,10 @@ class LFM2MoEDecoderLayer: Module {
     @ModuleInfo(key: "ffn_norm") var ffnNorm: RMSNorm
 
     init(_ args: LFM2MoEConfiguration, layerIdx: Int) {
-        self.isAttentionLayer = args.fullAttnIdxs.contains(layerIdx)
+        self.layerKind = args.layerPlan.kinds[layerIdx]
         self.usesDenseFeedForward = layerIdx < args.numDenseLayers
 
-        if isAttentionLayer {
+        if layerKind == .fullAttention {
             _attention.wrappedValue = LFM2MoEAttention(args)
         } else {
             _conv.wrappedValue = LFM2MoEShortConv(args, layerIdx: layerIdx)
@@ -355,11 +450,15 @@ class LFM2MoEDecoderLayer: Module {
         if usesDenseFeedForward {
             _feedForward.wrappedValue = LFM2MoEMLP(args)
         } else {
-            _feedForward.wrappedValue = Lfm2MoeSparseMoeBlock(args)
+            _feedForward.wrappedValue = LFM2MoESparseBlock(args)
         }
 
         _operatorNorm.wrappedValue = RMSNorm(dimensions: args.hiddenSize, eps: args.normEps)
         _ffnNorm.wrappedValue = RMSNorm(dimensions: args.hiddenSize, eps: args.normEps)
+    }
+
+    var isAttentionLayer: Bool {
+        layerKind == .fullAttention
     }
 
     func callAsFunction(
@@ -371,9 +470,15 @@ class LFM2MoEDecoderLayer: Module {
         let residual = operatorNorm(x)
         let r: MLXArray
         if isAttentionLayer {
-            r = attention!(residual, mask: attentionMask, cache: cache)
+            guard let attention else {
+                preconditionFailure("LFM2 MoE attention layer is missing its attention module")
+            }
+            r = attention(residual, mask: attentionMask, cache: cache)
         } else {
-            r = conv!(residual, mask: ssmMask, cache: cache as? MambaCache)
+            guard let conv else {
+                preconditionFailure("LFM2 MoE convolution layer is missing its convolution module")
+            }
+            r = conv(residual, mask: ssmMask, cache: cache as? MambaCache)
         }
 
         let h = x + r
@@ -383,16 +488,14 @@ class LFM2MoEDecoderLayer: Module {
 }
 
 internal class LFM2MoEModelInner: Module {
-    let args: LFM2MoEConfiguration
     let layers: [LFM2MoEDecoderLayer]
-    let firstAttentionIndex: Int?
-    let firstConvIndex: Int?
+    let layerPlan: LFM2MoELayerPlan
 
     @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding
     @ModuleInfo(key: "embedding_norm") var embeddingNorm: RMSNorm
 
     init(_ args: LFM2MoEConfiguration) {
-        self.args = args
+        self.layerPlan = args.layerPlan
         precondition(args.vocabularySize > 0)
 
         _embedTokens.wrappedValue = Embedding(
@@ -401,8 +504,6 @@ internal class LFM2MoEModelInner: Module {
         )
 
         self.layers = (0 ..< args.hiddenLayers).map { LFM2MoEDecoderLayer(args, layerIdx: $0) }
-        self.firstAttentionIndex = args.fullAttnIdxs.first
-        self.firstConvIndex = layers.firstIndex(where: { !$0.isAttentionLayer })
 
         _embeddingNorm.wrappedValue = RMSNorm(dimensions: args.hiddenSize, eps: args.normEps)
     }
@@ -415,7 +516,7 @@ internal class LFM2MoEModelInner: Module {
         var hidden = inputEmbeddings ?? embedTokens(inputs)
 
         let attentionMask: MLXFast.ScaledDotProductAttentionMaskMode = {
-            guard let index = firstAttentionIndex,
+            guard let index = layerPlan.firstAttentionIndex,
                 let cache,
                 index < cache.count
             else { return .none }
@@ -423,7 +524,7 @@ internal class LFM2MoEModelInner: Module {
         }()
 
         let ssmMask: MLXArray? = {
-            guard let index = firstConvIndex,
+            guard let index = layerPlan.firstConvolutionIndex,
                 let cache,
                 index < cache.count
             else { return nil }
@@ -438,20 +539,98 @@ internal class LFM2MoEModelInner: Module {
     }
 }
 
+private struct LFM2MoEWeightSanitizer {
+    let configuration: LFM2MoEConfiguration
+
+    func sanitize(_ weights: [String: MLXArray]) -> [String: MLXArray] {
+        packExperts(in: normalizeProjectionNames(weights))
+    }
+
+    private func normalizeProjectionNames(_ weights: [String: MLXArray]) -> [String: MLXArray] {
+        var sanitized = [String: MLXArray]()
+        sanitized.reserveCapacity(weights.count)
+
+        for (name, param) in weights {
+            sanitized[renamedProjectionKey(name)] = normalizedTensor(param, key: name)
+        }
+
+        return sanitized
+    }
+
+    private func normalizedTensor(_ tensor: MLXArray, key: String) -> MLXArray {
+        if key.contains("conv.weight"), tensor.dim(-1) > tensor.dim(1) {
+            return tensor.transposed(0, 2, 1)
+        }
+        return tensor
+    }
+
+    private func renamedProjectionKey(_ key: String) -> String {
+        let replacements = [
+            "w1.weight": "gate_proj.weight",
+            "w2.weight": "down_proj.weight",
+            "w3.weight": "up_proj.weight",
+        ]
+        var updated = key
+        for (old, new) in replacements where updated.contains(old) {
+            updated = updated.replacingOccurrences(of: old, with: new)
+        }
+        return updated
+    }
+
+    private func packExperts(in weights: [String: MLXArray]) -> [String: MLXArray] {
+        var packed = weights
+
+        for layerIdx in 0 ..< configuration.hiddenLayers {
+            let prefix = "model.layers.\(layerIdx)"
+            let expertPrefix = "\(prefix).feed_forward.experts"
+            guard packed["\(expertPrefix).0.gate_proj.weight"] != nil else {
+                continue
+            }
+
+            for name in ["gate_proj", "down_proj", "up_proj"] {
+                packExpertProjection(name, expertPrefix: expertPrefix, layerPrefix: prefix, in: &packed)
+            }
+        }
+
+        return packed
+    }
+
+    private func packExpertProjection(
+        _ name: String,
+        expertPrefix: String,
+        layerPrefix: String,
+        in weights: inout [String: MLXArray]
+    ) {
+        let firstKey = "\(expertPrefix).0.\(name).weight"
+        guard weights[firstKey] != nil else {
+            return
+        }
+        let keys = (0 ..< configuration.numExperts).map { expert in
+            "\(expertPrefix).\(expert).\(name).weight"
+        }
+        guard keys.allSatisfy({ weights[$0] != nil }) else {
+            return
+        }
+        let stacked = keys.compactMap { weights.removeValue(forKey: $0) }
+        weights["\(layerPrefix).feed_forward.switch_mlp.\(name).weight"] = MLX.stacked(stacked)
+    }
+}
+
 internal class LFM2MoEModel: Module, LLMModel, KVCacheDimensionProvider, GreedyTokenModel {
     internal let vocabularySize: Int
     internal let kvHeads: [Int]
     let configuration: LFM2MoEConfiguration
 
-    internal let model: LFM2MoEModelInner
+    @ModuleInfo(key: "model") fileprivate var model: LFM2MoEModelInner
 
     internal init(_ args: LFM2MoEConfiguration) {
         self.configuration = args
         self.vocabularySize = args.vocabularySize
+        let layerPlan = args.layerPlan
         self.kvHeads = (0 ..< args.hiddenLayers).map { layerIdx in
-            args.fullAttnIdxs.contains(layerIdx) ? args.kvHeads : 0
+            layerPlan.usesAttention(layerIndex: layerIdx) ? args.kvHeads : 0
         }
-        self.model = LFM2MoEModelInner(args)
+        self._model.wrappedValue = LFM2MoEModelInner(args)
     }
 
     internal func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
@@ -469,53 +648,13 @@ internal class LFM2MoEModel: Module, LLMModel, KVCacheDimensionProvider, GreedyT
     }
 
     internal func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
-        var sanitized: [String: MLXArray] = [:]
-
-        for (name, param) in weights {
-            var tensor = param
-            if name.contains("conv.weight") {
-                if tensor.dim(-1) > tensor.dim(1) {
-                    tensor = tensor.transposed(0, 2, 1)
-                }
-            }
-
-            let replacements = [
-                "w1.weight": "gate_proj.weight",
-                "w2.weight": "down_proj.weight",
-                "w3.weight": "up_proj.weight",
-            ]
-            var updatedName = name
-            for (old, new) in replacements where updatedName.contains(old) {
-                updatedName = updatedName.replacingOccurrences(of: old, with: new)
-            }
-
-            sanitized[updatedName] = tensor
-        }
-
-        for layerIdx in 0 ..< configuration.hiddenLayers {
-            let prefix = "model.layers.\(layerIdx)"
-            let expertPrefix = "\(prefix).feed_forward.experts"
-
-            if sanitized["\(expertPrefix).0.gate_proj.weight"] == nil {
-                continue
-            }
-
-            for name in ["gate_proj", "down_proj", "up_proj"] {
-                let key = "\(expertPrefix).0.\(name).weight"
-                guard sanitized[key] != nil else { continue }
-                let stacked = (0 ..< configuration.numExperts).map { expert -> MLXArray in
-                    sanitized.removeValue(forKey: "\(expertPrefix).\(expert).\(name).weight")!
-                }
-                sanitized["\(prefix).feed_forward.switch_mlp.\(name).weight"] = MLX.stacked(stacked)
-            }
-        }
-
-        return sanitized
+        LFM2MoEWeightSanitizer(configuration: configuration).sanitize(weights)
     }
 
     internal func newCache(parameters: GenerateParameters?) -> [KVCache] {
-        (0 ..< configuration.hiddenLayers).map { layerIdx in
-            if configuration.fullAttnIdxs.contains(layerIdx) {
+        let layerPlan = configuration.layerPlan
+        return (0 ..< configuration.hiddenLayers).map { layerIdx in
+            if layerPlan.usesAttention(layerIndex: layerIdx) {
                 KVCacheSimple()
             } else {
                 MambaCache()
@@ -527,5 +666,14 @@ internal class LFM2MoEModel: Module, LLMModel, KVCacheDimensionProvider, GreedyT
 extension LFM2MoEModel: LoRAModel {
     internal var loraLayers: [Module] {
         model.layers
+    }
+
+    internal func loraLinearLayers() -> LoRALinearLayers {
+        model.layers.compactMap { layer in
+            guard layer.isAttentionLayer, let attention = layer.attention else {
+                return nil
+            }
+            return (attention, ["q_proj", "v_proj"])
+        }
     }
 }
