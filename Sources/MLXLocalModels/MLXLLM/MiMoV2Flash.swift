@@ -1,23 +1,268 @@
-//
-//  MiMoV2Flash.swift
-//  LLM
-//
-//  Port of https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/models/mimo_v2_flash.py
-//  Created by Ronald Mannak on 2025/1/8.
-//
-
 import Foundation
 import MLX
 import MLXNN
 
-private func attentionWithCacheUpdateAndSinks(
+// MARK: - Plans
+
+internal enum MiMoV2FlashAttentionKind: Equatable, Sendable {
+    case full
+    case sliding
+}
+
+internal struct MiMoV2FlashAttentionLayout: Equatable, Sendable {
+    internal let kind: MiMoV2FlashAttentionKind
+    internal let hiddenSize: Int
+    internal let attentionHeads: Int
+    internal let keyValueHeads: Int
+    internal let headDimensions: Int
+    internal let valueHeadDimensions: Int
+    internal let rotaryDimensions: Int
+    internal let attentionScale: Float
+    internal let ropeTheta: Float
+    internal let usesAttentionSink: Bool
+
+    internal init(_ config: MiMoV2FlashConfiguration, kind: MiMoV2FlashAttentionKind) {
+        let attentionHeads: Int
+        let keyValueHeads: Int
+        let headDimensions: Int
+        let valueHeadDimensions: Int
+        let ropeTheta: Float
+        let usesAttentionSink: Bool
+
+        switch kind {
+        case .full:
+            attentionHeads = config.attentionHeads
+            keyValueHeads = config.kvHeads
+            headDimensions = config.headDim
+            valueHeadDimensions = config.vHeadDim
+            ropeTheta = config.ropeTheta
+            usesAttentionSink = config.addFullAttentionSinkBias
+        case .sliding:
+            attentionHeads = config.swaAttentionHeads
+            keyValueHeads = config.swaKvHeads
+            headDimensions = config.swaHeadDim
+            valueHeadDimensions = config.swaVHeadDim
+            ropeTheta = config.swaRopeTheta
+            usesAttentionSink = config.addSwaAttentionSinkBias
+        }
+
+        precondition(attentionHeads > 0, "MiMo v2 Flash attention heads must be positive")
+        precondition(keyValueHeads > 0, "MiMo v2 Flash KV heads must be positive")
+        precondition(headDimensions > 0, "MiMo v2 Flash head dimensions must be positive")
+        precondition(
+            attentionHeads.isMultiple(of: keyValueHeads),
+            "MiMo v2 Flash attention heads must group KV heads"
+        )
+        precondition(
+            config.partialRotaryFactor > 0,
+            "MiMo v2 Flash partial rotary factor must be positive"
+        )
+
+        self.kind = kind
+        self.hiddenSize = config.hiddenSize
+        self.attentionHeads = attentionHeads
+        self.keyValueHeads = keyValueHeads
+        self.headDimensions = headDimensions
+        self.valueHeadDimensions = valueHeadDimensions
+        self.rotaryDimensions = max(1, Int(Float(headDimensions) * config.partialRotaryFactor))
+        self.attentionScale = pow(Float(headDimensions), -0.5)
+        self.ropeTheta = ropeTheta
+        self.usesAttentionSink = usesAttentionSink
+    }
+
+    internal var queryProjectionSize: Int { attentionHeads * headDimensions }
+    internal var keyProjectionSize: Int { keyValueHeads * headDimensions }
+    internal var valueProjectionSize: Int { keyValueHeads * valueHeadDimensions }
+    internal var outputProjectionInputSize: Int { attentionHeads * valueHeadDimensions }
+}
+
+internal struct MiMoV2FlashLayerSchedule: Equatable, Sendable {
+    internal let hybridPattern: [Int]
+    internal let moePattern: [Int]
+    internal let slidingWindowSize: Int
+
+    internal init(_ config: MiMoV2FlashConfiguration) {
+        precondition(config.hiddenLayers > 0, "MiMo v2 Flash must have at least one layer")
+        precondition(
+            config.hybridLayerPattern.count == config.hiddenLayers,
+            "MiMo v2 Flash hybrid pattern must match layer count"
+        )
+        precondition(
+            config.moeLayerFreq.count == config.hiddenLayers,
+            "MiMo v2 Flash MoE pattern must match layer count"
+        )
+        precondition(
+            config.hybridLayerPattern.allSatisfy { $0 == 0 || $0 == 1 },
+            "MiMo v2 Flash hybrid pattern entries must be 0 or 1"
+        )
+        precondition(
+            config.moeLayerFreq.allSatisfy { $0 == 0 || $0 == 1 },
+            "MiMo v2 Flash MoE pattern entries must be 0 or 1"
+        )
+
+        self.hybridPattern = config.hybridLayerPattern
+        self.moePattern = config.moeLayerFreq
+        self.slidingWindowSize = config.slidingWindowSize
+    }
+
+    internal var layerCount: Int {
+        hybridPattern.count
+    }
+
+    internal var firstFullLayer: Int {
+        hybridPattern.firstIndex(of: 0) ?? 0
+    }
+
+    internal var firstSlidingLayer: Int {
+        hybridPattern.firstIndex(of: 1) ?? firstFullLayer
+    }
+
+    internal func attentionKind(layerIndex: Int) -> MiMoV2FlashAttentionKind {
+        hybridPattern[layerIndex] == 1 ? .sliding : .full
+    }
+
+    internal func usesMoE(layerIndex: Int) -> Bool {
+        moePattern[layerIndex] == 1
+    }
+}
+
+internal struct MiMoV2FlashRoutingPlan: Equatable, Sendable {
+    internal let expertCount: Int
+    internal let selectedExpertCount: Int
+    internal let groupCount: Int
+    internal let keptGroupCount: Int
+    internal let normalizesSelectedProbabilities: Bool
+    internal let routedScalingFactor: Float
+
+    internal init(_ config: MiMoV2FlashConfiguration) {
+        let expertCount = config.nRoutedExperts ?? 0
+        precondition(expertCount > 0, "MiMo v2 Flash routed expert count must be positive")
+        precondition(
+            config.topkMethod == "noaux_tc",
+            "MiMo v2 Flash only supports noaux_tc routing"
+        )
+        precondition(config.numExpertsPerTok > 0, "MiMo v2 Flash top-k must be positive")
+        precondition(config.nGroup > 0, "MiMo v2 Flash group count must be positive")
+        precondition(
+            expertCount.isMultiple(of: config.nGroup),
+            "MiMo v2 Flash experts must divide evenly into groups"
+        )
+        precondition(
+            config.numExpertsPerTok <= expertCount,
+            "MiMo v2 Flash top-k cannot exceed routed expert count"
+        )
+
+        let keptGroupCount = min(config.topkGroup, config.nGroup)
+        precondition(
+            keptGroupCount > 0 && keptGroupCount <= config.nGroup,
+            "MiMo v2 Flash kept group count must be within group count"
+        )
+
+        self.expertCount = expertCount
+        self.selectedExpertCount = config.numExpertsPerTok
+        self.groupCount = config.nGroup
+        self.keptGroupCount = keptGroupCount
+        self.normalizesSelectedProbabilities = config.normTopkProb
+        self.routedScalingFactor = config.routedScalingFactor ?? 1
+    }
+
+    internal var expertsPerGroup: Int {
+        expertCount / groupCount
+    }
+
+    private var droppedGroupCount: Int {
+        groupCount - keptGroupCount
+    }
+
+    internal func route(
+        logits: MLXArray,
+        correctionBias: MLXArray,
+        outputDType: DType
+    ) -> (scores: MLXArray, indices: MLXArray) {
+        let originalScores = sigmoid(logits.asType(.float32))
+        var selectionScores = originalScores + correctionBias
+
+        if groupCount > 1, droppedGroupCount > 0 {
+            selectionScores = unflatten(selectionScores, axis: -1, shape: [groupCount, -1])
+            let groupScores = top(selectionScores, k: min(2, expertsPerGroup), axis: -1)
+                .sum(axis: -1, keepDims: true)
+            let droppedGroups = argPartition(
+                groupScores,
+                kth: droppedGroupCount - 1,
+                axis: -2
+            )[.ellipsis, ..<droppedGroupCount, 0...]
+            selectionScores = putAlong(
+                selectionScores,
+                stopGradient(droppedGroups),
+                values: MLXArray(0.0),
+                axis: -2
+            )
+            selectionScores = flattened(selectionScores, start: -2, end: -1)
+        }
+
+        let indices = argPartition(
+            -selectionScores,
+            kth: selectedExpertCount - 1,
+            axis: -1
+        )[.ellipsis, ..<selectedExpertCount]
+        var selectedScores = takeAlong(originalScores, indices, axis: -1)
+
+        if selectedExpertCount > 1, normalizesSelectedProbabilities {
+            selectedScores = selectedScores / (selectedScores.sum(axis: -1, keepDims: true) + 1e-20)
+        }
+
+        return ((selectedScores * routedScalingFactor).asType(outputDType), indices)
+    }
+}
+
+private enum MiMoV2FlashExpertProjection: String, CaseIterable {
+    case gate = "gate_proj"
+    case down = "down_proj"
+    case up = "up_proj"
+}
+
+internal struct MiMoV2FlashExpertPackingPlan: Equatable, Sendable {
+    internal let layerCount: Int
+    internal let expertCount: Int
+
+    internal init(_ config: MiMoV2FlashConfiguration) {
+        self.layerCount = config.hiddenLayers
+        self.expertCount = config.nRoutedExperts ?? 0
+    }
+
+    internal func pack(_ weights: [String: MLXArray]) -> [String: MLXArray] {
+        var packed = weights
+
+        for layerIndex in 0 ..< layerCount {
+            let prefix = "model.layers.\(layerIndex).mlp"
+            for projection in MiMoV2FlashExpertProjection.allCases {
+                for tensorName in ["weight", "scales", "biases"] {
+                    let firstKey = "\(prefix).experts.0.\(projection.rawValue).\(tensorName)"
+                    guard packed[firstKey] != nil else { continue }
+
+                    let tensors = (0 ..< expertCount).map { expertIndex in
+                        packed.removeValue(
+                            forKey: "\(prefix).experts.\(expertIndex).\(projection.rawValue).\(tensorName)"
+                        )!
+                    }
+                    packed["\(prefix).switch_mlp.\(projection.rawValue).\(tensorName)"] =
+                        MLX.stacked(tensors)
+                }
+            }
+        }
+
+        return packed
+    }
+}
+
+private func mimoV2FlashAttention(
     queries: MLXArray,
     keys: MLXArray,
     values: MLXArray,
     cache: KVCache?,
     scale: Float,
-    mask: MLXFast.ScaledDotProductAttentionMaskMode = .none,
-    sinks: MLXArray? = nil
+    mask: MLXFast.ScaledDotProductAttentionMaskMode,
+    sinks: MLXArray?
 ) -> MLXArray {
     guard let cache else {
         return MLXFast.scaledDotProductAttention(
@@ -33,7 +278,9 @@ private func attentionWithCacheUpdateAndSinks(
     if let quantizedKVCache = cache as? QuantizedKVCacheProtocol {
         precondition(sinks == nil, "Quantized SDPA does not support attention sinks.")
         let (quantizedKeys, quantizedValues) = quantizedKVCache.updateQuantized(
-            keys: keys, values: values)
+            keys: keys,
+            values: values
+        )
         return quantizedScaledDotProductAttention(
             queries: queries,
             quantizedKeys: quantizedKeys,
@@ -44,146 +291,98 @@ private func attentionWithCacheUpdateAndSinks(
             bits: quantizedKVCache.bits,
             mode: quantizedKVCache.mode
         )
-    } else {
-        let (cachedKeys, cachedValues) = cache.update(keys: keys, values: values)
-        return MLXFast.scaledDotProductAttention(
-            queries: queries,
-            keys: cachedKeys,
-            values: cachedValues,
-            scale: scale,
-            mask: mask,
-            sinks: sinks
-        )
     }
+
+    let (cachedKeys, cachedValues) = cache.update(keys: keys, values: values)
+    return MLXFast.scaledDotProductAttention(
+        queries: queries,
+        keys: cachedKeys,
+        values: cachedValues,
+        scale: scale,
+        mask: mask,
+        sinks: sinks
+    )
 }
 
-private func groupExpertSelect(
-    gates: MLXArray,
-    eScoreCorrectionBias: MLXArray,
-    topK: Int,
-    nGroup: Int,
-    topkGroup: Int,
-    routedScalingFactor: Float,
-    normTopkProb: Bool
-) -> (MLXArray, MLXArray) {
-    var scores = sigmoid(gates.asType(.float32))
-    let originalScores = scores
-    scores = scores + eScoreCorrectionBias
+// MARK: - Model Components
 
-    if nGroup > 1 {
-        scores = unflatten(scores, axis: -1, shape: [nGroup, -1])
-        let groupScores = top(scores, k: 2, axis: -1).sum(axis: -1, keepDims: true)
-        let k = nGroup - topkGroup
-        let groupIdx = argPartition(groupScores, kth: k - 1, axis: -2)[.ellipsis, ..<k, 0...]
-        scores = putAlong(
-            scores,
-            stopGradient(groupIdx),
-            values: MLXArray(0.0),
-            axis: -2
-        )
-        scores = flattened(scores, start: -2, end: -1)
-    }
+internal final class MiMoV2FlashAttention: Module {
+    let layout: MiMoV2FlashAttentionLayout
 
-    let k = topK
-    let inds = argPartition(-scores, kth: k - 1, axis: -1)[.ellipsis, ..<k]
-    scores = takeAlong(originalScores, inds, axis: -1)
-    if topK > 1, normTopkProb {
-        let denominator = scores.sum(axis: -1, keepDims: true)
-        scores = scores / (denominator + 1e-20)
-    }
-    scores = scores * routedScalingFactor
-
-    return (inds, scores)
-}
-
-class MiMoV2FlashAttention: Module {
-    let args: MiMoV2FlashConfiguration
-    let isSlidingWindow: Bool
-    let hasSinks: Bool
-    let scale: Float
-
-    let numAttentionHeads: Int
-    let numKeyValueHeads: Int
-    let headDim: Int
-    let vHeadDim: Int
-
-    @ModuleInfo(key: "q_proj") var wq: Linear
-    @ModuleInfo(key: "k_proj") var wk: Linear
-    @ModuleInfo(key: "v_proj") var wv: Linear
-    @ModuleInfo(key: "o_proj") var wo: Linear
+    @ModuleInfo(key: "q_proj") var query: Linear
+    @ModuleInfo(key: "k_proj") var key: Linear
+    @ModuleInfo(key: "v_proj") var value: Linear
+    @ModuleInfo(key: "o_proj") var output: Linear
     @ParameterInfo(key: "attention_sink_bias") var attentionSinkBias: MLXArray
 
     let rope: RoPE
 
-    init(_ args: MiMoV2FlashConfiguration, isSlidingWindow: Bool) {
-        self.args = args
-        self.isSlidingWindow = isSlidingWindow
+    init(_ config: MiMoV2FlashConfiguration, kind: MiMoV2FlashAttentionKind) {
+        self.layout = MiMoV2FlashAttentionLayout(config, kind: kind)
 
-        if isSlidingWindow {
-            self.numAttentionHeads = args.swaAttentionHeads
-            self.numKeyValueHeads = args.swaKvHeads
-            self.hasSinks = args.addSwaAttentionSinkBias
-            self.headDim = args.swaHeadDim
-            self.vHeadDim = args.swaVHeadDim
-        } else {
-            self.numAttentionHeads = args.attentionHeads
-            self.numKeyValueHeads = args.kvHeads
-            self.hasSinks = args.addFullAttentionSinkBias
-            self.headDim = args.headDim
-            self.vHeadDim = args.vHeadDim
-        }
+        _query.wrappedValue = Linear(
+            layout.hiddenSize,
+            layout.queryProjectionSize,
+            bias: false
+        )
+        _key.wrappedValue = Linear(
+            layout.hiddenSize,
+            layout.keyProjectionSize,
+            bias: false
+        )
+        _value.wrappedValue = Linear(
+            layout.hiddenSize,
+            layout.valueProjectionSize,
+            bias: false
+        )
+        _output.wrappedValue = Linear(
+            layout.outputProjectionInputSize,
+            layout.hiddenSize,
+            bias: false
+        )
+        _attentionSinkBias.wrappedValue = MLXArray.ones([layout.attentionHeads])
 
-        self.scale = pow(Float(headDim), -0.5)
-
-        _wq.wrappedValue = Linear(
-            args.hiddenSize, numAttentionHeads * headDim, bias: false)
-        _wk.wrappedValue = Linear(
-            args.hiddenSize, numKeyValueHeads * headDim, bias: false)
-        _wv.wrappedValue = Linear(
-            args.hiddenSize, numKeyValueHeads * vHeadDim, bias: false)
-        _wo.wrappedValue = Linear(
-            numAttentionHeads * vHeadDim, args.hiddenSize, bias: false)
-
-        _attentionSinkBias.wrappedValue = MLXArray.ones([numAttentionHeads])
-
-        let ropeTheta = isSlidingWindow ? args.swaRopeTheta : args.ropeTheta
-        let rotaryDims = Int(Float(args.partialRotaryFactor) * Float(headDim))
         self.rope = RoPE(
-            dimensions: rotaryDims,
+            dimensions: layout.rotaryDimensions,
             traditional: false,
-            base: ropeTheta
+            base: layout.ropeTheta
         )
     }
 
     func callAsFunction(
-        _ x: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode, cache: KVCache?
+        _ x: MLXArray,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode,
+        cache: KVCache?
     ) -> MLXArray {
-        let (B, L) = (x.dim(0), x.dim(1))
+        let batchSize = x.dim(0)
+        let tokenCount = x.dim(1)
 
-        let queries = wq(x)
-        let keys = wk(x)
-        let values = wv(x)
+        var queryStates = query(x)
+            .reshaped(batchSize, tokenCount, layout.attentionHeads, layout.headDimensions)
+            .transposed(0, 2, 1, 3)
+        var keyStates = key(x)
+            .reshaped(batchSize, tokenCount, layout.keyValueHeads, layout.headDimensions)
+            .transposed(0, 2, 1, 3)
+        let valueStates = value(x)
+            .reshaped(batchSize, tokenCount, layout.keyValueHeads, layout.valueHeadDimensions)
+            .transposed(0, 2, 1, 3)
 
-        var q = queries.reshaped(B, L, numAttentionHeads, -1).transposed(0, 2, 1, 3)
-        var k = keys.reshaped(B, L, numKeyValueHeads, -1).transposed(0, 2, 1, 3)
-        let v = values.reshaped(B, L, numKeyValueHeads, -1).transposed(0, 2, 1, 3)
+        queryStates = applyRotaryPosition(rope, to: queryStates, cache: cache)
+        keyStates = applyRotaryPosition(rope, to: keyStates, cache: cache)
 
-        q = applyRotaryPosition(rope, to: q, cache: cache)
-        k = applyRotaryPosition(rope, to: k, cache: cache)
-
-        let output = attentionWithCacheUpdateAndSinks(
-            queries: q,
-            keys: k,
-            values: v,
+        let attentionOutput = mimoV2FlashAttention(
+            queries: queryStates,
+            keys: keyStates,
+            values: valueStates,
             cache: cache,
-            scale: scale,
+            scale: layout.attentionScale,
             mask: mask,
-            sinks: hasSinks ? attentionSinkBias : nil
+            sinks: layout.usesAttentionSink ? attentionSinkBias : nil
         )
         .transposed(0, 2, 1, 3)
-        .reshaped(B, L, -1)
+        .reshaped(batchSize, tokenCount, -1)
 
-        return wo(output)
+        return output(attentionOutput)
     }
 
     override func updateMissing(
@@ -192,261 +391,249 @@ class MiMoV2FlashAttention: Module {
         path: [String],
         modulePath: [String]
     ) throws {
-        if parameter == "attention_sink_bias", hasSinks {
-            // Keep the default you already set in init (ones([numAttentionHeads]))
+        if parameter == "attention_sink_bias" {
             return
         }
         try super.updateMissing(
-            parameter: parameter, verify: verify, path: path, modulePath: modulePath)
+            parameter: parameter,
+            verify: verify,
+            path: path,
+            modulePath: modulePath
+        )
     }
 }
 
-class MiMoV2FlashMLP: Module, UnaryLayer {
-    let hiddenSize: Int
-    let intermediateSize: Int
+internal final class MiMoV2FlashMLP: Module, UnaryLayer {
+    @ModuleInfo(key: "gate_proj") var gate: Linear
+    @ModuleInfo(key: "up_proj") var up: Linear
+    @ModuleInfo(key: "down_proj") var down: Linear
 
-    @ModuleInfo(key: "gate_proj") var gateProj: Linear
-    @ModuleInfo(key: "up_proj") var upProj: Linear
-    @ModuleInfo(key: "down_proj") var downProj: Linear
-
-    init(_ config: MiMoV2FlashConfiguration, hiddenSize: Int? = nil, intermediateSize: Int? = nil) {
-        self.hiddenSize = hiddenSize ?? config.hiddenSize
-        self.intermediateSize = intermediateSize ?? config.intermediateSize
-
-        _gateProj.wrappedValue = Linear(self.hiddenSize, self.intermediateSize, bias: false)
-        _upProj.wrappedValue = Linear(self.hiddenSize, self.intermediateSize, bias: false)
-        _downProj.wrappedValue = Linear(self.intermediateSize, self.hiddenSize, bias: false)
+    init(_ config: MiMoV2FlashConfiguration, intermediateSize: Int? = nil) {
+        let intermediateSize = intermediateSize ?? config.intermediateSize
+        _gate.wrappedValue = Linear(config.hiddenSize, intermediateSize, bias: false)
+        _up.wrappedValue = Linear(config.hiddenSize, intermediateSize, bias: false)
+        _down.wrappedValue = Linear(intermediateSize, config.hiddenSize, bias: false)
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        downProj(silu(gateProj(x)) * upProj(x))
+        down(silu(gate(x)) * up(x))
     }
 }
 
-class MiMoV2FlashMoEGate: Module {
-    let topK: Int
-    let normTopkProb: Bool
-    let nRoutedExperts: Int
-    let routedScalingFactor: Float
-    let nGroup: Int
-    let topkGroup: Int
+internal final class MiMoV2FlashGate: Module {
+    let routingPlan: MiMoV2FlashRoutingPlan
 
     @ParameterInfo(key: "weight") var weight: MLXArray
     @ParameterInfo(key: "e_score_correction_bias") var eScoreCorrectionBias: MLXArray
 
     init(_ config: MiMoV2FlashConfiguration) {
-        guard let nRoutedExperts = config.nRoutedExperts else {
-            fatalError("MiMoV2FlashMoEGate requires nRoutedExperts.")
-        }
-
-        precondition(config.topkMethod == "noaux_tc", "Unsupported topk method.")
-
-        self.topK = config.numExpertsPerTok
-        self.normTopkProb = config.normTopkProb
-        self.nRoutedExperts = nRoutedExperts
-        self.routedScalingFactor = config.routedScalingFactor ?? 1.0
-        self.nGroup = config.nGroup
-        self.topkGroup = config.topkGroup
-
-        _weight.wrappedValue = MLXArray.zeros([nRoutedExperts, config.hiddenSize])
-        _eScoreCorrectionBias.wrappedValue = MLXArray.zeros([nRoutedExperts])
-
-        super.init()
+        self.routingPlan = MiMoV2FlashRoutingPlan(config)
+        _weight.wrappedValue = MLXArray.zeros([routingPlan.expertCount, config.hiddenSize])
+        _eScoreCorrectionBias.wrappedValue = MLXArray.zeros([routingPlan.expertCount])
     }
 
-    func callAsFunction(_ x: MLXArray) -> (MLXArray, MLXArray) {
-        return groupExpertSelect(
-            gates: x.matmul(weight.T),
-            eScoreCorrectionBias: eScoreCorrectionBias,
-            topK: topK,
-            nGroup: nGroup,
-            topkGroup: topkGroup,
-            routedScalingFactor: routedScalingFactor,
-            normTopkProb: normTopkProb
+    func callAsFunction(_ x: MLXArray) -> (scores: MLXArray, indices: MLXArray) {
+        routingPlan.route(
+            logits: x.matmul(weight.T),
+            correctionBias: eScoreCorrectionBias,
+            outputDType: x.dtype
         )
     }
 }
 
-class MiMoV2FlashMoE: Module, UnaryLayer {
-    let numExpertsPerTok: Int
-    let gate: MiMoV2FlashMoEGate
-
+internal final class MiMoV2FlashMoE: Module, UnaryLayer {
+    @ModuleInfo(key: "gate") var gate: MiMoV2FlashGate
     @ModuleInfo(key: "switch_mlp") var switchMLP: SwitchGLU
     @ModuleInfo(key: "shared_experts") var sharedExperts: MiMoV2FlashMLP?
 
     init(_ config: MiMoV2FlashConfiguration) {
-        guard let nRoutedExperts = config.nRoutedExperts else {
-            fatalError("MiMoV2FlashMoE requires nRoutedExperts.")
-        }
+        let routingPlan = MiMoV2FlashRoutingPlan(config)
 
-        self.numExpertsPerTok = config.numExpertsPerTok
-        self.gate = MiMoV2FlashMoEGate(config)
-
+        _gate.wrappedValue = MiMoV2FlashGate(config)
         _switchMLP.wrappedValue = SwitchGLU(
             inputDims: config.hiddenSize,
             hiddenDims: config.moeIntermediateSize,
-            numExperts: nRoutedExperts
+            numExperts: routingPlan.expertCount
         )
 
-        if let shared = config.nSharedExperts {
-            let intermediateSize = config.moeIntermediateSize * shared
+        if let sharedExpertCount = config.nSharedExperts, sharedExpertCount > 0 {
             _sharedExperts.wrappedValue = MiMoV2FlashMLP(
-                config, intermediateSize: intermediateSize)
+                config,
+                intermediateSize: config.moeIntermediateSize * sharedExpertCount
+            )
         }
-
-        super.init()
     }
 
     func callAsFunction(_ x: MLXArray) -> MLXArray {
-        let (inds, scores) = gate(x)
-        var y = switchMLP(x, inds)
-        y = (y * scores[.ellipsis, .newAxis]).sum(axis: -2).asType(y.dtype)
+        let routed = gate(x)
+        let expertOutput = switchMLP(x, routed.indices)
+        var output = (expertOutput * routed.scores[.ellipsis, .newAxis]).sum(axis: -2)
         if let sharedExperts {
-            y = y + sharedExperts(x)
+            output = output + sharedExperts(x)
         }
-        return y
+        return output
     }
 }
 
-class MiMoV2FlashDecoderLayer: Module {
-    @ModuleInfo(key: "self_attn") var selfAttn: MiMoV2FlashAttention
-    let mlp: UnaryLayer
-    let isSlidingWindow: Bool
+internal final class MiMoV2FlashDecoderLayer: Module {
+    let attentionKind: MiMoV2FlashAttentionKind
 
+    @ModuleInfo(key: "self_attn") fileprivate var attention: MiMoV2FlashAttention
+    @ModuleInfo(key: "mlp") private var feedForward: Module & UnaryLayer
     @ModuleInfo(key: "input_layernorm") var inputLayerNorm: RMSNorm
     @ModuleInfo(key: "post_attention_layernorm") var postAttentionLayerNorm: RMSNorm
 
-    init(_ config: MiMoV2FlashConfiguration, isMoe: Bool, isSlidingWindow: Bool) {
-        self.isSlidingWindow = isSlidingWindow
-        _selfAttn.wrappedValue = MiMoV2FlashAttention(config, isSlidingWindow: isSlidingWindow)
-        self.mlp = isMoe ? MiMoV2FlashMoE(config) : MiMoV2FlashMLP(config)
+    init(
+        _ config: MiMoV2FlashConfiguration,
+        attentionKind: MiMoV2FlashAttentionKind,
+        usesMoE: Bool
+    ) {
+        self.attentionKind = attentionKind
+        _attention.wrappedValue = MiMoV2FlashAttention(config, kind: attentionKind)
+        if usesMoE {
+            _feedForward.wrappedValue = MiMoV2FlashMoE(config)
+        } else {
+            _feedForward.wrappedValue = MiMoV2FlashMLP(config)
+        }
         _inputLayerNorm.wrappedValue = RMSNorm(
-            dimensions: config.hiddenSize, eps: config.layernormEpsilon)
+            dimensions: config.hiddenSize,
+            eps: config.layernormEpsilon
+        )
         _postAttentionLayerNorm.wrappedValue = RMSNorm(
-            dimensions: config.hiddenSize, eps: config.layernormEpsilon)
+            dimensions: config.hiddenSize,
+            eps: config.layernormEpsilon
+        )
+    }
+
+    var usesSlidingWindow: Bool {
+        attentionKind == .sliding
     }
 
     func callAsFunction(
-        _ x: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode, cache: KVCache?
+        _ x: MLXArray,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode,
+        cache: KVCache?
     ) -> MLXArray {
-        let residual = x + selfAttn(inputLayerNorm(x), mask: mask, cache: cache)
-        return residual + mlp(postAttentionLayerNorm(residual))
+        var hidden = x + attention(inputLayerNorm(x), mask: mask, cache: cache)
+        hidden = hidden + feedForward(postAttentionLayerNorm(hidden))
+        return hidden
     }
 }
 
-internal class MiMoV2FlashModelInner: Module {
+internal final class MiMoV2FlashBackbone: Module {
     @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding
-    let layers: [MiMoV2FlashDecoderLayer]
+    @ModuleInfo var layers: [MiMoV2FlashDecoderLayer]
     @ModuleInfo(key: "norm") var norm: RMSNorm
 
-    let swaIdx: Int
-    let gaIdx: Int
-    let slidingWindowSize: Int
-    let hybridLayerPattern: [Int]
+    private let schedule: MiMoV2FlashLayerSchedule
 
     init(_ config: MiMoV2FlashConfiguration) {
-        _embedTokens.wrappedValue = Embedding(
-            embeddingCount: config.vocabularySize, dimensions: config.hiddenSize)
+        let schedule = MiMoV2FlashLayerSchedule(config)
+        self.schedule = schedule
 
-        self.layers = (0 ..< config.hiddenLayers).map { index in
+        _embedTokens.wrappedValue = Embedding(
+            embeddingCount: config.vocabularySize,
+            dimensions: config.hiddenSize
+        )
+        _layers.wrappedValue = (0 ..< schedule.layerCount).map { layerIndex in
             MiMoV2FlashDecoderLayer(
                 config,
-                isMoe: config.moeLayerFreq[index] == 1,
-                isSlidingWindow: config.hybridLayerPattern[index] == 1
+                attentionKind: schedule.attentionKind(layerIndex: layerIndex),
+                usesMoE: schedule.usesMoE(layerIndex: layerIndex)
             )
         }
         _norm.wrappedValue = RMSNorm(
-            dimensions: config.hiddenSize, eps: config.layernormEpsilon)
-        self.swaIdx = config.hybridLayerPattern.firstIndex(of: 1) ?? 0
-        self.gaIdx = config.hybridLayerPattern.firstIndex(of: 0) ?? 0
-        self.slidingWindowSize = config.slidingWindowSize
-        self.hybridLayerPattern = config.hybridLayerPattern
+            dimensions: config.hiddenSize,
+            eps: config.layernormEpsilon
+        )
     }
 
     func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
-        var h = embedTokens(inputs)
+        var hidden = embedTokens(inputs)
+        let fullMask = createAttentionMask(h: hidden, cache: cache?[schedule.firstFullLayer])
+        let slidingMask = createAttentionMask(
+            h: hidden,
+            cache: cache?[schedule.firstSlidingLayer],
+            windowSize: schedule.slidingWindowSize
+        )
 
-        let fullMask = createAttentionMask(h: h, cache: cache?[gaIdx])
-        let swaMask = createAttentionMask(
-            h: h, cache: cache?[swaIdx], windowSize: slidingWindowSize)
-
-        for (i, layer) in layers.enumerated() {
-            let mask = hybridLayerPattern[i] == 1 ? swaMask : fullMask
-            h = layer(h, mask: mask, cache: cache?[i])
+        for (layerIndex, layer) in layers.enumerated() {
+            let mask = layer.usesSlidingWindow ? slidingMask : fullMask
+            hidden = layer(hidden, mask: mask, cache: cache?[layerIndex])
         }
 
-        return norm(h)
+        return norm(hidden)
     }
 }
 
-internal class MiMoV2FlashModel: Module, LLMModel, KVCacheDimensionProvider {
+internal final class MiMoV2FlashModel: Module, LLMModel, KVCacheDimensionProvider,
+    GreedyTokenModel
+{
     internal let modelType: String
     internal let vocabularySize: Int
     internal let kvHeads: [Int]
 
-    internal let model: MiMoV2FlashModelInner
-    let configuration: MiMoV2FlashConfiguration
-
+    @ModuleInfo(key: "model") private var model: MiMoV2FlashBackbone
     @ModuleInfo(key: "lm_head") var lmHead: Linear
 
+    private let configuration: MiMoV2FlashConfiguration
+    private let schedule: MiMoV2FlashLayerSchedule
+
     internal init(_ config: MiMoV2FlashConfiguration) {
+        let schedule = MiMoV2FlashLayerSchedule(config)
+
         self.configuration = config
+        self.schedule = schedule
         self.modelType = config.modelType
         self.vocabularySize = config.vocabularySize
-        self.kvHeads = Array(repeating: config.kvHeads, count: config.hiddenLayers)
-        self.model = MiMoV2FlashModelInner(config)
+        self.kvHeads = (0 ..< config.hiddenLayers).map { layerIndex in
+            schedule.attentionKind(layerIndex: layerIndex) == .sliding
+                ? config.swaKvHeads
+                : config.kvHeads
+        }
+        _model.wrappedValue = MiMoV2FlashBackbone(config)
         _lmHead.wrappedValue = Linear(config.hiddenSize, config.vocabularySize, bias: false)
     }
 
     internal func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
-        let out = model(inputs, cache: cache)
-        return lmHead(out)
+        lmHead(model(inputs, cache: cache))
+    }
+
+    internal func greedyToken(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?
+    ) -> GreedyTokenOutput {
+        let hiddenStates = lastTokenHiddenState(model(input[text: .newAxis].tokens, cache: cache))
+        return greedyTokenOutput(logits: lmHead(hiddenStates), state: state)
+    }
+
+    internal func newCache(parameters: GenerateParameters?) -> [KVCache] {
+        (0 ..< configuration.hiddenLayers).map { layerIndex in
+            if schedule.attentionKind(layerIndex: layerIndex) == .sliding {
+                RotatingKVCache(maxSize: configuration.slidingWindowSize)
+            } else {
+                KVCacheSimple()
+            }
+        }
     }
 
     internal func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
-        var sanitizedWeights = MLXQuantizedWeightSanitizer.sanitize(
+        let sanitized = MLXQuantizedWeightSanitizer.sanitize(
             weights,
             strategy: .block(),
             sidecarPolicy: .dropActivationScale
         ).weights
-
-        for layerIndex in 0 ..< configuration.hiddenLayers {
-            let prefix = "model.layers.\(layerIndex)"
-            for (_, projName) in [("w1", "gate_proj"), ("w2", "down_proj"), ("w3", "up_proj")] {
-                for key in ["weight", "scales", "biases"] {
-                    let firstKey = "\(prefix).mlp.experts.0.\(projName).\(key)"
-                    if sanitizedWeights[firstKey] != nil {
-                        let toJoin = (0 ..< (configuration.nRoutedExperts ?? 1)).map {
-                            sanitizedWeights.removeValue(
-                                forKey: "\(prefix).mlp.experts.\($0).\(projName).\(key)")!
-                        }
-                        sanitizedWeights["\(prefix).mlp.switch_mlp.\(projName).\(key)"] =
-                            MLX.stacked(toJoin)
-                    }
-                }
-            }
-        }
-
-        return sanitizedWeights.filter { key, _ in
-            !key.hasPrefix("model.mtp")
-        }
-    }
-
-    internal func newCache(parameters: GenerateParameters?) -> [KVCache] {
-        return model.layers.map { layer in
-            if layer.isSlidingWindow {
-                return RotatingKVCache(maxSize: configuration.slidingWindowSize)
-            } else {
-                return KVCacheSimple()
-            }
-        }
+        return MiMoV2FlashExpertPackingPlan(configuration)
+            .pack(sanitized)
+            .filter { key, _ in !key.hasPrefix("model.mtp") }
     }
 }
 
 // MARK: - Configuration
 
-internal struct MiMoV2FlashConfiguration: Codable, Sendable {
-    var modelType: String = "mimo_v2_flash"
+internal struct MiMoV2FlashConfiguration: Codable, Sendable, Equatable {
+    var modelType: String
     var numExpertsPerTok: Int
     var hybridLayerPattern: [Int]
     var moeLayerFreq: [Int]
@@ -479,6 +666,77 @@ internal struct MiMoV2FlashConfiguration: Codable, Sendable {
     var swaHeadDim: Int
     var swaVHeadDim: Int
     var partialRotaryFactor: Float
+
+    internal init(
+        modelType: String = "mimo_v2_flash",
+        numExpertsPerTok: Int = 1,
+        hybridLayerPattern: [Int],
+        moeLayerFreq: [Int],
+        addSwaAttentionSinkBias: Bool = false,
+        addFullAttentionSinkBias: Bool = false,
+        slidingWindowSize: Int,
+        vocabularySize: Int,
+        hiddenSize: Int,
+        intermediateSize: Int,
+        moeIntermediateSize: Int? = nil,
+        hiddenLayers: Int,
+        attentionHeads: Int,
+        kvHeads: Int,
+        nSharedExperts: Int? = nil,
+        nRoutedExperts: Int? = nil,
+        routedScalingFactor: Float? = nil,
+        topkMethod: String = "noaux_tc",
+        scoringFunc: String = "sigmoid",
+        normTopkProb: Bool = false,
+        nGroup: Int = 1,
+        topkGroup: Int? = nil,
+        maxPositionEmbeddings: Int = 131_072,
+        layernormEpsilon: Float = 1e-6,
+        ropeTheta: Float = 10_000,
+        swaRopeTheta: Float? = nil,
+        headDim: Int? = nil,
+        vHeadDim: Int? = nil,
+        swaAttentionHeads: Int? = nil,
+        swaKvHeads: Int? = nil,
+        swaHeadDim: Int? = nil,
+        swaVHeadDim: Int? = nil,
+        partialRotaryFactor: Float = 1
+    ) {
+        self.modelType = modelType
+        self.numExpertsPerTok = numExpertsPerTok
+        self.hybridLayerPattern = hybridLayerPattern
+        self.moeLayerFreq = moeLayerFreq
+        self.addSwaAttentionSinkBias = addSwaAttentionSinkBias
+        self.addFullAttentionSinkBias = addFullAttentionSinkBias
+        self.slidingWindowSize = slidingWindowSize
+        self.vocabularySize = vocabularySize
+        self.hiddenSize = hiddenSize
+        self.intermediateSize = intermediateSize
+        self.moeIntermediateSize = moeIntermediateSize ?? intermediateSize
+        self.hiddenLayers = hiddenLayers
+        self.attentionHeads = attentionHeads
+        self.kvHeads = kvHeads
+        self.nSharedExperts = nSharedExperts
+        self.nRoutedExperts = nRoutedExperts
+        self.routedScalingFactor = routedScalingFactor
+        self.topkMethod = topkMethod
+        self.scoringFunc = scoringFunc
+        self.normTopkProb = normTopkProb
+        self.nGroup = nGroup
+        self.topkGroup = topkGroup ?? nGroup
+        self.maxPositionEmbeddings = maxPositionEmbeddings
+        self.layernormEpsilon = layernormEpsilon
+        self.ropeTheta = ropeTheta
+        self.swaRopeTheta = swaRopeTheta ?? ropeTheta
+        self.swaAttentionHeads = swaAttentionHeads ?? attentionHeads
+        self.swaKvHeads = swaKvHeads ?? kvHeads
+        let defaultHeadDim = hiddenSize / attentionHeads
+        self.headDim = headDim ?? defaultHeadDim
+        self.vHeadDim = vHeadDim ?? defaultHeadDim
+        self.swaHeadDim = swaHeadDim ?? self.headDim
+        self.swaVHeadDim = swaVHeadDim ?? self.vHeadDim
+        self.partialRotaryFactor = partialRotaryFactor
+    }
 
     enum CodingKeys: String, CodingKey {
         case modelType = "model_type"
@@ -515,6 +773,83 @@ internal struct MiMoV2FlashConfiguration: Codable, Sendable {
         case swaVHeadDim = "swa_v_head_dim"
         case partialRotaryFactor = "partial_rotary_factor"
     }
+
+    internal init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let hiddenSize = try container.decode(Int.self, forKey: .hiddenSize)
+        let attentionHeads = try container.decode(Int.self, forKey: .attentionHeads)
+        let kvHeads = try container.decode(Int.self, forKey: .kvHeads)
+        let hiddenLayers = try container.decode(Int.self, forKey: .hiddenLayers)
+        let nGroup = try container.decodeIfPresent(Int.self, forKey: .nGroup) ?? 1
+
+        self.init(
+            modelType: try container.decodeIfPresent(String.self, forKey: .modelType)
+                ?? "mimo_v2_flash",
+            numExpertsPerTok: try container.decodeIfPresent(Int.self, forKey: .numExpertsPerTok)
+                ?? 1,
+            hybridLayerPattern: try container.decodeIfPresent(
+                [Int].self,
+                forKey: .hybridLayerPattern
+            ) ?? Array(repeating: 0, count: hiddenLayers),
+            moeLayerFreq: try container.decodeIfPresent([Int].self, forKey: .moeLayerFreq)
+                ?? Array(repeating: 0, count: hiddenLayers),
+            addSwaAttentionSinkBias: try container.decodeIfPresent(
+                Bool.self,
+                forKey: .addSwaAttentionSinkBias
+            ) ?? false,
+            addFullAttentionSinkBias: try container.decodeIfPresent(
+                Bool.self,
+                forKey: .addFullAttentionSinkBias
+            ) ?? false,
+            slidingWindowSize: try container.decodeIfPresent(Int.self, forKey: .slidingWindowSize)
+                ?? 4_096,
+            vocabularySize: try container.decode(Int.self, forKey: .vocabularySize),
+            hiddenSize: hiddenSize,
+            intermediateSize: try container.decode(Int.self, forKey: .intermediateSize),
+            moeIntermediateSize: try container.decodeIfPresent(
+                Int.self,
+                forKey: .moeIntermediateSize
+            ),
+            hiddenLayers: hiddenLayers,
+            attentionHeads: attentionHeads,
+            kvHeads: kvHeads,
+            nSharedExperts: try container.decodeIfPresent(Int.self, forKey: .nSharedExperts),
+            nRoutedExperts: try container.decodeIfPresent(Int.self, forKey: .nRoutedExperts),
+            routedScalingFactor: try container.decodeIfPresent(
+                Float.self,
+                forKey: .routedScalingFactor
+            ),
+            topkMethod: try container.decodeIfPresent(String.self, forKey: .topkMethod)
+                ?? "noaux_tc",
+            scoringFunc: try container.decodeIfPresent(String.self, forKey: .scoringFunc)
+                ?? "sigmoid",
+            normTopkProb: try container.decodeIfPresent(Bool.self, forKey: .normTopkProb)
+                ?? false,
+            nGroup: nGroup,
+            topkGroup: try container.decodeIfPresent(Int.self, forKey: .topkGroup) ?? nGroup,
+            maxPositionEmbeddings: try container.decodeIfPresent(
+                Int.self,
+                forKey: .maxPositionEmbeddings
+            ) ?? 131_072,
+            layernormEpsilon: try container.decodeIfPresent(
+                Float.self,
+                forKey: .layernormEpsilon
+            ) ?? 1e-6,
+            ropeTheta: try container.decodeIfPresent(Float.self, forKey: .ropeTheta) ?? 10_000,
+            swaRopeTheta: try container.decodeIfPresent(Float.self, forKey: .swaRopeTheta),
+            headDim: try container.decodeIfPresent(Int.self, forKey: .headDim)
+                ?? (hiddenSize / attentionHeads),
+            vHeadDim: try container.decodeIfPresent(Int.self, forKey: .vHeadDim),
+            swaAttentionHeads: try container.decodeIfPresent(Int.self, forKey: .swaAttentionHeads),
+            swaKvHeads: try container.decodeIfPresent(Int.self, forKey: .swaKvHeads),
+            swaHeadDim: try container.decodeIfPresent(Int.self, forKey: .swaHeadDim),
+            swaVHeadDim: try container.decodeIfPresent(Int.self, forKey: .swaVHeadDim),
+            partialRotaryFactor: try container.decodeIfPresent(
+                Float.self,
+                forKey: .partialRotaryFactor
+            ) ?? 1
+        )
+    }
 }
 
 // MARK: - LoRA
@@ -522,5 +857,9 @@ internal struct MiMoV2FlashConfiguration: Codable, Sendable {
 extension MiMoV2FlashModel: LoRAModel {
     internal var loraLayers: [Module] {
         model.layers
+    }
+
+    internal func loraLinearLayers() -> LoRALinearLayers {
+        model.layers.map { ($0.attention, ["q_proj", "v_proj"]) }
     }
 }
