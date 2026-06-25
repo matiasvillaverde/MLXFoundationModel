@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 94 | Safe area for normal refactors. |
+| Files with no source-port marker | 95 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -65,6 +65,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/Olmo3.swift` | OLMo3 sliding/full layer schedule, attention layout, q/k norm, YaRN-vs-sliding RoPE selection, cache layout, tied/untied heads, greedy-token fast path, sanitizer, config defaults, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Qwen35.swift` | Qwen3.5 text config decoding, explicit layer schedule, attention and linear-attention layouts, cache planning, native MTP gating, tied/untied heads, greedy-token fast path, sanitizer, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Qwen35MoE.swift` | Qwen3.5 MoE top-level config fallback, shared top-level weight mapping, expert projection remapping, and sanitizer delegation. |
+| `Sources/MLXLocalModels/MLXLLM/Qwen2MoE.swift` | Qwen2 MoE attention layout, sparse routing, shared expert path, expert packing, tied-head sanitizing, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/LFM2MoE.swift` | LFM2 MoE typed layer planning, attention/convolution layouts, router planning, guarded decoder dispatch, cache/KV-head planning, sanitizer packing, greedy path preservation, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/NanoChat.swift` | NanoChat attention layout, custom rotary-frequency plan, RMSNorm/softcap planning, stable transformer checkpoint keys, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Lora+Data.swift` | LoRA JSONL/text data lookup and parsing. |
@@ -104,6 +105,7 @@ Current independence pass:
 - Replaced ERNIE 4.5 with an explicit attention layout, head-dimension fallback and override handling, stable checkpoint-compatible `model.*` parameter keys, tied/untied output handling, greedy-token fast path, and focused config/layout/forward/LoRA coverage.
 - Replaced OLMo3 with explicit sliding/full attention scheduling, q/k normalization, YaRN-vs-sliding RoPE selection, cache layout, tied/untied output handling, greedy-token fast path, and focused config/layout/cache/LoRA coverage.
 - Replaced Qwen3.5 text and MoE wrappers with explicit config schedule decoding, validated layout plans, shared top-level weight mapping, native MTP gating, greedy-token fast path, and focused schedule/layout/cache/MTP coverage.
+- Added Qwen2 MoE with explicit Qwen2 attention, softmax top-k routing, shared expert gating, expert tensor packing, tied-head cleanup, greedy-token fast path, and focused config/layout/forward/sanitizer coverage.
 - Replaced LFM2 MoE with typed layer planning, explicit attention/convolution layouts, guarded layer dispatch, complete expert packing, attention-only LoRA targeting, and focused plan/cache/sanitizer coverage.
 - Replaced Phi MoE with explicit attention and router plans, centralized LongRoPE support, safe expert packing, stable `model.*` parameter keys, greedy-token fast path, and focused config/layout/forward/sanitizer coverage.
 - Replaced MiniCPM with explicit attention and scaling plans, registered checkpoint-compatible module keys, tied-head sanitizing, greedy-token fast path, and focused config/layout/forward/sanitizer coverage.
@@ -172,6 +174,11 @@ test, which preloads one session and repeats generation on that same session.
 `glm4_moe` and `glm4_moe_lite` are still registry-only in the catalog, and no
 exact `glm4-moe` or `glm4-moe-lite` checkpoint directory is present locally.
 
+Qwen2 MoE parity was added with
+`mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit`. The checkpoint is 7.9 GB on disk
+and passed targeted real-model generation, rendered session requests, token
+grammar constraints, and the serialized `main` architecture sweep on this host.
+
 The selected `deepseek-r1-distill-qwen-7b-4bit` checkpoint is a Qwen-distilled
 model; its local `config.json` declares `model_type: qwen2`. The full
 `deepseek-r1-4bit` checkpoint remains the true `deepseek_v3` coverage target,
@@ -232,6 +239,17 @@ rather than a stable throughput claim.
 | `qwen3_5` | `qwen3.5` | 8 | 18 | 0.2109 | 0.0963 | 0.1146 | 69.81 | 37.94 |
 | `olmo3` | `olmo3` | 8 | 85 | 0.4827 | 0.2317 | 0.2510 | 31.87 | 16.57 |
 | `apertus` | `apertus` | 8 | 76 | 0.5640 | 0.3200 | 0.2440 | 32.78 | 14.18 |
+
+## Qwen2 MoE Parity Check
+
+These rows come from the Qwen2 MoE runs on 2026-06-25. The 8-token row is the
+targeted architecture check; the 4-token row is from the serialized
+`main` architecture sweep.
+
+| Architecture | Model | Generated | Prompt | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `qwen2_moe` | `qwen1.5-moe-a2.7b-chat-4bit` | 8 | 29 | 0.7086 | 0.6075 | 0.1011 | 79.14 | 11.29 |
+| `qwen2_moe` | `qwen1.5-moe-a2.7b-chat-4bit` | 4 | 29 | 0.1902 | 0.0991 | 0.0911 | 43.92 | 21.04 |
 
 ## Small-Fit Stress Baseline
 

@@ -39,7 +39,6 @@ Highest priority:
 - `seed_oss`
 - `step3p5`
 - `minicpm3`
-- `qwen2_moe`
 - `mixtral`
 - `dbrx`
 

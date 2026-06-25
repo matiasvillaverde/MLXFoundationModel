@@ -164,7 +164,6 @@ struct MLXLMParityTests {
         "plamo",
         "plamo2",
         "qwen",
-        "qwen2_moe",
         "recurrent_gemma",
         "rwkv7",
         "seed_oss",

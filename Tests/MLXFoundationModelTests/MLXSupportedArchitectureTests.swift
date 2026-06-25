@@ -62,6 +62,7 @@ struct MLXSupportedArchitectureTests {
         "phi3",
         "phimoe",
         "qwen2",
+        "qwen2_moe",
         "qwen3",
         "qwen3_5",
         "qwen3_5_moe",

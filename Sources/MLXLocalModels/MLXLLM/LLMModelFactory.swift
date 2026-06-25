@@ -58,6 +58,9 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
                 Gemma4AssistantModel($0)
             },
             modelType("qwen2", configuration: Qwen2Configuration.self) { Qwen2Model($0) },
+            modelType("qwen2_moe", configuration: Qwen2MoEConfiguration.self) {
+                Qwen2MoEModel($0)
+            },
             modelType("qwen3", configuration: Qwen3Configuration.self) { Qwen3Model($0) },
             modelType("qwen3_moe", configuration: Qwen3MoEConfiguration.self) {
                 Qwen3MoEModel($0)

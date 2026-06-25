@@ -187,6 +187,7 @@ struct MLXRealModelCatalogTests {
         "phi3",
         "phimoe",
         "qwen2",
+        "qwen2_moe",
         "qwen3",
         "qwen3_5",
         "qwen3_5_moe",
@@ -211,6 +212,7 @@ struct MLXRealModelCatalogTests {
         "openelm",
         "phi3",
         "qwen2",
+        "qwen2_moe",
         "qwen3",
         "smollm3",
         "starcoder2"
@@ -239,6 +241,7 @@ struct MLXRealModelCatalogTests {
         "olmo3",
         "openelm",
         "phi3",
+        "qwen2_moe",
         "qwen3",
         "qwen3_5",
         "qwen3_5_moe",

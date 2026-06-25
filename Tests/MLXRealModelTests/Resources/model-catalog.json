@@ -103,6 +103,19 @@
     "tags": ["small"]
   },
   {
+    "id": "qwen1.5-moe-a2.7b-chat-4bit",
+    "displayName": "Qwen1.5 MoE A2.7B Chat 4-bit",
+    "architecture": "qwen2_moe",
+    "repository": "mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit",
+    "relativePath": "Qwen1.5-MoE-A2.7B-Chat-4bit",
+    "prompt": "Write one short sentence about mixture-of-experts routing.",
+    "expectedTokens": ["expert", "experts", "routing", "model"],
+    "maxTokens": 18,
+    "minimumMemoryGB": 16,
+    "minimumDiskGB": 9,
+    "tags": ["main", "relevant", "small", "parity"]
+  },
+  {
     "id": "llama-3.2-1b-instruct-4bit",
     "displayName": "Llama 3.2 1B Instruct 4-bit",
     "architecture": "llama",
