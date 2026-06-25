@@ -1,25 +1,460 @@
 import Foundation
 import MLX
-
+import MLXFast
 import MLXNN
 
-// Port of https://github.com/ml-explore/mlx-examples/blob/main/llms/mlx_lm/models/phimoe.py
+internal struct PhiMoEAttentionLayout: Equatable, Sendable {
+    internal let hiddenSize: Int
+    internal let queryHeads: Int
+    internal let keyValueHeads: Int
+    internal let headSize: Int
+    internal let queryProjectionSize: Int
+    internal let keyValueProjectionSize: Int
+    internal let attentionScale: Float
 
-internal struct PhiMoEConfiguration: Codable, Sendable {
-    var modelType: String = "phimoe"
-    var vocabularySize: Int = 32_064
-    var hiddenSize: Int = 4_096
-    var intermediateSize: Int = 6_400
-    var hiddenLayers: Int = 32
-    var attentionHeads: Int = 32
-    var kvHeads: Int = 8
-    var maxPositionEmbeddings: Int = 131_072
-    var originalMaxPositionEmbeddings: Int = 4_096
-    var rmsNormEps: Float = 1e-6
+    internal init(_ config: PhiMoEConfiguration) {
+        precondition(config.hiddenSize > 0, "hidden_size must be positive")
+        precondition(config.attentionHeads > 0, "num_attention_heads must be positive")
+        precondition(config.kvHeads > 0, "num_key_value_heads must be positive")
+        precondition(
+            config.hiddenSize.isMultiple(of: config.attentionHeads),
+            "hidden_size must be divisible by num_attention_heads"
+        )
+        precondition(
+            config.attentionHeads.isMultiple(of: config.kvHeads),
+            "num_attention_heads must be divisible by num_key_value_heads"
+        )
+
+        self.hiddenSize = config.hiddenSize
+        self.queryHeads = config.attentionHeads
+        self.keyValueHeads = config.kvHeads
+        self.headSize = config.hiddenSize / config.attentionHeads
+        self.queryProjectionSize = queryHeads * headSize
+        self.keyValueProjectionSize = keyValueHeads * headSize
+        self.attentionScale = 1 / Float(headSize).squareRoot()
+    }
+}
+
+internal struct PhiMoERouterPlan: Equatable, Sendable {
+    internal let expertCount: Int
+    internal let expertsPerToken: Int
+
+    internal init(_ config: PhiMoEConfiguration) {
+        precondition(config.numLocalExperts > 0, "num_local_experts must be positive")
+        precondition(config.numExpertsPerToken > 0, "num_experts_per_tok must be positive")
+        precondition(
+            config.numExpertsPerToken <= config.numLocalExperts,
+            "num_experts_per_tok cannot exceed num_local_experts"
+        )
+
+        self.expertCount = config.numLocalExperts
+        self.expertsPerToken = config.numExpertsPerToken
+    }
+}
+
+internal struct PhiMoERotaryPlan: Equatable, Sendable {
+    internal enum Kind: Equatable, Sendable {
+        case rope(scale: Float)
+        case longRoPE(
+            shortFactor: [Float],
+            longFactor: [Float],
+            shortMScale: Float?,
+            longMScale: Float?
+        )
+    }
+
+    internal let dimensions: Int
+    internal let base: Float
+    internal let maxPositionEmbeddings: Int
+    internal let originalMaxPositionEmbeddings: Int
+    internal let kind: Kind
+
+    internal init(_ config: PhiMoEConfiguration, layout: PhiMoEAttentionLayout) {
+        precondition(config.maxPositionEmbeddings > 0, "max_position_embeddings must be positive")
+        precondition(
+            config.originalMaxPositionEmbeddings > 0,
+            "original_max_position_embeddings must be positive"
+        )
+
+        self.dimensions = layout.headSize
+        self.base = config.ropeTheta
+        self.maxPositionEmbeddings = config.maxPositionEmbeddings
+        self.originalMaxPositionEmbeddings = config.originalMaxPositionEmbeddings
+
+        if let scaling = config.ropeScaling,
+           scaling.usesLongRoPE || scaling.longFactor != nil || scaling.shortFactor != nil {
+            self.kind = .longRoPE(
+                shortFactor: scaling.shortFactor ?? [1],
+                longFactor: scaling.longFactor ?? [1],
+                shortMScale: scaling.shortMScale,
+                longMScale: scaling.longMScale
+            )
+        } else if config.ropeScaling?.type == "linear",
+                  let factor = config.ropeScaling?.factor,
+                  factor > 0 {
+            self.kind = .rope(scale: 1 / factor)
+        } else {
+            self.kind = .rope(scale: 1)
+        }
+    }
+}
+
+private enum PhiMoERotaryEmbedding {
+    case rope(RoPE)
+    case longRoPE(SuScaledRoPE)
+
+    init(_ plan: PhiMoERotaryPlan) {
+        switch plan.kind {
+        case .rope(let scale):
+            self = .rope(
+                RoPE(
+                    dimensions: plan.dimensions,
+                    traditional: false,
+                    base: plan.base,
+                    scale: scale
+                )
+            )
+        case .longRoPE(let shortFactor, let longFactor, let shortMScale, let longMScale):
+            self = .longRoPE(
+                SuScaledRoPE(
+                    dimensions: plan.dimensions,
+                    base: plan.base,
+                    maxPositionEmbeddings: plan.maxPositionEmbeddings,
+                    originalMaxPositionEmbeddings: plan.originalMaxPositionEmbeddings,
+                    shortFactor: shortFactor,
+                    longFactor: longFactor,
+                    shortMScale: shortMScale,
+                    longMScale: longMScale
+                )
+            )
+        }
+    }
+
+    func apply(to hiddenStates: MLXArray, offset: Int = 0) -> MLXArray {
+        switch self {
+        case .rope(let rope):
+            rope(hiddenStates, offset: offset)
+        case .longRoPE(let rope):
+            rope(hiddenStates, offset: offset)
+        }
+    }
+}
+
+private final class PhiMoEAttention: Module {
+    private let layout: PhiMoEAttentionLayout
+    private let rotaryEmbedding: PhiMoERotaryEmbedding
+
+    @ModuleInfo(key: "q_proj") private var queryProjection: Linear
+    @ModuleInfo(key: "k_proj") private var keyProjection: Linear
+    @ModuleInfo(key: "v_proj") private var valueProjection: Linear
+    @ModuleInfo(key: "o_proj") private var outputProjection: Linear
+
+    init(_ config: PhiMoEConfiguration) {
+        let layout = PhiMoEAttentionLayout(config)
+        self.layout = layout
+        self.rotaryEmbedding = PhiMoERotaryEmbedding(
+            PhiMoERotaryPlan(config, layout: layout)
+        )
+
+        self._queryProjection.wrappedValue = Linear(
+            layout.hiddenSize,
+            layout.queryProjectionSize,
+            bias: true
+        )
+        self._keyProjection.wrappedValue = Linear(
+            layout.hiddenSize,
+            layout.keyValueProjectionSize,
+            bias: true
+        )
+        self._valueProjection.wrappedValue = Linear(
+            layout.hiddenSize,
+            layout.keyValueProjectionSize,
+            bias: true
+        )
+        self._outputProjection.wrappedValue = Linear(
+            layout.queryProjectionSize,
+            layout.hiddenSize,
+            bias: true
+        )
+    }
+
+    func callAsFunction(
+        _ hiddenStates: MLXArray,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode,
+        cache: KVCache?
+    ) -> MLXArray {
+        let batchSize = hiddenStates.dim(0)
+        let tokenCount = hiddenStates.dim(1)
+
+        var queries = queryProjection(hiddenStates)
+            .reshaped(batchSize, tokenCount, layout.queryHeads, layout.headSize)
+            .transposed(0, 2, 1, 3)
+        var keys = keyProjection(hiddenStates)
+            .reshaped(batchSize, tokenCount, layout.keyValueHeads, layout.headSize)
+            .transposed(0, 2, 1, 3)
+        let values = valueProjection(hiddenStates)
+            .reshaped(batchSize, tokenCount, layout.keyValueHeads, layout.headSize)
+            .transposed(0, 2, 1, 3)
+
+        if let cache {
+            queries = rotaryEmbedding.apply(to: queries, offset: cache.offset)
+            keys = rotaryEmbedding.apply(to: keys, offset: cache.offset)
+        } else {
+            queries = rotaryEmbedding.apply(to: queries)
+            keys = rotaryEmbedding.apply(to: keys)
+        }
+
+        let attentionOutput = attentionWithCacheUpdate(
+            queries: queries,
+            keys: keys,
+            values: values,
+            cache: cache,
+            scale: layout.attentionScale,
+            mask: mask
+        )
+        .transposed(0, 2, 1, 3)
+        .reshaped(batchSize, tokenCount, -1)
+
+        return outputProjection(attentionOutput)
+    }
+}
+
+private final class PhiMoESparseBlock: Module {
+    private let routerPlan: PhiMoERouterPlan
+
+    @ModuleInfo(key: "gate") private var gate: Linear
+    @ModuleInfo(key: "switch_mlp") private var experts: SwitchGLU
+
+    init(_ config: PhiMoEConfiguration) {
+        let routerPlan = PhiMoERouterPlan(config)
+        self.routerPlan = routerPlan
+        self._gate.wrappedValue = Linear(
+            config.hiddenSize,
+            routerPlan.expertCount,
+            bias: false
+        )
+        self._experts.wrappedValue = SwitchGLU(
+            inputDims: config.hiddenSize,
+            hiddenDims: config.intermediateSize,
+            numExperts: routerPlan.expertCount
+        )
+    }
+
+    func callAsFunction(_ hiddenStates: MLXArray) -> MLXArray {
+        let routerLogits = gate(hiddenStates)
+        let expertIndices = stopGradient(
+            argPartition(
+                -routerLogits,
+                kth: routerPlan.expertsPerToken - 1,
+                axis: -1
+            )[.ellipsis, ..<routerPlan.expertsPerToken]
+        )
+        let routingWeights = softmax(
+            takeAlong(routerLogits, expertIndices, axis: -1),
+            axis: -1,
+            precise: true
+        )
+
+        return (experts(hiddenStates, expertIndices) * routingWeights[.ellipsis, .newAxis])
+            .sum(axis: -2)
+    }
+}
+
+private final class PhiMoEDecoderLayer: Module {
+    @ModuleInfo(key: "self_attn") fileprivate var selfAttention: PhiMoEAttention
+    @ModuleInfo(key: "block_sparse_moe") private var sparseBlock: PhiMoESparseBlock
+    @ModuleInfo(key: "input_layernorm") private var inputLayerNorm: LayerNorm
+    @ModuleInfo(key: "post_attention_layernorm") private var postAttentionLayerNorm: LayerNorm
+
+    init(_ config: PhiMoEConfiguration) {
+        self._selfAttention.wrappedValue = PhiMoEAttention(config)
+        self._sparseBlock.wrappedValue = PhiMoESparseBlock(config)
+        self._inputLayerNorm.wrappedValue = LayerNorm(
+            dimensions: config.hiddenSize,
+            eps: config.rmsNormEps
+        )
+        self._postAttentionLayerNorm.wrappedValue = LayerNorm(
+            dimensions: config.hiddenSize,
+            eps: config.rmsNormEps
+        )
+    }
+
+    func callAsFunction(
+        _ hiddenStates: MLXArray,
+        mask: MLXFast.ScaledDotProductAttentionMaskMode,
+        cache: KVCache?
+    ) -> MLXArray {
+        let afterAttention = hiddenStates
+            + selfAttention(inputLayerNorm(hiddenStates), mask: mask, cache: cache)
+        return afterAttention + sparseBlock(postAttentionLayerNorm(afterAttention))
+    }
+}
+
+private final class PhiMoEBackbone: Module {
+    @ModuleInfo(key: "embed_tokens") fileprivate var tokenEmbeddings: Embedding
+    @ModuleInfo fileprivate var layers: [PhiMoEDecoderLayer]
+    @ModuleInfo(key: "norm") private var finalNorm: LayerNorm
+
+    init(_ config: PhiMoEConfiguration) {
+        precondition(config.vocabularySize > 0, "vocab_size must be positive")
+
+        self._tokenEmbeddings.wrappedValue = Embedding(
+            embeddingCount: config.vocabularySize,
+            dimensions: config.hiddenSize
+        )
+        self.layers = (0 ..< config.hiddenLayers).map { _ in
+            PhiMoEDecoderLayer(config)
+        }
+        self._finalNorm.wrappedValue = LayerNorm(
+            dimensions: config.hiddenSize,
+            eps: config.rmsNormEps
+        )
+    }
+
+    func callAsFunction(_ tokens: MLXArray, cache: [KVCache]?) -> MLXArray {
+        var hiddenStates = tokenEmbeddings(tokens)
+        let mask = createAttentionMask(h: hiddenStates, cache: cache)
+
+        for (layerIndex, layer) in layers.enumerated() {
+            hiddenStates = layer(
+                hiddenStates,
+                mask: mask,
+                cache: cache?[layerIndex]
+            )
+        }
+
+        return finalNorm(hiddenStates)
+    }
+}
+
+internal final class PhiMoEModel: Module, LLMModel, KVCacheDimensionProvider,
+    GreedyTokenModel {
+    public let vocabularySize: Int
+    public let kvHeads: [Int]
+
+    @ModuleInfo(key: "model") fileprivate var model: PhiMoEBackbone
+    @ModuleInfo(key: "lm_head") private var lmHead: Linear
+
+    private let configuration: PhiMoEConfiguration
+
+    public init(_ config: PhiMoEConfiguration) {
+        self.configuration = config
+        self.vocabularySize = config.vocabularySize
+        self.kvHeads = Array(repeating: config.kvHeads, count: config.hiddenLayers)
+        self._model.wrappedValue = PhiMoEBackbone(config)
+        self._lmHead.wrappedValue = Linear(
+            config.hiddenSize,
+            config.vocabularySize,
+            bias: true
+        )
+    }
+
+    public func callAsFunction(_ tokens: MLXArray, cache: [KVCache]?) -> MLXArray {
+        lmHead(model(tokens, cache: cache))
+    }
+
+    internal func greedyToken(
+        _ input: LMInput.Text,
+        cache: [KVCache]?,
+        state: LMOutput.State?
+    ) -> GreedyTokenOutput {
+        let hiddenStates = lastTokenHiddenState(model(input[text: .newAxis].tokens, cache: cache))
+        return greedyTokenOutput(logits: lmHead(hiddenStates), state: state)
+    }
+
+    public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
+        PhiMoEWeightSanitizer.sanitize(
+            weights,
+            layerCount: configuration.hiddenLayers,
+            expertCount: configuration.numLocalExperts
+        )
+    }
+}
+
+private enum PhiMoEWeightSanitizer {
+    private static let projectionNameMap = [
+        ("w1", "gate_proj"),
+        ("w2", "down_proj"),
+        ("w3", "up_proj")
+    ]
+    private static let tensorSuffixes = ["weight", "scales", "biases"]
+
+    static func sanitize(
+        _ weights: [String: MLXArray],
+        layerCount: Int,
+        expertCount: Int
+    ) -> [String: MLXArray] {
+        var sanitized = weights.filter { key, _ in
+            !key.contains("self_attn.rotary_emb.inv_freq")
+        }
+
+        for layerIndex in 0 ..< layerCount {
+            let layerPrefix = "model.layers.\(layerIndex).block_sparse_moe"
+            for (sourceProjection, targetProjection) in projectionNameMap {
+                for suffix in tensorSuffixes {
+                    let sourceKeys = (0 ..< expertCount).map { expertIndex in
+                        "\(layerPrefix).experts.\(expertIndex).\(sourceProjection).\(suffix)"
+                    }
+                    guard sourceKeys.allSatisfy({ sanitized[$0] != nil }) else { continue }
+
+                    let stackedTensors = sourceKeys.compactMap { sanitized.removeValue(forKey: $0) }
+                    sanitized["\(layerPrefix).switch_mlp.\(targetProjection).\(suffix)"] =
+                        stacked(stackedTensors)
+                }
+            }
+        }
+
+        return sanitized
+    }
+}
+
+internal struct PhiMoEConfiguration: Codable, Sendable, Equatable {
+    var modelType: String
+    var vocabularySize: Int
+    var hiddenSize: Int
+    var intermediateSize: Int
+    var hiddenLayers: Int
+    var attentionHeads: Int
+    var kvHeads: Int
+    var maxPositionEmbeddings: Int
+    var originalMaxPositionEmbeddings: Int
+    var rmsNormEps: Float
     var ropeScaling: RopeScalingWithFactorArrays?
-    var numLocalExperts: Int = 16
-    var numExpertsPerToken: Int = 2
-    var ropeTheta: Float = 10_000.0
+    var numLocalExperts: Int
+    var numExpertsPerToken: Int
+    var ropeTheta: Float
+
+    internal init(
+        modelType: String = "phimoe",
+        vocabularySize: Int = 32_064,
+        hiddenSize: Int = 4_096,
+        intermediateSize: Int = 6_400,
+        hiddenLayers: Int = 32,
+        attentionHeads: Int = 32,
+        kvHeads: Int = 8,
+        maxPositionEmbeddings: Int = 131_072,
+        originalMaxPositionEmbeddings: Int = 4_096,
+        rmsNormEps: Float = 1e-6,
+        ropeScaling: RopeScalingWithFactorArrays? = nil,
+        numLocalExperts: Int = 16,
+        numExpertsPerToken: Int = 2,
+        ropeTheta: Float = 10_000
+    ) {
+        self.modelType = modelType
+        self.vocabularySize = vocabularySize
+        self.hiddenSize = hiddenSize
+        self.intermediateSize = intermediateSize
+        self.hiddenLayers = hiddenLayers
+        self.attentionHeads = attentionHeads
+        self.kvHeads = kvHeads
+        self.maxPositionEmbeddings = maxPositionEmbeddings
+        self.originalMaxPositionEmbeddings = originalMaxPositionEmbeddings
+        self.rmsNormEps = rmsNormEps
+        self.ropeScaling = ropeScaling
+        self.numLocalExperts = numLocalExperts
+        self.numExpertsPerToken = numExpertsPerToken
+        self.ropeTheta = ropeTheta
+    }
 
     enum CodingKeys: String, CodingKey {
         case modelType = "model_type"
@@ -37,232 +472,55 @@ internal struct PhiMoEConfiguration: Codable, Sendable {
         case numExpertsPerToken = "num_experts_per_tok"
         case ropeTheta = "rope_theta"
     }
-}
 
-private class Attention: Module {
-    let args: PhiMoEConfiguration
-    let scale: Float
-
-    @ModuleInfo(key: "q_proj") var wq: Linear
-    @ModuleInfo(key: "k_proj") var wk: Linear
-    @ModuleInfo(key: "v_proj") var wv: Linear
-    @ModuleInfo(key: "o_proj") var wo: Linear
-
-    let rope: SuScaledRotaryEmbedding
-
-    init(_ args: PhiMoEConfiguration) {
-        self.args = args
-
-        let dim = args.hiddenSize
-        let heads = args.attentionHeads
-        let kvHeads = args.kvHeads
-
-        let headDim = args.hiddenSize / heads
-        self.scale = pow(Float(headDim), -0.5)
-
-        self._wq.wrappedValue = Linear(dim, heads * headDim, bias: true)
-        self._wk.wrappedValue = Linear(dim, kvHeads * headDim, bias: true)
-        self._wv.wrappedValue = Linear(dim, kvHeads * headDim, bias: true)
-        self._wo.wrappedValue = Linear(heads * headDim, dim, bias: true)
-
-        self.rope = SuScaledRotaryEmbedding(
-            dimensions: headDim,
-            base: args.ropeTheta,
-            maxPositionEmbeddings: args.maxPositionEmbeddings,
-            originalMaxPositionEmbeddings: args.originalMaxPositionEmbeddings,
-            longFactor: args.ropeScaling?.longFactor as? [Float] ?? [1.0],
-            longMScale: args.ropeScaling?.longMScale as? Float
+    internal init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: Self.CodingKeys.self)
+        self.init(
+            modelType: try container.decodeIfPresent(String.self, forKey: .modelType)
+                ?? "phimoe",
+            vocabularySize: try container.decodeIfPresent(
+                Int.self,
+                forKey: .vocabularySize
+            ) ?? 32_064,
+            hiddenSize: try container.decodeIfPresent(Int.self, forKey: .hiddenSize) ?? 4_096,
+            intermediateSize: try container.decodeIfPresent(
+                Int.self,
+                forKey: .intermediateSize
+            ) ?? 6_400,
+            hiddenLayers: try container.decodeIfPresent(Int.self, forKey: .hiddenLayers) ?? 32,
+            attentionHeads: try container.decodeIfPresent(
+                Int.self,
+                forKey: .attentionHeads
+            ) ?? 32,
+            kvHeads: try container.decodeIfPresent(Int.self, forKey: .kvHeads) ?? 8,
+            maxPositionEmbeddings: try container.decodeIfPresent(
+                Int.self,
+                forKey: .maxPositionEmbeddings
+            ) ?? 131_072,
+            originalMaxPositionEmbeddings: try container.decodeIfPresent(
+                Int.self,
+                forKey: .originalMaxPositionEmbeddings
+            ) ?? 4_096,
+            rmsNormEps: try container.decodeIfPresent(Float.self, forKey: .rmsNormEps) ?? 1e-6,
+            ropeScaling: try container.decodeIfPresent(
+                RopeScalingWithFactorArrays.self,
+                forKey: .ropeScaling
+            ),
+            numLocalExperts: try container.decodeIfPresent(
+                Int.self,
+                forKey: .numLocalExperts
+            ) ?? 16,
+            numExpertsPerToken: try container.decodeIfPresent(
+                Int.self,
+                forKey: .numExpertsPerToken
+            ) ?? 2,
+            ropeTheta: try container.decodeIfPresent(Float.self, forKey: .ropeTheta) ?? 10_000
         )
     }
-
-    func callAsFunction(
-        _ x: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode, cache: KVCache?
-    ) -> MLXArray {
-        let (B, L, _) = (x.dim(0), x.dim(1), x.dim(2))
-
-        let queries = wq(x)
-        let keys = wk(x)
-        let values = wv(x)
-
-        // Prepare the queries, keys and values for the attention computation
-        var q = queries.reshaped(B, L, args.attentionHeads, -1).transposed(0, 2, 1, 3)
-        var k = keys.reshaped(B, L, args.kvHeads, -1).transposed(0, 2, 1, 3)
-        let v = values.reshaped(B, L, args.kvHeads, -1).transposed(0, 2, 1, 3)
-
-        if let cache {
-            q = rope(q, offset: cache.offset)
-            k = rope(k, offset: cache.offset)
-        } else {
-            q = rope(q)
-            k = rope(k)
-        }
-
-        let output = attentionWithCacheUpdate(
-            queries: q,
-            keys: k,
-            values: v,
-            cache: cache,
-            scale: scale,
-            mask: mask
-        )
-        .transposed(0, 2, 1, 3)
-        .reshaped(B, L, -1)
-
-        return wo(output)
-    }
 }
-
-private class PhiMoESparseMoeBlock: Module {
-    let hiddenDim: Int
-    let ffnDim: Int
-    let numExperts: Int
-    let topK: Int
-
-    @ModuleInfo(key: "gate") var gate: Linear
-    @ModuleInfo(key: "switch_mlp") var switchMLP: SwitchGLU
-
-    init(_ args: PhiMoEConfiguration) {
-        self.hiddenDim = args.hiddenSize
-        self.ffnDim = args.intermediateSize
-        self.numExperts = args.numLocalExperts
-        self.topK = args.numExpertsPerToken
-
-        self._gate.wrappedValue = Linear(hiddenDim, numExperts, bias: false)
-        self._switchMLP.wrappedValue = SwitchGLU(
-            inputDims: hiddenDim, hiddenDims: ffnDim, numExperts: numExperts)
-    }
-
-    func callAsFunction(_ x: MLXArray) -> MLXArray {
-        let gates = gate(x)
-
-        let k = self.topK
-        let inds = MLX.stopGradient(
-            MLX.argPartition(
-                -gates,
-                kth: k - 1,
-                axis: -1
-            )[.ellipsis, ..<k])
-        let scores = MLX.softmax(MLX.takeAlong(gates, inds, axis: -1), axis: -1, precise: true)
-
-        let y = switchMLP(x, inds)
-        return (y * scores[.ellipsis, .newAxis]).sum(axis: -2)
-    }
-}
-
-private class PhiMoEDecoderLayer: Module {
-    let hiddenSize: Int
-
-    @ModuleInfo(key: "self_attn") var selfAttn: Attention
-    @ModuleInfo(key: "block_sparse_moe") var blockSparseMoe: PhiMoESparseMoeBlock
-    @ModuleInfo(key: "input_layernorm") var inputLayerNorm: LayerNorm
-    @ModuleInfo(key: "post_attention_layernorm") var postAttentionLayerNorm: LayerNorm
-
-    init(_ args: PhiMoEConfiguration) {
-        self.hiddenSize = args.hiddenSize
-
-        self._selfAttn.wrappedValue = Attention(args)
-        self._blockSparseMoe.wrappedValue = PhiMoESparseMoeBlock(args)
-        self._inputLayerNorm.wrappedValue = LayerNorm(
-            dimensions: args.hiddenSize, eps: args.rmsNormEps)
-        self._postAttentionLayerNorm.wrappedValue = LayerNorm(
-            dimensions: args.hiddenSize, eps: args.rmsNormEps)
-    }
-
-    func callAsFunction(
-        _ x: MLXArray, mask: MLXFast.ScaledDotProductAttentionMaskMode, cache: KVCache?
-    ) -> MLXArray {
-        var residual = x
-        var hiddenStates = inputLayerNorm(x)
-        hiddenStates = selfAttn(hiddenStates, mask: mask, cache: cache)
-        hiddenStates = residual + hiddenStates
-
-        residual = hiddenStates
-        hiddenStates = postAttentionLayerNorm(hiddenStates)
-        hiddenStates = blockSparseMoe(hiddenStates)
-        hiddenStates = residual + hiddenStates
-
-        return hiddenStates
-    }
-}
-
-private class PhiMoEModelInner: Module {
-    let args: PhiMoEConfiguration
-
-    @ModuleInfo(key: "embed_tokens") var embedTokens: Embedding
-    let layers: [PhiMoEDecoderLayer]
-    @ModuleInfo(key: "norm") var norm: LayerNorm
-
-    init(_ args: PhiMoEConfiguration) {
-        self.args = args
-
-        self._embedTokens.wrappedValue = Embedding(
-            embeddingCount: args.vocabularySize, dimensions: args.hiddenSize)
-        self.layers = (0 ..< args.hiddenLayers).map { _ in PhiMoEDecoderLayer(args) }
-        self._norm.wrappedValue = LayerNorm(dimensions: args.hiddenSize, eps: args.rmsNormEps)
-    }
-
-    func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
-        var h = embedTokens(inputs)
-
-        let mask = createAttentionMask(h: h, cache: cache)
-
-        for (i, layer) in layers.enumerated() {
-            h = layer(h, mask: mask, cache: cache?[i])
-        }
-
-        return norm(h)
-    }
-}
-
-internal class PhiMoEModel: Module, LLMModel, KVCacheDimensionProvider {
-    public let vocabularySize: Int
-    public let kvHeads: [Int]
-
-    fileprivate let model: PhiMoEModelInner
-    @ModuleInfo(key: "lm_head") var lmHead: Linear
-
-    public init(_ args: PhiMoEConfiguration) {
-        self.vocabularySize = args.vocabularySize
-        self.kvHeads = Array(repeating: args.kvHeads, count: args.hiddenLayers)
-        self.model = PhiMoEModelInner(args)
-        self._lmHead.wrappedValue = Linear(args.hiddenSize, args.vocabularySize, bias: true)
-    }
-
-    public func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
-        let out = model(inputs, cache: cache)
-        return lmHead(out)
-    }
-
-    public func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
-        var sanitizedWeights = weights
-        if sanitizedWeights["model.layers.0.block_sparse_moe.experts.0.w1.weight"] == nil {
-            return sanitizedWeights
-        }
-
-        for l in 0 ..< model.args.hiddenLayers {
-            let prefix = "model.layers.\(l)"
-            for (n, m) in [("w1", "gate_proj"), ("w2", "down_proj"), ("w3", "up_proj")] {
-                for k in ["weight", "scales", "biases"] {
-                    if sanitizedWeights["\(prefix).block_sparse_moe.experts.0.\(n).\(k)"] != nil {
-                        let toJoin = (0 ..< model.args.numLocalExperts).map { e in
-                            sanitizedWeights.removeValue(
-                                forKey: "\(prefix).block_sparse_moe.experts.\(e).\(n).\(k)")!
-                        }
-                        sanitizedWeights["\(prefix).block_sparse_moe.switch_mlp.\(m).\(k)"] =
-                            MLX.stacked(toJoin)
-                    }
-                }
-            }
-        }
-
-        return sanitizedWeights
-    }
-}
-
-// MARK: - LoRA
 
 extension PhiMoEModel: LoRAModel {
     public func loraLinearLayers() -> LoRALinearLayers {
-        model.layers.map { ($0.selfAttn, ["q_proj", "v_proj"]) }
+        model.layers.map { ($0.selfAttention, ["q_proj", "v_proj"]) }
     }
 }
