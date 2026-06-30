@@ -686,6 +686,19 @@
     "tags": ["main", "relevant", "small", "parity", "stress"]
   },
   {
+    "id": "tiny-starcoder-py",
+    "displayName": "Tiny StarCoder Py",
+    "architecture": "gpt_bigcode",
+    "repository": "bigcode/tiny_starcoder_py",
+    "relativePath": "tiny_starcoder_py",
+    "prompt": "def hello_world():",
+    "expectedTokens": ["print", "return", "hello"],
+    "maxTokens": 16,
+    "minimumMemoryGB": 4,
+    "minimumDiskGB": 2,
+    "tags": ["main", "relevant", "small", "parity", "stress"]
+  },
+  {
     "id": "pythia-70m-deduped",
     "displayName": "Pythia 70M Deduped",
     "architecture": "gpt_neox",
