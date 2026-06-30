@@ -265,6 +265,19 @@
     "tags": ["relevant", "latest", "small"]
   },
   {
+    "id": "phi-3-small-8k-instruct-aq4-32",
+    "displayName": "Phi-3 Small 8K Instruct AQ4_32",
+    "architecture": "phi3small",
+    "repository": "mlx-community/Phi-3-small-8k-instruct-AQ4_32",
+    "relativePath": "Phi-3-small-8k-instruct-AQ4_32",
+    "prompt": "Write one short sentence about local language models.",
+    "expectedTokens": ["local", "model", "models"],
+    "maxTokens": 12,
+    "minimumMemoryGB": 16,
+    "minimumDiskGB": 5,
+    "tags": ["main", "relevant", "small-fit", "parity", "stress"]
+  },
+  {
     "id": "phi-3.5-moe-instruct-4bit",
     "displayName": "Phi-3.5 MoE Instruct 4-bit",
     "architecture": "phimoe",

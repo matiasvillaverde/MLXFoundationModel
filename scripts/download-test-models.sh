@@ -130,7 +130,11 @@ try:
 
     names = set(os.listdir(target))
     has_config = "config.json" in names
-    has_tokenizer = "tokenizer.json" in names or "tokenizer.model" in names
+    has_tokenizer = (
+        "tokenizer.json" in names
+        or "tokenizer.model" in names
+        or "cl100k_base.tiktoken" in names
+    )
     has_weights = (
         "model.safetensors.index.json" in names
         or any(name.endswith(".safetensors") for name in names)

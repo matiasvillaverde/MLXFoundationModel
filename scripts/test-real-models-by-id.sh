@@ -147,7 +147,11 @@ MODEL_ARTIFACT_EXTENSIONS = {".bin", ".mlx", ".npz", ".safetensors"}
 def has_model_files(model):
     path = model_dir / model["relativePath"]
     has_config = (path / "config.json").exists()
-    has_tokenizer = (path / "tokenizer.json").exists() or (path / "tokenizer.model").exists()
+    has_tokenizer = (
+        (path / "tokenizer.json").exists()
+        or (path / "tokenizer.model").exists()
+        or (path / "cl100k_base.tiktoken").exists()
+    )
     has_weights = (
         (path / "model.safetensors").exists()
         or (path / "model.safetensors.index.json").exists()
