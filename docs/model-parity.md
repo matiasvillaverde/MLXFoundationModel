@@ -47,7 +47,6 @@ MoE and recent family gaps:
 - `cohere2`
 - `ernie4_5_moe`
 - `exaone_moe`
-- `granitemoe`
 - `hunyuan`, `hunyuan_v1_dense`
 - `bailing_moe_linear`
 - `afm7`

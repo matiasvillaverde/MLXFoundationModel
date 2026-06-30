@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 106 | Safe area for normal refactors. |
+| Files with no source-port marker | 107 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -69,6 +69,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/PhiMoE.swift` | Phi MoE attention layout, LongRoPE planning, router planning, guarded expert packing, stable checkpoint keys, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/SwitchLayers.swift` | Expert dispatch permutation, SwitchGLU routing, dense/quantized expert projection, and sorted-dispatch restoration. |
 | `Sources/MLXLocalModels/MLXLLM/Granite.swift` | Granite attention layout, RoPE scaling plan, residual/embedding/logit scaling, tied/untied heads, greedy-token fast path, config defaults, stable checkpoint keys, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/GraniteMoE.swift` | GraniteMoE attention layout, RoPE scaling plan, top-k expert routing, packed checkpoint remapping, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Ernie4_5.swift` | ERNIE 4.5 attention layout, explicit head-dimension override support, tied/untied heads, greedy-token fast path, config defaults, stable checkpoint keys, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Olmo2.swift` | OLMo2 attention layout, q/k normalization, checkpoint-compatible `model.*` keys, tied-head sanitizing, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Olmo3.swift` | OLMo3 sliding/full layer schedule, attention layout, q/k norm, YaRN-vs-sliding RoPE selection, cache layout, tied/untied heads, greedy-token fast path, sanitizer, config defaults, and LoRA target discovery. |
@@ -189,10 +190,10 @@ gate. The test runner selected 52 downloadable models and skipped 9 oversized
 models on this 32 GB host. Each selected model ran serialized generation,
 rendered session requests, and token-level grammar constraint checks.
 
-A follow-up serialized `main` sweep on 2026-06-30 selected 29 downloadable
-models, including DeepSeek V2, EXAONE 3.5, Helium, Jamba, Mamba, and Mamba2,
-and passed generation, rendered session, token grammar, and configured stress
-checks.
+A follow-up serialized `main` sweep on 2026-06-30 selected 30 downloadable
+models, including DeepSeek V2, EXAONE 3.5, GraniteMoE, Helium, Jamba, Mamba,
+and Mamba2, and passed generation, rendered session, token grammar, and
+configured stress checks.
 
 The current sweep adds 32 GB-friendly checkpoints for `qwen3_moe`, `mistral`,
 `gpt_oss`, `qwen3_5_moe`, and `nemotron_h`. These entries also run the stress
@@ -228,6 +229,11 @@ OLMo parity was added with `allenai/OLMo-1B-hf`. The checkpoint is 4.4 GB on
 disk, uses raw Transformers OLMo keys, and passed targeted real-model
 generation, rendered session requests, token grammar constraints, and stress
 generation on this host.
+
+GraniteMoE parity was added with
+`ibm-granite/granite-3.1-1b-a400m-instruct`. The checkpoint is 2.5 GB on disk
+and passed targeted real-model generation, rendered session requests, token
+grammar constraints, and stress generation on this host.
 
 Jamba parity was added with `mlx-community/AI21-Jamba-Reasoning-3B-4bit`. The
 checkpoint is 1.6 GB on disk and passed targeted real-model generation,
@@ -487,6 +493,23 @@ Best stress iteration from the same run:
 | Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `deepseek_v2` | `deepseek-v2-lite-chat-4bit` | 32 | 0.3656 | 0.0988 | 0.2669 | 119.91 | 87.52 |
+
+## GraniteMoE Parity Check
+
+These rows come from the targeted release GraniteMoE real-model run and the
+serialized debug `main` sweep on 2026-06-30.
+
+| Architecture | Model | Generated | Prompt | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `granitemoe` | `granite-3.1-1b-a400m-instruct` release targeted | 4 | 67 | 0.4020 | 0.3575 | 0.0445 | 89.95 | 9.95 |
+| `granitemoe` | `granite-3.1-1b-a400m-instruct` debug main | 2 | 67 | 0.1284 | 0.0709 | 0.0574 | 34.82 | 15.58 |
+
+Best stress iterations from the same runs:
+
+| Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `granitemoe` | `granite-3.1-1b-a400m-instruct` release targeted | 32 | 0.1844 | 0.0204 | 0.1641 | 195.02 | 173.49 |
+| `granitemoe` | `granite-3.1-1b-a400m-instruct` debug main | 32 | 0.8046 | 0.0346 | 0.7699 | 41.56 | 39.77 |
 
 ## Small-Fit Stress Baseline
 
