@@ -686,6 +686,19 @@
     "tags": ["main", "relevant", "small", "parity", "stress"]
   },
   {
+    "id": "pythia-70m-deduped",
+    "displayName": "Pythia 70M Deduped",
+    "architecture": "gpt_neox",
+    "repository": "EleutherAI/pythia-70m-deduped",
+    "relativePath": "pythia-70m-deduped",
+    "prompt": "The capital of France is",
+    "expectedTokens": ["Paris"],
+    "maxTokens": 8,
+    "minimumMemoryGB": 4,
+    "minimumDiskGB": 1,
+    "tags": ["main", "relevant", "small", "parity", "stress"]
+  },
+  {
     "id": "gpt-oss",
     "displayName": "GPT OSS",
     "architecture": "gpt_oss",

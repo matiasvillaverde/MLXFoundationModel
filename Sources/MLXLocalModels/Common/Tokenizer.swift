@@ -123,6 +123,7 @@ internal final class TokenizerReplacementRegistry: @unchecked Sendable {
         "Qwen2Tokenizer": "PreTrainedTokenizer",
         "Qwen3Tokenizer": "PreTrainedTokenizer",
         "CohereTokenizer": "PreTrainedTokenizer",
+        "GPTNeoXTokenizer": "PreTrainedTokenizer",
     ]
 
     private let lock = NSLock()

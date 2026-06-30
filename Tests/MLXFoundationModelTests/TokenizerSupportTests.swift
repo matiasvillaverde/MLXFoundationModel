@@ -29,6 +29,14 @@ struct TokenizerSupportTests {
         #expect(rewriter.rewrite(config) == config)
     }
 
+    @Test("default registry rewrites GPT-NeoX tokenizer class")
+    func defaultRegistryRewritesGPTNeoXTokenizerClass() {
+        let rewriter = TokenizerConfigurationRewriter(registry: TokenizerReplacementRegistry())
+        let config = Config(["tokenizer_class": Config("GPTNeoXTokenizer")])
+
+        #expect(rewriter.rewrite(config).tokenizerClass?.string() == "PreTrainedTokenizer")
+    }
+
     @Test("supports registry replacement updates and removals")
     func supportsRegistryUpdatesAndRemovals() {
         let registry = TokenizerReplacementRegistry(replacements: ["A": "B"])
