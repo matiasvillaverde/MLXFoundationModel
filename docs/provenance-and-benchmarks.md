@@ -179,6 +179,10 @@ gate. The test runner selected 52 downloadable models and skipped 9 oversized
 models on this 32 GB host. Each selected model ran serialized generation,
 rendered session requests, and token-level grammar constraint checks.
 
+A follow-up serialized `main` sweep on 2026-06-30 selected 24 downloadable
+models, including Jamba, and passed generation, rendered session, token grammar,
+and configured stress checks.
+
 The current sweep adds 32 GB-friendly checkpoints for `qwen3_moe`, `mistral`,
 `gpt_oss`, `qwen3_5_moe`, and `nemotron_h`. These entries also run the stress
 test, which preloads one session and repeats generation on that same session.
@@ -213,6 +217,11 @@ OLMo parity was added with `allenai/OLMo-1B-hf`. The checkpoint is 4.4 GB on
 disk, uses raw Transformers OLMo keys, and passed targeted real-model
 generation, rendered session requests, token grammar constraints, and stress
 generation on this host.
+
+Jamba parity was added with `mlx-community/AI21-Jamba-Reasoning-3B-4bit`. The
+checkpoint is 1.6 GB on disk and passed targeted real-model generation,
+rendered session requests, token grammar constraints, and stress generation on
+this host.
 
 StableLM parity was added with `mlx-community/stablelm-2-zephyr-1_6b-4bit`.
 The checkpoint is 1.1 GB on disk and passed targeted real-model generation,
@@ -274,6 +283,7 @@ rather than a stable throughput claim.
 | `acereason` | `acereason-nemotron-1.1-7b-4bit` | 8 | 33 | 0.3704 | 0.1471 | 0.2232 | 35.84 | 21.60 |
 | `starcoder2` | `starcoder2-3b-4bit` | 8 | 6 | 0.1228 | 0.0452 | 0.0777 | 102.98 | 65.12 |
 | `openelm` | `openelm-270m-instruct` | 8 | 5 | 0.0515 | 0.0112 | 0.0403 | 198.52 | 155.37 |
+| `jamba` | `jamba-reasoning-3b-4bit` | 8 | 46 | 0.2802 | 0.1963 | 0.0839 | 95.37 | 28.55 |
 | `internlm2` | `internlm2.5-7b-chat-4bit` | 8 | 18 | 0.2115 | 0.0700 | 0.1415 | 56.52 | 37.82 |
 | `falcon_h1` | `falcon-h1-0.5b-instruct-4bit` | 8 | 19 | 0.0965 | 0.0459 | 0.0506 | 158.14 | 82.91 |
 | `qwen3_5` | `qwen3.5` | 8 | 18 | 0.2109 | 0.0963 | 0.1146 | 69.81 | 37.94 |
@@ -354,6 +364,21 @@ Best stress iteration from the same run:
 | Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `olmo` | `olmo-1b-hf` | 32 | 0.4752 | 0.0171 | 0.4580 | 69.86 | 67.34 |
+
+## Jamba Parity Check
+
+These rows come from targeted and serialized `main` Jamba real-model runs on
+2026-06-30.
+
+| Architecture | Model | Generated | Prompt | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `jamba` | `jamba-reasoning-3b-4bit` | 8 | 46 | 0.2802 | 0.1963 | 0.0839 | 95.37 | 28.55 |
+
+Best stress iteration from the same run:
+
+| Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `jamba` | `jamba-reasoning-3b-4bit` | 32 | 0.5202 | 0.2435 | 0.2767 | 115.65 | 61.52 |
 
 ## StableLM Parity Check
 

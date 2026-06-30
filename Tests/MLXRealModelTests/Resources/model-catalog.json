@@ -959,6 +959,19 @@
     "tags": ["registry-only"]
   },
   {
+    "id": "jamba-reasoning-3b-4bit",
+    "displayName": "AI21 Jamba Reasoning 3B 4-bit",
+    "architecture": "jamba",
+    "repository": "mlx-community/AI21-Jamba-Reasoning-3B-4bit",
+    "relativePath": "AI21-Jamba-Reasoning-3B-4bit",
+    "prompt": "Write one short sentence about hybrid attention models.",
+    "expectedTokens": ["hybrid", "attention", "model"],
+    "maxTokens": 18,
+    "minimumMemoryGB": 12,
+    "minimumDiskGB": 4,
+    "tags": ["main", "relevant", "small", "parity", "stress"]
+  },
+  {
     "id": "jamba-3b",
     "displayName": "Jamba 3B",
     "architecture": "jamba_3b",

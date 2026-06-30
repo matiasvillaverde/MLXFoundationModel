@@ -43,6 +43,7 @@ struct MLXSupportedArchitectureTests {
         "granite",
         "granitemoehybrid",
         "internlm2",
+        "jamba",
         "jamba_3b",
         "lfm2",
         "lfm2_moe",

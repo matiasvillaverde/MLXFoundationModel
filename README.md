@@ -70,6 +70,7 @@ Use `MLX_TEST_MODELS_DIR=/path/to/models` to reuse shared model storage.
 | `bitnet` | `bitnet-b1.58-2b-4t-4bit` |
 | `starcoder2` | `starcoder2-3b-4bit` |
 | `openelm` | `openelm-270m-instruct` |
+| `jamba` | `jamba-reasoning-3b-4bit` |
 
 ## Add Package
 

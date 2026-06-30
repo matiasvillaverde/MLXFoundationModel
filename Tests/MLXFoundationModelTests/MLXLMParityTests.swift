@@ -144,7 +144,6 @@ struct MLXLMParityTests {
         "hunyuan_v1_dense",
         "internlm3",
         "iquestloopcoder",
-        "jamba",
         "kimi_k25",
         "kimi_linear",
         "llama4",

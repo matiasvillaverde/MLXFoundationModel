@@ -1,12 +1,3 @@
-//
-//  Jamba.swift
-//  mlx-swift-lm
-//
-//  Created by Sai Ramana on 10/26/25.
-//
-
-// port of https://github.com/ml-explore/mlx-lm/blob/main/mlx_lm/models/jamba.py
-
 import Foundation
 import MLX
 import MLXNN
@@ -30,7 +21,7 @@ internal struct JambaConfiguration: Codable, Sendable {
     internal var rmsNormEps: Float
     internal var maxPositionEmbeddings: Int
     internal var vocabSize: Int
-    internal var mambaDtRank: Int?
+    internal var mambaDtRank: Int
     internal var mambaProjBias: Bool
     internal var mambaConvBias: Bool
     internal var layersBlockType: [String]?
@@ -82,7 +73,9 @@ internal struct JambaConfiguration: Codable, Sendable {
         self.rmsNormEps = try container.decode(Float.self, forKey: .rmsNormEps)
         self.maxPositionEmbeddings = try container.decode(Int.self, forKey: .maxPositionEmbeddings)
         self.vocabSize = try container.decode(Int.self, forKey: .vocabSize)
-        self.mambaDtRank = try container.decodeIfPresent(Int.self, forKey: .mambaDtRank)
+        self.mambaDtRank =
+            try Self.decodeMambaRank(from: container)
+            ?? Int((Double(self.hiddenSize) / 16.0).rounded(.up))
         self.mambaProjBias =
             try container.decodeIfPresent(Bool.self, forKey: .mambaProjBias) ?? false
         self.mambaConvBias =
@@ -91,20 +84,39 @@ internal struct JambaConfiguration: Codable, Sendable {
             [String].self, forKey: .layersBlockType)
         self.tieWordEmbeddings =
             try container.decodeIfPresent(Bool.self, forKey: .tieWordEmbeddings) ?? true
-
-        // Post-initialization logic
-
-        // If mambaDtRank is nil, calculate it
-        if self.mambaDtRank == nil {
-            self.mambaDtRank = Int((Double(self.hiddenSize) / 16.0).rounded(.up))
-        }
-
-        // If layersBlockType is nil, generate it based on layer configuration
         if self.layersBlockType == nil {
             self.layersBlockType = (0 ..< self.numHiddenLayers).map { i in
                 (i % self.attnLayerPeriod == self.attnLayerOffset) ? "attention" : "mamba"
             }
         }
+    }
+
+    internal func usesSparseExperts(layerIndex: Int) -> Bool {
+        numExperts > 1
+            && expertLayerPeriod > 0
+            && (layerIndex + expertLayerOffset).isMultiple(of: expertLayerPeriod)
+    }
+
+    private static func decodeMambaRank(
+        from container: KeyedDecodingContainer<CodingKeys>
+    ) throws -> Int? {
+        if let value = try? container.decodeIfPresent(Int.self, forKey: .mambaDtRank) {
+            return value
+        }
+        guard let value = try container.decodeIfPresent(String.self, forKey: .mambaDtRank) else {
+            return nil
+        }
+        if value == "auto" {
+            return nil
+        }
+        if let intValue = Int(value) {
+            return intValue
+        }
+        throw DecodingError.dataCorruptedError(
+            forKey: .mambaDtRank,
+            in: container,
+            debugDescription: "mamba_dt_rank must be an integer or \"auto\""
+        )
     }
 }
 
@@ -210,7 +222,7 @@ class JambaMambaMixer: Module {
         self.ssmStateSize = config.mambaDState
         self.convKernelSize = config.mambaDConv
         self.intermediateSize = config.mambaExpand * config.hiddenSize
-        self.timeStepRank = config.mambaDtRank!
+        self.timeStepRank = config.mambaDtRank
         self.useConvBias = config.mambaConvBias
         self.useBias = config.mambaProjBias
 
@@ -362,6 +374,74 @@ class JambaSparseMoeBlock: Module {
     }
 }
 
+private struct JambaWeightSanitizer {
+    let config: JambaConfiguration
+
+    func packExperts(in weights: [String: MLXArray]) -> [String: MLXArray] {
+        var packed = [String: MLXArray]()
+        packed.reserveCapacity(weights.count)
+        for (key, value) in weights {
+            packed[normalizedKey(key)] = value
+        }
+
+        for layerIndex in 0 ..< config.numHiddenLayers {
+            let layerBase = "model.layers.\(layerIndex).feed_forward"
+            let expertBase = "\(layerBase).experts"
+            guard packed["\(expertBase).0.gate_proj.weight"] != nil else {
+                continue
+            }
+
+            for projection in ["gate_proj", "down_proj", "up_proj"] {
+                for tensorName in ["weight", "bias", "scales", "biases"] {
+                    packProjection(
+                        projection,
+                        tensorName: tensorName,
+                        expertBase: expertBase,
+                        targetBase: "\(layerBase).switch_mlp",
+                        weights: &packed
+                    )
+                }
+            }
+        }
+
+        return packed
+    }
+
+    private func packProjection(
+        _ projection: String,
+        tensorName: String,
+        expertBase: String,
+        targetBase: String,
+        weights: inout [String: MLXArray]
+    ) {
+        let keys = (0 ..< config.numExperts).map { expert in
+            "\(expertBase).\(expert).\(projection).\(tensorName)"
+        }
+        guard keys.allSatisfy({ weights[$0] != nil }) else {
+            return
+        }
+
+        let tensors = keys.compactMap { weights.removeValue(forKey: $0) }
+        weights["\(targetBase).\(projection).\(tensorName)"] = MLX.stacked(tensors)
+    }
+
+    private func normalizedKey(_ key: String) -> String {
+        var updated = key.replacingOccurrences(
+            of: ".block_sparse_moe.",
+            with: ".feed_forward."
+        )
+        let projectionNames = [
+            ".w1.": ".gate_proj.",
+            ".w2.": ".down_proj.",
+            ".w3.": ".up_proj."
+        ]
+        for (old, new) in projectionNames {
+            updated = updated.replacingOccurrences(of: old, with: new)
+        }
+        return updated
+    }
+}
+
 class JambaDecoderLayer: Module {
     let isAttn: Bool
     let isSparseMoe: Bool
@@ -374,7 +454,7 @@ class JambaDecoderLayer: Module {
     @ModuleInfo(key: "input_layernorm") var inputLayerNorm: RMSNorm
     @ModuleInfo(key: "pre_ff_layernorm") var preFFLayerNorm: RMSNorm
 
-    internal init(_ config: JambaConfiguration, layerType: String) {
+    internal init(_ config: JambaConfiguration, layerType: String, layerIndex: Int) {
         self.isAttn = layerType == "attention"
 
         if isAttn {
@@ -383,7 +463,7 @@ class JambaDecoderLayer: Module {
             _mamba.wrappedValue = JambaMambaMixer(config)
         }
 
-        if config.numExperts > 1 {
+        if config.usesSparseExperts(layerIndex: layerIndex) {
             _feedForward.wrappedValue = JambaSparseMoeBlock(config)
             self.isSparseMoe = true
         } else {
@@ -436,8 +516,8 @@ internal class JambaModelInner: Module {
             embeddingCount: config.vocabSize, dimensions: config.hiddenSize)
 
         let layersBlockType = config.layersBlockType!
-        self.layers = layersBlockType.enumerated().map { (_, type) in
-            JambaDecoderLayer(config, layerType: type)
+        self.layers = layersBlockType.enumerated().map { index, type in
+            JambaDecoderLayer(config, layerType: type, layerIndex: index)
         }
 
         _finalLayerNorm.wrappedValue = RMSNorm(
@@ -527,40 +607,13 @@ internal class JambaModel: Module, LLMModel, KVCacheDimensionProvider {
             }
         }
 
-        // Handle tied embeddings
         if config.tieWordEmbeddings {
             sanitizedWeights["lm_head.weight"] = nil
+            sanitizedWeights["lm_head.scales"] = nil
+            sanitizedWeights["lm_head.biases"] = nil
         }
 
-        // Handle MoE expert weights
-        if sanitizedWeights["model.layers.0.block_sparse_moe.experts.0.w1.weight"] == nil {
-            return sanitizedWeights
-        }
-
-        for l in 0 ..< config.numHiddenLayers {
-            let prefix = "model.layers.\(l)"
-            let mapping: [(String, String)] = [
-                ("w1", "gate_proj"),
-                ("w2", "down_proj"),
-                ("w3", "up_proj"),
-            ]
-
-            for (n, m) in mapping {
-                for k in ["weight", "scales", "biases"] {
-                    if sanitizedWeights["\(prefix).block_sparse_moe.experts.0.\(n).\(k)"] != nil {
-                        let toJoin = (0 ..< config.numExperts).map { e in
-                            sanitizedWeights.removeValue(
-                                forKey: "\(prefix).block_sparse_moe.experts.\(e).\(n).\(k)"
-                            )!
-                        }
-                        sanitizedWeights["\(prefix).block_sparse_moe.switch_mlp.\(m).\(k)"] =
-                            MLX.stacked(toJoin)
-                    }
-                }
-            }
-        }
-
-        return sanitizedWeights
+        return JambaWeightSanitizer(config: config).packExperts(in: sanitizedWeights)
     }
 
     internal var layers: [Module] {
@@ -572,11 +625,15 @@ internal class JambaModel: Module, LLMModel, KVCacheDimensionProvider {
 
 extension JambaModel: LoRAModel {
     internal var loraLayers: [Module] {
+        model.layers
+    }
+
+    internal func loraLinearLayers() -> LoRALinearLayers {
         model.layers.compactMap { layer in
-            if layer.isAttn {
-                return layer
+            guard let attention = layer.selfAttn else {
+                return nil
             }
-            return nil
+            return (attention, ["q_proj", "v_proj"])
         }
     }
 }
