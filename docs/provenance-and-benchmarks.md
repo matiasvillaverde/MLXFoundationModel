@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 109 | Safe area for normal refactors. |
+| Files with no source-port marker | 111 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -36,6 +36,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/Common/RoPEApplication.swift` | Scalar and batch RoPE offset selection for KV caches. |
 | `Sources/MLXLocalModels/Common/SuScaledRoPE.swift` | LongRoPE factor planning, short/long frequency selection, scalar and batch offsets, and non-rotary tail preservation. |
 | `Sources/MLXLocalModels/Common/Tokenizer.swift` | Tokenizer loading, tokenizer-class rewriting, replacement registry, and streaming detokenization. |
+| `Sources/MLXLocalModels/Common/Phi3SmallTiktokenTokenizer.swift` | Phi-3-small tiktoken vocabulary loading, byte-pair encoding, special-token handling, and chat-template rendering. |
 | `Sources/MLXLocalModels/MLXLLM/LLMModel.swift` | Default text-model prefill chunking and adaptive prefill integration. |
 | `Sources/MLXLocalModels/MLXLLM/LLMModelFactory.swift` | LLM type registration, alias grouping, model load progress, generation-token resolution, and trampoline factory. |
 | `Sources/MLXLocalModels/MLXLLM/GPT2.swift` | GPT-2 learned position embeddings, cache-aware position IDs, pre-norm attention and MLP blocks, raw Transformers sanitizer, tied output head, greedy-token fast path, cache dimensions, and LoRA target discovery. |
@@ -67,6 +68,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/Llama.swift` | Llama/Mistral attention layout, linear/dynamic/Llama 3 RoPE planning, decoder block, backbone, tied/untied output heads, greedy-token fast path, config validation, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Exaone.swift` | EXAONE 3.x grouped-query attention, llama3 RoPE scaling, SwiGLU feed-forward blocks, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Phi3.swift` | Phi3 packed QKV attention, RoPE/LongRoPE planning, decoder block, backbone, tied/untied output heads, greedy-token fast path, config defaults, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/Phi3Small.swift` | Phi-3-small packed QKV attention, block-sparse attention planning, MuP scaling, GeGELU feed-forward blocks, tied output head, dummy-token suppression, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Phi.swift` | Phi attention layout, decoder block, backbone, greedy-token fast path, configuration defaults, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/PhiMoE.swift` | Phi MoE attention layout, LongRoPE planning, router planning, guarded expert packing, stable checkpoint keys, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/SwitchLayers.swift` | Expert dispatch permutation, SwitchGLU routing, dense/quantized expert projection, and sorted-dispatch restoration. |
@@ -114,6 +116,7 @@ Current independence pass:
 - Replaced Gemma with a shared project-owned norm, explicit attention layout, stable checkpoint keys, greedy-token fast path, and focused config/layout/LoRA coverage.
 - Replaced Gemma2 with soft-capped attention layout, grouped KV expansion, greedy-token fast path, stable checkpoint keys, and focused config/layout/LoRA coverage.
 - Replaced Phi3 with packed QKV layout, explicit RoPE/LongRoPE planning, tied/untied output handling, greedy-token fast path, and focused config/layout/LoRA coverage.
+- Added Phi-3-small with packed QKV attention, block-sparse attention planning, MuP scaling, tiktoken tokenizer support, grammar-vocabulary fallback, dummy-token suppression, greedy-token fast path, and focused config/layout/forward/tokenizer coverage.
 - Replaced Llama with explicit Llama/Mistral layout, project-owned RoPE planning for linear, dynamic, and Llama 3 scaling, tied/untied output handling, greedy-token fast path, and focused config/layout/LoRA coverage.
 - Replaced DeepSeek V3 with explicit attention, YaRN, and MoE routing plans; fixed empty KV-cache dimensions; corrected adapter targets; packed expert weights in the sanitizer; and added focused config/layout/routing/forward/sanitizer coverage.
 - Added DeepSeek MoE with explicit GQA attention, RoPE planning, dense-vs-sparse layer scheduling, shared experts, top-k routing, packed expert checkpoint remapping, tied-head cleanup, greedy-token fast path, and focused config/layout/routing/forward/sanitizer coverage.
@@ -528,6 +531,20 @@ Best stress iterations from the same runs:
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `deepseek` | `deepseek-moe-16b-chat-4bit` release targeted | 32 | 0.4319 | 0.1276 | 0.3043 | 105.15 | 74.09 |
 | `deepseek` | `deepseek-moe-16b-chat-4bit` debug main | 32 | 0.9222 | 0.1447 | 0.7775 | 41.16 | 34.70 |
+
+## Phi-3-small Parity Check
+
+These rows come from the targeted release Phi-3-small run on 2026-06-30.
+
+| Architecture | Model | Generated | Prompt | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `phi3small` | `phi-3-small-8k-instruct-aq4-32` | 4 | 16 | 0.2060 | 0.1118 | 0.0942 | 42.47 | 19.41 |
+
+Best decode stress iteration from the same run:
+
+| Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `phi3small` | `phi-3-small-8k-instruct-aq4-32` | 32 | 0.7706 | 0.1575 | 0.6132 | 52.19 | 41.52 |
 
 ## Mixtral Parity Check
 

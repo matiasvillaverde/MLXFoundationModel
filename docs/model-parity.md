@@ -59,7 +59,7 @@ Legacy and compatibility gaps:
 - `rwkv7`
 - `solar_open`
 - `plamo`, `plamo2`
-- `phi3small`, `phixtral`
+- `phixtral`
 - `internlm3`
 - `mellum`
 - `iquestloopcoder`
