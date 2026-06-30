@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 108 | Safe area for normal refactors. |
+| Files with no source-port marker | 109 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -57,6 +57,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/Internlm2.swift` | InternLM2 packed attention, dynamic RoPE planning, decoder blocks, greedy-token fast path, config defaults, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/DeepseekV3.swift` | DeepSeek V3 attention layout, YaRN planning, grouped MoE routing, checkpoint key normalization, cache dimensions, greedy-token fast path, sanitizer packing, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Deepseek.swift` | DeepSeek MoE attention layout, top-k expert routing, shared experts, packed expert checkpoint remapping, tied-head cleanup, greedy-token fast path, cache dimensions, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/Mixtral.swift` | Mixtral grouped-query attention, top-k sparse routing, expert tensor packing, tied-head cleanup, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/GLM4MOE.swift` | GLM4 MoE attention layout, layer plan, grouped sparse routing, expert packing, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/AfMoE.swift` | AfMoE full/sliding attention layout, layer schedule, grouped sparse routing, expert packing, mixed cache planning, tied/untied heads, greedy-token fast path, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Qwen3Next.swift` | Qwen3Next layer scheduling, gated full attention, gated-delta linear attention, MoE routing, expert packing, mixed cache planning, tied/untied heads, greedy-token fast path, and LoRA target discovery. |
@@ -116,6 +117,7 @@ Current independence pass:
 - Replaced Llama with explicit Llama/Mistral layout, project-owned RoPE planning for linear, dynamic, and Llama 3 scaling, tied/untied output handling, greedy-token fast path, and focused config/layout/LoRA coverage.
 - Replaced DeepSeek V3 with explicit attention, YaRN, and MoE routing plans; fixed empty KV-cache dimensions; corrected adapter targets; packed expert weights in the sanitizer; and added focused config/layout/routing/forward/sanitizer coverage.
 - Added DeepSeek MoE with explicit GQA attention, RoPE planning, dense-vs-sparse layer scheduling, shared experts, top-k routing, packed expert checkpoint remapping, tied-head cleanup, greedy-token fast path, and focused config/layout/routing/forward/sanitizer coverage.
+- Added Mixtral with explicit GQA attention, top-k expert routing, packed expert checkpoint remapping, tied-head cleanup, greedy-token fast path, and Mistral-family prompt-style inference for Mixtral checkpoints.
 - Replaced Granite with an explicit attention layout, linear RoPE scaling plan, stable checkpoint-compatible `model.*` parameter keys, tied/untied output handling, greedy-token fast path, and focused config/layout/forward/LoRA coverage.
 - Replaced ERNIE 4.5 with an explicit attention layout, head-dimension fallback and override handling, stable checkpoint-compatible `model.*` parameter keys, tied/untied output handling, greedy-token fast path, and focused config/layout/forward/LoRA coverage.
 - Replaced OLMo3 with explicit sliding/full attention scheduling, q/k normalization, YaRN-vs-sliding RoPE selection, cache layout, tied/untied output handling, greedy-token fast path, and focused config/layout/cache/LoRA coverage.
@@ -192,10 +194,10 @@ gate. The test runner selected 52 downloadable models and skipped 9 oversized
 models on this 32 GB host. Each selected model ran serialized generation,
 rendered session requests, and token-level grammar constraint checks.
 
-A follow-up serialized `main` sweep on 2026-06-30 selected 31 downloadable
+A follow-up serialized `main` sweep on 2026-06-30 selected 32 downloadable
 models, including DeepSeek, DeepSeek V2, EXAONE 3.5, GraniteMoE, Helium,
-Jamba, Mamba, and Mamba2, and passed generation, rendered session, token
-grammar, and configured stress checks.
+Jamba, Mamba, Mamba2, and Mixtral, and passed generation, rendered session,
+token grammar, and configured stress checks.
 
 The current sweep adds 32 GB-friendly checkpoints for `qwen3_moe`, `mistral`,
 `gpt_oss`, `qwen3_5_moe`, and `nemotron_h`. These entries also run the stress
@@ -242,6 +244,14 @@ DeepSeek parity was added with
 disk and passed targeted release and serialized `main` real-model generation,
 rendered session requests, token grammar constraints, and stress generation on
 this host.
+
+Mixtral parity was added with
+`mlx-community/dolphin-2.9.1-mixtral-1x22b-2bit`. The checkpoint is 6.5 GB on
+disk and passed targeted release and serialized `main` real-model generation,
+rendered session requests, token grammar constraints, and stress generation on
+this host. `mlx-community/Mixtral-SlimOrca-8x7B-3bit` is also present locally,
+but the runtime memory guard rejects it on this 32 GB host before load because
+the estimated 19.03 GB peak exceeds the active 16.64 GB guard ceiling.
 
 Jamba parity was added with `mlx-community/AI21-Jamba-Reasoning-3B-4bit`. The
 checkpoint is 1.6 GB on disk and passed targeted real-model generation,
@@ -518,6 +528,23 @@ Best stress iterations from the same runs:
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `deepseek` | `deepseek-moe-16b-chat-4bit` release targeted | 32 | 0.4319 | 0.1276 | 0.3043 | 105.15 | 74.09 |
 | `deepseek` | `deepseek-moe-16b-chat-4bit` debug main | 32 | 0.9222 | 0.1447 | 0.7775 | 41.16 | 34.70 |
+
+## Mixtral Parity Check
+
+These rows come from the targeted release Mixtral run and the serialized debug
+`main` sweep on 2026-06-30.
+
+| Architecture | Model | Generated | Prompt | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `mixtral` | `mixtral-1x22b-2bit` release targeted | 2 | 20 | 0.5520 | 0.3806 | 0.1714 | 11.67 | 3.62 |
+| `mixtral` | `mixtral-1x22b-2bit` debug main | 2 | 20 | 0.6011 | 0.3999 | 0.2012 | 9.94 | 3.33 |
+
+Best stress iterations from the same runs:
+
+| Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `mixtral` | `mixtral-1x22b-2bit` release targeted | 32 | 1.8707 | 0.6612 | 1.2095 | 26.46 | 17.11 |
+| `mixtral` | `mixtral-1x22b-2bit` debug main | 32 | 2.1413 | 0.6688 | 1.4725 | 21.73 | 14.94 |
 
 ## GraniteMoE Parity Check
 
