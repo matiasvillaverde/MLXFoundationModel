@@ -93,6 +93,9 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
             modelType("internlm2", configuration: InternLM2Configuration.self) {
                 InternLM2Model($0)
             },
+            modelType("internlm3", configuration: InternLM3Configuration.self) {
+                InternLM3Model($0)
+            },
             modelType("deepseek", configuration: DeepseekConfiguration.self) {
                 DeepseekModel($0)
             },
@@ -382,6 +385,11 @@ internal class LLMRegistry: AbstractModelRegistry, @unchecked Sendable {
         defaultPrompt: "Once upon a time there was"
     )
 
+    public static let internLM3Eight8b4bit = ModelConfiguration(
+        id: "mlx-community/internlm3-8b-instruct-4bit",
+        defaultPrompt: "Write one short sentence about local language models."
+    )
+
     public static let llama3Point1Eight8B4bit = ModelConfiguration(
         id: "mlx-community/Meta-Llama-3.1-8B-Instruct-4bit",
         defaultPrompt: "What is the difference between a fruit and a vegetable?"
@@ -481,6 +489,7 @@ internal class LLMRegistry: AbstractModelRegistry, @unchecked Sendable {
             llama3Point2One1B4bit,
             llama3Point2Three3B4bit,
             llama3Eight8B4bit,
+            internLM3Eight8b4bit,
             mistral7B4bit,
             mistralNeMo4bit,
             openelm270m4bit,

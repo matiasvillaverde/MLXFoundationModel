@@ -60,6 +60,28 @@ struct TokenizerSupportTests {
         #expect(chatTokens.contains(0))
     }
 
+    @Test("loads SentencePiece model tokenizer without tokenizer JSON")
+    func loadsSentencePieceModelTokenizer() async throws {
+        let directory = try Self.makeSentencePieceTokenizerFixture()
+        let tokenizer = try await loadTokenizer(
+            configuration: ModelConfiguration(directory: directory),
+            hub: HubApi()
+        )
+
+        #expect(tokenizer.convertTokenToId("he") == 4)
+        #expect(tokenizer.encode(text: "hello", addSpecialTokens: false) == [6])
+        #expect(tokenizer.decode(tokens: [6], skipSpecialTokens: true) == "hello")
+        #expect(tokenizer.decode(tokens: [10, 6, 11], skipSpecialTokens: true) == "hello")
+
+        let messages: [Message] = [["role": "user", "content": "hello"]]
+        let chatTokens = try tokenizer.applyChatTemplate(messages: messages)
+        #expect(chatTokens.contains(1))
+        #expect(chatTokens.contains(10))
+        #expect(chatTokens.contains(11))
+        #expect(chatTokens.contains(4))
+        #expect(chatTokens.contains(5))
+    }
+
     @Test("routes fast Unigram tokenizers to Unigram implementation")
     func routesFastUnigramTokenizersToUnigramImplementation() {
         let rewriter = TokenizerConfigurationRewriter(registry: TokenizerReplacementRegistry())
@@ -144,5 +166,73 @@ struct TokenizerSupportTests {
             encoding: .utf8
         )
         return directory
+    }
+
+    private static func makeSentencePieceTokenizerFixture() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(component: "SentencePieceTokenizer-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        try Self.makeSentencePieceModel(pieces: sentencePiecePieces).write(
+            to: directory.appending(component: SentencePieceModelTokenizer.modelFilename)
+        )
+        try sentencePieceTokenizerConfig.write(
+            to: directory.appending(component: "tokenizer_config.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        return directory
+    }
+
+    private static let sentencePiecePieces: [(token: String, type: Int)] = [
+        ("<unk>", 2),
+        ("<s>", 3),
+        ("</s>", 3),
+        ("\u{2581}", 4),
+        ("he", 4),
+        ("llo", 4),
+        ("\u{2581}hello", 4),
+        ("\u{2581}there", 4),
+        ("he", 4),
+        ("<0x21>", 6),
+        ("<|im_start|>", 4),
+        ("<|im_end|>", 4)
+    ]
+
+    private static let sentencePieceTokenizerConfig = [
+        #"{"add_bos_token":true,"add_eos_token":false,"bos_token":"<s>","#,
+        #""eos_token":"</s>","unk_token":"<unk>","chat_template":"internlm3-test","#,
+        #""added_tokens_decoder":{"10":{"content":"<|im_start|>"},"#,
+        #""11":{"content":"<|im_end|>"}}}"#
+    ].joined()
+
+    private static func makeSentencePieceModel(pieces: [(token: String, type: Int)]) -> Data {
+        pieces.reduce(into: Data()) { model, piece in
+            var pieceMessage = Data()
+            appendFieldBytes(1, Data(piece.token.utf8), to: &pieceMessage)
+            appendFieldVarint(3, UInt64(piece.type), to: &pieceMessage)
+            appendFieldBytes(1, pieceMessage, to: &model)
+        }
+    }
+
+    private static func appendFieldBytes(_ fieldNumber: Int, _ value: Data, to data: inout Data) {
+        appendVarint(UInt64(fieldNumber << 3 | 2), to: &data)
+        appendVarint(UInt64(value.count), to: &data)
+        data.append(value)
+    }
+
+    private static func appendFieldVarint(_ fieldNumber: Int, _ value: UInt64, to data: inout Data) {
+        appendVarint(UInt64(fieldNumber << 3), to: &data)
+        appendVarint(value, to: &data)
+    }
+
+    private static func appendVarint(_ value: UInt64, to data: inout Data) {
+        var value = value
+        while value >= 0x80 {
+            data.append(UInt8(value & 0x7F) | 0x80)
+            value >>= 7
+        }
+        data.append(UInt8(value))
     }
 }

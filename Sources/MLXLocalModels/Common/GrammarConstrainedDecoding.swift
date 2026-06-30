@@ -875,12 +875,25 @@ private enum TokenizerVocabularyParser {
         let tiktokenURL = modelDirectory.appendingPathComponent(
             Phi3SmallTiktokenTokenizer.vocabFilename
         )
-        guard FileManager.default.fileExists(atPath: tiktokenURL.path) else {
+        if FileManager.default.fileExists(atPath: tiktokenURL.path) {
+            return LoadedVocabulary(
+                vocabulary: try encodedTiktokenVocabulary(from: tiktokenURL),
+                tokenizerJSON: #"{"model":{"type":"BPE","vocab":{}},"decoder":{"type":"Raw"}}"#
+            )
+        }
+
+        let sentencePieceURL = modelDirectory.appendingPathComponent(
+            SentencePieceModelTokenizer.modelFilename
+        )
+        guard FileManager.default.fileExists(atPath: sentencePieceURL.path) else {
             throw GrammarConstraintError.missingTokenizerJSON(tokenizerURL)
         }
 
         return LoadedVocabulary(
-            vocabulary: try encodedTiktokenVocabulary(from: tiktokenURL),
+            vocabulary: try encodedSentencePieceVocabulary(
+                from: sentencePieceURL,
+                configURL: modelDirectory.appendingPathComponent("tokenizer_config.json")
+            ),
             tokenizerJSON: #"{"model":{"type":"BPE","vocab":{}},"decoder":{"type":"Raw"}}"#
         )
     }
@@ -900,6 +913,14 @@ private enum TokenizerVocabularyParser {
 
     private static func encodedTiktokenVocabulary(from vocabURL: URL) throws -> [String] {
         let entries = try Phi3SmallTiktokenTokenizer.vocabularyEntries(from: vocabURL)
+        return try compactVocabulary(from: entries)
+    }
+
+    private static func encodedSentencePieceVocabulary(from modelURL: URL, configURL: URL) throws -> [String] {
+        let entries = try SentencePieceModelTokenizer.vocabularyEntries(
+            from: modelURL,
+            configURL: configURL
+        )
         return try compactVocabulary(from: entries)
     }
 

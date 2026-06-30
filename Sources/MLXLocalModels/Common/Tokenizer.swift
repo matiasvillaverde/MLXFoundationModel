@@ -57,6 +57,15 @@ private struct TokenizerConfigLoader {
                 tokenizer: nil
             )
         } catch {
+            if let tokenizer = try SentencePieceModelTokenizer.load(
+                from: configuration.modelDirectory(hub: hub)
+            ) {
+                return TokenizerConfigFiles(
+                    tokenizerConfig: Config(["tokenizer_class": Config("SentencePieceModelTokenizer")]),
+                    tokenizerData: nil,
+                    tokenizer: tokenizer
+                )
+            }
             if let tokenizer = try Phi3SmallTiktokenTokenizer.load(
                 from: configuration.modelDirectory(hub: hub)
             ) {
