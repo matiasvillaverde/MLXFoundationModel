@@ -146,7 +146,6 @@ struct MLXLMParityTests {
         "longcat_flash",
         "longcat_flash_ngram",
         "mellum",
-        "mixtral",
         "nemotron",
         "nemotron-nas",
         "phi3small",

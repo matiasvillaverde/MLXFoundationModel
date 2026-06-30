@@ -158,7 +158,7 @@ enum MLXPromptStyleInferenceEngine {
         .init(
             style: .mistralToolCall,
             templateMarkers: ["[tool_calls]"],
-            modelFamilies: ["mistral"]
+            modelFamilies: ["mistral", "mixtral"]
         ),
         .init(
             style: .glmXML,

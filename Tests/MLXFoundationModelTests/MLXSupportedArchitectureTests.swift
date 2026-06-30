@@ -61,6 +61,7 @@ struct MLXSupportedArchitectureTests {
         "minicpm",
         "minicpm3",
         "minimax",
+        "mixtral",
         "mistral",
         "mistral3",
         "ministral3",

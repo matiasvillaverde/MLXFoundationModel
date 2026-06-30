@@ -14,7 +14,7 @@ struct MLXModelPromptStyleInferenceTests {
             modelType: String,
             template: String,
             style: MLXPromptStyle,
-            id: String? = nil
+            id: String?
         ) {
             self.id = id
             self.modelType = modelType
@@ -90,61 +90,83 @@ struct MLXModelPromptStyleInferenceTests {
         #expect(profile.promptStyle == .chatML)
     }
 
+    @Test("infers Mixtral as Mistral family before generic ChatML fallback")
+    func infersMixtralAsMistralFamilyBeforeGenericChatMLFallback() {
+        let profile = Self.profile(
+            modelType: "mixtral",
+            architectures: ["MixtralForCausalLM"],
+            template: "<|im_start|>{{ role }}\n{{ content }}<|im_end|>"
+        )
+
+        #expect(profile.promptStyle == .mistralToolCall)
+    }
+
     private static let fixtures = [
         Fixture(
             modelType: "apertus",
             template: "<|user_start|>hello<|user_end|><|assistant_start|>",
-            style: .apertus
+            style: .apertus,
+            id: nil
         ),
         Fixture(
             modelType: "command-r",
             template: "<|START_ACTION|>{}</|END_ACTION|>",
-            style: .cohereAction
+            style: .cohereAction,
+            id: nil
         ),
         Fixture(
             modelType: "kimi_k2",
             template: "<|tool_calls_section_begin|>",
-            style: .kimiK2
+            style: .kimiK2,
+            id: nil
         ),
         Fixture(
             modelType: "longcat_flash",
             template: "<longcat_tool_call></longcat_tool_call>",
-            style: .longCat
+            style: .longCat,
+            id: nil
         ),
         Fixture(
             modelType: "mistral",
             template: "[TOOL_CALLS]weather[ARGS]{}",
-            style: .mistralToolCall
+            style: .mistralToolCall,
+            id: nil
         ),
         Fixture(
             modelType: "gemma4",
             template: "<|tool_call>call:weather{}<tool_call|>",
-            style: .gemma
+            style: .gemma,
+            id: nil
         ),
         Fixture(
             modelType: "deepseek_v4",
             template: "<｜DSML｜tool_calls></｜DSML｜tool_calls>",
-            style: .deepSeekDSML
+            style: .deepSeekDSML,
+            id: nil
         ),
         Fixture(
             modelType: "glm4_moe",
             template: "<arg_key>city</arg_key>",
-            style: .glmXML
+            style: .glmXML,
+            id: nil
         ),
         Fixture(
             modelType: "qwen3_5",
             template: "<tool_call><function=weather></function></tool_call>",
-            style: .qwenXML
+            style: .qwenXML,
+            id: nil
         ),
         Fixture(
             modelType: "minimax",
             template: #"<minimax:tool_call><invoke name="weather">"#,
-            style: .minimaxXML
+            style: .minimaxXML,
+            id: nil
         ),
         Fixture(
             modelType: "minimax_m3",
             template: "]<]minimax[>[<tool_call>",
-            style: .minimaxM3
+            style: .minimaxM3,
+            id: nil
         )
     ]
 

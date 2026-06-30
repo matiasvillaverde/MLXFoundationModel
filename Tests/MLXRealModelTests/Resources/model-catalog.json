@@ -219,6 +219,19 @@
     "tags": ["relevant", "latest", "small-fit", "stress"]
   },
   {
+    "id": "mixtral-1x22b-2bit",
+    "displayName": "Dolphin Mixtral 1x22B 2-bit",
+    "architecture": "mixtral",
+    "repository": "mlx-community/dolphin-2.9.1-mixtral-1x22b-2bit",
+    "relativePath": "dolphin-2.9.1-mixtral-1x22b-2bit",
+    "prompt": "Write one short sentence about sparse expert routing.",
+    "expectedTokens": ["expert", "routing", "model", "sparse"],
+    "maxTokens": 12,
+    "minimumMemoryGB": 16,
+    "minimumDiskGB": 8,
+    "tags": ["main", "relevant", "parity", "stress"]
+  },
+  {
     "id": "phi-2-hf-4bit-mlx",
     "displayName": "Phi-2 4-bit MLX",
     "architecture": "phi",
