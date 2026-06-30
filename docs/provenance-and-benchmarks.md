@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 97 | Safe area for normal refactors. |
+| Files with no source-port marker | 98 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -38,6 +38,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/LLMModel.swift` | Default text-model prefill chunking and adaptive prefill integration. |
 | `Sources/MLXLocalModels/MLXLLM/LLMModelFactory.swift` | LLM type registration, alias grouping, model load progress, generation-token resolution, and trampoline factory. |
 | `Sources/MLXLocalModels/MLXLLM/GPT2.swift` | GPT-2 learned position embeddings, cache-aware position IDs, pre-norm attention and MLP blocks, raw Transformers sanitizer, tied output head, greedy-token fast path, cache dimensions, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/StableLM.swift` | StableLM partial-RoPE attention, optional per-head q/k LayerNorm, sequential and parallel residual blocks, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/BailingMoe.swift` | Bailing MoE attention layout, sparse routing plan, grouped expert selection, expert packing, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Mistral3Text.swift` | Mistral 3 attention layout, Llama 4 position scaling, full/sliding layer scheduling, cache planning, VLM weight unwrapping, greedy-token fast path, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/MiniCPM.swift` | MiniCPM attention layout, residual/embedding/logit scaling plans, stable checkpoint keys, tied-head sanitizing, greedy-token fast path, cache dimensions, and LoRA target discovery. |
@@ -127,6 +128,7 @@ Current independence pass:
 - Replaced Nemotron H with typed block, cache, attention, Mamba, MoE, and sanitizer plans; fixed array-form `time_step_limit` decoding; added grouped routing, tied-head cleanup, greedy-token fast path, LoRA target discovery, and focused config/layout/routing/cache/forward/sanitizer coverage.
 - Replaced GLM4 MoE Lite with explicit attention, DSA, layer, routing, projection, and sanitizer plans; registered layers through `@ModuleInfo`; added tied-head cleanup, greedy-token fast path, LoRA target discovery, and focused schedule/layout/routing/cache/sanitizer coverage.
 - Added GPT-2 with learned position embeddings, cache-aware position IDs, raw Transformers and MLX-prefixed sanitizer paths, tied output head, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
+- Added StableLM with partial-RoPE attention, optional per-head q/k LayerNorm matching upstream checkpoint keys, sequential and parallel residual paths, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 
 Previous performance pass:
 
@@ -190,6 +192,11 @@ requests, and token grammar constraints on this host.
 GPT-2 parity was added with `mlx-community/gpt2-base-mlx`. The checkpoint is
 475 MB on disk and passed targeted real-model generation, rendered session
 requests, token grammar constraints, and stress generation on this host.
+
+StableLM parity was added with `mlx-community/stablelm-2-zephyr-1_6b-4bit`.
+The checkpoint is 1.1 GB on disk and passed targeted real-model generation,
+rendered session requests, token grammar constraints, and stress generation on
+this host.
 
 The selected `deepseek-r1-distill-qwen-7b-4bit` checkpoint is a Qwen-distilled
 model; its local `config.json` declares `model_type: qwen2`. The full
@@ -284,6 +291,20 @@ Best stress iteration from the same run:
 | Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `gpt2` | `gpt2-base-mlx` | 32 | 0.1829 | 0.0083 | 0.1745 | 183.35 | 174.98 |
+
+## StableLM Parity Check
+
+These rows come from the targeted StableLM real-model run on 2026-06-30.
+
+| Architecture | Model | Generated | Prompt | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `stablelm` | `stablelm-2-zephyr-1.6b-4bit` | 8 | 23 | 0.1651 | 0.0447 | 0.1205 | 66.40 | 48.45 |
+
+Best stress iteration from the same run:
+
+| Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `stablelm` | `stablelm-2-zephyr-1.6b-4bit` | 32 | 0.5232 | 0.0463 | 0.4769 | 67.10 | 61.16 |
 
 ## Small-Fit Stress Baseline
 

@@ -72,6 +72,7 @@ struct MLXSupportedArchitectureTests {
         "qwen3_moe",
         "qwen3_next",
         "smollm3",
+        "stablelm",
         "starcoder2"
     ]
 }

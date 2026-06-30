@@ -62,7 +62,6 @@ Legacy and compatibility gaps:
 - `mamba`, `mamba2`
 - `recurrent_gemma`
 - `rwkv7`
-- `stablelm`
 - `solar_open`
 - `plamo`, `plamo2`
 - `phi3small`, `phixtral`

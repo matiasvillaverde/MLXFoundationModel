@@ -660,6 +660,19 @@
     "tags": []
   },
   {
+    "id": "stablelm-2-zephyr-1.6b-4bit",
+    "displayName": "StableLM 2 Zephyr 1.6B 4-bit",
+    "architecture": "stablelm",
+    "repository": "mlx-community/stablelm-2-zephyr-1_6b-4bit",
+    "relativePath": "stablelm-2-zephyr-1_6b-4bit",
+    "prompt": "Write one short sentence about open language models.",
+    "expectedTokens": ["open", "language", "model", "models"],
+    "maxTokens": 12,
+    "minimumMemoryGB": 8,
+    "minimumDiskGB": 2,
+    "tags": ["main", "relevant", "small", "parity", "stress"]
+  },
+  {
     "id": "gpt2-base-mlx",
     "displayName": "GPT-2 Base MLX",
     "architecture": "gpt2",

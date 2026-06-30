@@ -169,7 +169,6 @@ struct MLXLMParityTests {
         "rwkv7",
         "seed_oss",
         "solar_open",
-        "stablelm",
         "step3p5",
         "telechat3",
         "youtu_llm"

@@ -197,6 +197,7 @@ struct MLXRealModelCatalogTests {
         "qwen3_moe",
         "qwen3_next",
         "smollm3",
+        "stablelm",
         "starcoder2"
     ]
 
@@ -219,6 +220,7 @@ struct MLXRealModelCatalogTests {
         "qwen2_moe",
         "qwen3",
         "smollm3",
+        "stablelm",
         "starcoder2"
     ]
 
@@ -253,6 +255,7 @@ struct MLXRealModelCatalogTests {
         "qwen3_5_moe",
         "qwen3_moe",
         "smollm3",
+        "stablelm",
         "starcoder2"
     ]
 }
