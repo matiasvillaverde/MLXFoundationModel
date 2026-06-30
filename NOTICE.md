@@ -1,12 +1,10 @@
 # Notices
 
-`MLXFoundationModel` includes original code by Matias Villaverde and
-MIT-licensed upstream MLX code.
+`MLXFoundationModel` includes original code by Matias Villaverde.
 
-Some files under `Sources/MLXLocalModels/Common` and
-`Sources/MLXLocalModels/MLXLLM` retain source-level notices from Apple MLX
-projects or note ports from MLX model implementations. Those upstream projects
-are MIT licensed.
+The local runtime and model implementations under `Sources/MLXLocalModels` are
+project-owned code. The package also depends on MLX ecosystem libraries listed
+below; those dependencies keep their own licenses.
 
 Third-party dependencies keep their own licenses:
 

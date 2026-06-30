@@ -5,8 +5,8 @@
 open-source language models to Apple's Foundation Models provider shape.
 
 ## Layout
-- `Sources/MLXLocalModels/` contains the copied MLX runtime, model registry,
-  token generation, prompt cache, and streaming session code.
+- `Sources/MLXLocalModels/` contains the project-owned local MLX runtime,
+  model registry, token generation, prompt cache, and streaming session code.
 - `Sources/MLXFoundationModel/` contains the public bridge model,
   request rendering, event translation, and conditional Foundation Models
   conformance.
@@ -40,4 +40,4 @@ open-source language models to Apple's Foundation Models provider shape.
   task needs representative main architecture coverage without downloading the
   whole catalog.
 - Files under `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`
-  are copied MLX runtime internals and are intentionally excluded from strict lint.
+  are intentionally excluded from strict lint.
