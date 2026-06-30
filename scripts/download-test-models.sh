@@ -134,6 +134,7 @@ try:
         "tokenizer.json" in names
         or "tokenizer.model" in names
         or "cl100k_base.tiktoken" in names
+        or "qwen.tiktoken" in names
     )
     has_weights = (
         "model.safetensors.index.json" in names

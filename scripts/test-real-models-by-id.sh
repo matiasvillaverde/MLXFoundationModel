@@ -151,6 +151,7 @@ def has_model_files(model):
         (path / "tokenizer.json").exists()
         or (path / "tokenizer.model").exists()
         or (path / "cl100k_base.tiktoken").exists()
+        or (path / "qwen.tiktoken").exists()
     )
     has_weights = (
         (path / "model.safetensors").exists()

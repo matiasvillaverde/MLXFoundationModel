@@ -163,7 +163,10 @@ enum MLXRealModelEnvironment {
         let hasConfig = fileManager.fileExists(atPath: "\(path)/config.json")
         let hasTokenizerJSON = fileManager.fileExists(atPath: "\(path)/tokenizer.json")
         let hasSentencePieceTokenizer = fileManager.fileExists(atPath: "\(path)/tokenizer.model")
-        let hasTiktokenTokenizer = fileManager.fileExists(atPath: "\(path)/cl100k_base.tiktoken")
+        let hasTiktokenTokenizer = [
+            "cl100k_base.tiktoken",
+            "qwen.tiktoken"
+        ].contains { fileManager.fileExists(atPath: "\(path)/\($0)") }
         let hasTokenizer = hasTokenizerJSON || hasSentencePieceTokenizer || hasTiktokenTokenizer
         let hasSingleFileWeights = fileManager.fileExists(atPath: "\(path)/model.safetensors")
         let hasIndexedWeights = fileManager.fileExists(atPath: "\(path)/model.safetensors.index.json")

@@ -70,6 +70,19 @@
     "tags": ["relevant", "latest", "small-fit", "stress"]
   },
   {
+    "id": "qwen-1.8b",
+    "displayName": "Qwen 1.8B",
+    "architecture": "qwen",
+    "repository": "Qwen/Qwen-1_8B",
+    "relativePath": "Qwen-1_8B",
+    "prompt": "Write one short sentence about local language models.",
+    "expectedTokens": ["local", "model", "models"],
+    "maxTokens": 12,
+    "minimumMemoryGB": 16,
+    "minimumDiskGB": 5,
+    "tags": ["main", "relevant", "parity", "stress"]
+  },
+  {
     "id": "qwen2.5-1.5b-4bit",
     "displayName": "Qwen2.5 1.5B Instruct 4-bit",
     "architecture": "qwen2",
