@@ -491,6 +491,19 @@
     "tags": ["main", "relevant", "latest", "small"]
   },
   {
+    "id": "exaone-3.5-2.4b-instruct-4bit",
+    "displayName": "EXAONE 3.5 2.4B Instruct 4-bit",
+    "architecture": "exaone",
+    "repository": "mlx-community/EXAONE-3.5-2.4B-Instruct-4bit",
+    "relativePath": "EXAONE-3.5-2.4B-Instruct-4bit",
+    "prompt": "Write one short sentence about local language models.",
+    "expectedTokens": ["local", "language", "model"],
+    "maxTokens": 12,
+    "minimumMemoryGB": 8,
+    "minimumDiskGB": 3,
+    "tags": ["main", "relevant", "small", "parity", "stress"]
+  },
+  {
     "id": "ernie-4.5-0.3b-bf16",
     "displayName": "ERNIE 4.5 0.3B BF16",
     "architecture": "ernie4_5",

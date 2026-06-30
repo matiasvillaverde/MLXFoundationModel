@@ -21,6 +21,7 @@ struct MLXSupportedArchitectureTests {
         "deepseek_v3",
         "deepseek_v32",
         "ernie4_5",
+        "exaone",
         "exaone4",
         "falcon_h1",
         "gemma",

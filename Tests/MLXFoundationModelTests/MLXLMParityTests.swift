@@ -135,7 +135,6 @@ struct MLXLMParityTests {
         "deepseek",
         "deepseek_v2",
         "ernie4_5_moe",
-        "exaone",
         "exaone_moe",
         "glm",
         "granitemoe",

@@ -65,6 +65,7 @@ Use `MLX_TEST_MODELS_DIR=/path/to/models` to reuse shared model storage.
 | `smollm3` | `smollm3-3b-4bit` |
 | `lfm2` | `lfm2.5-1.2b-thinking-4bit` |
 | `lfm2_moe` | `lfm2-moe` |
+| `exaone` | `exaone-3.5-2.4b-instruct-4bit` |
 | `exaone4` | `exaone-4.0-1.2b-4bit` |
 | `ernie4_5` | `ernie-4.5-0.3b-bf16` |
 | `bitnet` | `bitnet-b1.58-2b-4t-4bit` |

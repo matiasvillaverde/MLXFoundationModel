@@ -1,6 +1,6 @@
 # Provenance and Benchmarks
 
-Last updated: 2026-06-25
+Last updated: 2026-06-30
 
 ## Provenance
 
@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 101 | Safe area for normal refactors. |
+| Files with no source-port marker | 102 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -61,6 +61,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/NemotronH.swift` | Nemotron H typed block scheduling, attention and Mamba layout planning, squared-ReLU dense and routed feed-forward paths, grouped expert routing, mixed cache planning, tied/untied heads, greedy-token fast path, SSM mask use, sanitizer packing, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/GLM4MoELite.swift` | GLM4 MoE Lite and GLM DSA attention planning, grouped routing, DSA cache layout, multi-head projection quantization, tied/untied heads, greedy-token fast path, sanitizer packing, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Llama.swift` | Llama/Mistral attention layout, linear/dynamic/Llama 3 RoPE planning, decoder block, backbone, tied/untied output heads, greedy-token fast path, config validation, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/Exaone.swift` | EXAONE 3.x grouped-query attention, llama3 RoPE scaling, SwiGLU feed-forward blocks, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Phi3.swift` | Phi3 packed QKV attention, RoPE/LongRoPE planning, decoder block, backbone, tied/untied output heads, greedy-token fast path, config defaults, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Phi.swift` | Phi attention layout, decoder block, backbone, greedy-token fast path, configuration defaults, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/PhiMoE.swift` | Phi MoE attention layout, LongRoPE planning, router planning, guarded expert packing, stable checkpoint keys, greedy-token fast path, cache dimensions, and LoRA target discovery. |
@@ -118,6 +119,7 @@ Current independence pass:
 - Added MiniCPM3 with explicit MLA attention, non-loadable LongRoPE runtime frequencies, MiniCPM scaling, tied-head cleanup, greedy-token fast path, and focused config/layout/forward/sanitizer coverage.
 - Replaced Mistral 3 text with explicit attention and layer-schedule plans, Llama 4 position scaling, VLM weight unwrapping, mixed cache creation, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 - Replaced OLMo2 with explicit attention layout, q/k normalization, stable `model.*` parameter keys, tied-head sanitizing, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
+- Added EXAONE 3.x with explicit grouped-query attention, llama3 RoPE scaling, checkpoint-compatible nested attention keys, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 - Replaced NanoChat with explicit attention, rotary-frequency, RMSNorm, and logit-softcap plans; preserved transformer checkpoint keys; added greedy-token fast path, simple cache creation, and focused config/layout/forward/softcap coverage.
 - Replaced GatedDelta with explicit shape planning, deterministic mask semantics, safe unsupported-shape fallback, project-owned Metal recurrence dispatch, and focused decay/layout/fallback coverage.
 - Replaced MiniMax with explicit attention and sparse-routing plans, stable `model.*` checkpoint keys, expert packing, tied-head handling, greedy-token fast path, and focused config/layout/forward/sanitizer coverage.
@@ -179,9 +181,9 @@ gate. The test runner selected 52 downloadable models and skipped 9 oversized
 models on this 32 GB host. Each selected model ran serialized generation,
 rendered session requests, and token-level grammar constraint checks.
 
-A follow-up serialized `main` sweep on 2026-06-30 selected 24 downloadable
-models, including Jamba, and passed generation, rendered session, token grammar,
-and configured stress checks.
+A follow-up serialized `main` sweep on 2026-06-30 selected 25 downloadable
+models, including EXAONE 3.5 and Jamba, and passed generation, rendered session,
+token grammar, and configured stress checks.
 
 The current sweep adds 32 GB-friendly checkpoints for `qwen3_moe`, `mistral`,
 `gpt_oss`, `qwen3_5_moe`, and `nemotron_h`. These entries also run the stress
@@ -222,6 +224,11 @@ Jamba parity was added with `mlx-community/AI21-Jamba-Reasoning-3B-4bit`. The
 checkpoint is 1.6 GB on disk and passed targeted real-model generation,
 rendered session requests, token grammar constraints, and stress generation on
 this host.
+
+EXAONE 3.x parity was added with
+`mlx-community/EXAONE-3.5-2.4B-Instruct-4bit`. The checkpoint is 1.3 GB on disk
+and passed targeted real-model generation, rendered session requests, token
+grammar constraints, and stress generation on this host.
 
 StableLM parity was added with `mlx-community/stablelm-2-zephyr-1_6b-4bit`.
 The checkpoint is 1.1 GB on disk and passed targeted real-model generation,
@@ -273,6 +280,7 @@ rather than a stable throughput claim.
 | `smollm3` | `smollm3-3b-4bit` | 8 | 252 | 0.4743 | 0.1835 | 0.2908 | 27.51 | 16.87 |
 | `lfm2` | `lfm2.5-1.2b-thinking-4bit` | 8 | 21 | 0.0731 | 0.0162 | 0.0569 | 140.60 | 109.42 |
 | `lfm2_moe` | `lfm2-moe` | 8 | 17 | 0.1760 | 0.0859 | 0.0901 | 88.79 | 45.46 |
+| `exaone` | `exaone-3.5-2.4b-instruct-4bit` | 8 | 43 | 0.1179 | 0.0336 | 0.0843 | 94.90 | 67.88 |
 | `exaone4` | `exaone-4.0-1.2b-4bit` | 8 | 17 | 0.0990 | 0.0420 | 0.0571 | 140.17 | 80.78 |
 | `ernie4_5` | `ernie-4.5-0.3b-bf16` | 8 | 11 | 0.0596 | 0.0151 | 0.0446 | 179.51 | 134.19 |
 | `bitnet` | `bitnet-b1.58-2b-4t-4bit` | 8 | 10 | 0.1103 | 0.0344 | 0.0759 | 105.35 | 72.51 |
