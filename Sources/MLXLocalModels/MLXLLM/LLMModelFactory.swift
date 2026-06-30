@@ -61,6 +61,7 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
                 Gemma4AssistantModel($0)
             },
             modelType("qwen2", configuration: Qwen2Configuration.self) { Qwen2Model($0) },
+            modelType("qwen", configuration: QwenConfiguration.self) { QwenModel($0) },
             modelType("qwen2_moe", configuration: Qwen2MoEConfiguration.self) {
                 Qwen2MoEModel($0)
             },
@@ -344,6 +345,11 @@ internal class LLMRegistry: AbstractModelRegistry, @unchecked Sendable {
         defaultPrompt: "why is the sky blue?"
     )
 
+    public static let qwenOne8B = ModelConfiguration(
+        id: "Qwen/Qwen-1_8B",
+        defaultPrompt: "Write one short sentence about local language models."
+    )
+
     public static let qwen2Point5Seven7b = ModelConfiguration(
         id: "mlx-community/Qwen2.5-7B-Instruct-4bit",
         defaultPrompt: "Why is the sky blue?"
@@ -497,6 +503,7 @@ internal class LLMRegistry: AbstractModelRegistry, @unchecked Sendable {
             phi3Point5MoE,
             phi3Point5Four4bit,
             phi4bit,
+            qwenOne8B,
             qwen205b4bit,
             qwen2Point5Seven7b,
             qwen2Point5One1Point5b,

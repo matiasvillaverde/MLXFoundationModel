@@ -60,6 +60,26 @@ struct TokenizerSupportTests {
         #expect(chatTokens.contains(0))
     }
 
+    @Test("loads Qwen tiktoken tokenizer without tokenizer JSON")
+    func loadsQwenTiktokenTokenizer() async throws {
+        let directory = try Self.makeQwenTokenizerFixture()
+        let tokenizer = try await loadTokenizer(
+            configuration: ModelConfiguration(directory: directory),
+            hub: HubApi()
+        )
+
+        #expect(tokenizer.encode(text: "hello", addSpecialTokens: false) == [128])
+        #expect(tokenizer.decode(tokens: [128]) == "hello")
+        #expect(tokenizer.convertTokenToId("<|im_start|>") == 151_644)
+        #expect(tokenizer.decode(tokens: [151_644, 128, 151_645], skipSpecialTokens: true) == "hello")
+
+        let messages: [Message] = [["role": "user", "content": "hello"]]
+        let chatTokens = try tokenizer.applyChatTemplate(messages: messages)
+        #expect(chatTokens.contains(151_644))
+        #expect(chatTokens.contains(151_645))
+        #expect(chatTokens.contains(128))
+    }
+
     @Test("loads SentencePiece model tokenizer without tokenizer JSON")
     func loadsSentencePieceModelTokenizer() async throws {
         let directory = try Self.makeSentencePieceTokenizerFixture()
@@ -166,6 +186,34 @@ struct TokenizerSupportTests {
             encoding: .utf8
         )
         return directory
+    }
+
+    private static func makeQwenTokenizerFixture() throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(component: "QwenTokenizer-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        try Self.qwenTiktokenFixture().write(
+            to: directory.appending(component: QwenTiktokenTokenizer.vocabFilename),
+            atomically: true,
+            encoding: .utf8
+        )
+        try #"{"tokenizer_class":"QWenTokenizer","model_max_length":8192}"#.write(
+            to: directory.appending(component: "tokenizer_config.json"),
+            atomically: true,
+            encoding: .utf8
+        )
+        return directory
+    }
+
+    private static func qwenTiktokenFixture() -> String {
+        var vocab = (0 ... 127).map { byte in
+            (Data([UInt8(byte)]), byte)
+        }
+        vocab.append((Data("hello".utf8), 128))
+        return vocab
+            .map { token, rank in "\(token.base64EncodedString()) \(rank)" }
+            .joined(separator: "\n")
     }
 
     private static func makeSentencePieceTokenizerFixture() throws -> URL {

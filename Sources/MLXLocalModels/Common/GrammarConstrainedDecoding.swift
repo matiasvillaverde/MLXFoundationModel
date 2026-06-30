@@ -877,7 +877,17 @@ private enum TokenizerVocabularyParser {
         )
         if FileManager.default.fileExists(atPath: tiktokenURL.path) {
             return LoadedVocabulary(
-                vocabulary: try encodedTiktokenVocabulary(from: tiktokenURL),
+                vocabulary: try encodedPhi3SmallTiktokenVocabulary(from: tiktokenURL),
+                tokenizerJSON: #"{"model":{"type":"BPE","vocab":{}},"decoder":{"type":"Raw"}}"#
+            )
+        }
+
+        let qwenTiktokenURL = modelDirectory.appendingPathComponent(
+            QwenTiktokenTokenizer.vocabFilename
+        )
+        if FileManager.default.fileExists(atPath: qwenTiktokenURL.path) {
+            return LoadedVocabulary(
+                vocabulary: try encodedQwenTiktokenVocabulary(from: qwenTiktokenURL),
                 tokenizerJSON: #"{"model":{"type":"BPE","vocab":{}},"decoder":{"type":"Raw"}}"#
             )
         }
@@ -911,8 +921,13 @@ private enum TokenizerVocabularyParser {
         return try compactVocabulary(from: entries)
     }
 
-    private static func encodedTiktokenVocabulary(from vocabURL: URL) throws -> [String] {
+    private static func encodedPhi3SmallTiktokenVocabulary(from vocabURL: URL) throws -> [String] {
         let entries = try Phi3SmallTiktokenTokenizer.vocabularyEntries(from: vocabURL)
+        return try compactVocabulary(from: entries)
+    }
+
+    private static func encodedQwenTiktokenVocabulary(from vocabURL: URL) throws -> [String] {
+        let entries = try QwenTiktokenTokenizer.vocabularyEntries(from: vocabURL)
         return try compactVocabulary(from: entries)
     }
 

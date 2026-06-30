@@ -57,6 +57,15 @@ private struct TokenizerConfigLoader {
                 tokenizer: nil
             )
         } catch {
+            if let tokenizer = try QwenTiktokenTokenizer.load(
+                from: configuration.modelDirectory(hub: hub)
+            ) {
+                return TokenizerConfigFiles(
+                    tokenizerConfig: Config(["tokenizer_class": Config("QwenTiktokenTokenizer")]),
+                    tokenizerData: nil,
+                    tokenizer: tokenizer
+                )
+            }
             if let tokenizer = try SentencePieceModelTokenizer.load(
                 from: configuration.modelDirectory(hub: hub)
             ) {

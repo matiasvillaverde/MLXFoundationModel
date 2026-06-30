@@ -149,7 +149,6 @@ struct MLXLMParityTests {
         "phixtral",
         "plamo",
         "plamo2",
-        "qwen",
         "recurrent_gemma",
         "rwkv7",
         "seed_oss",
