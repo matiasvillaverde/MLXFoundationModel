@@ -423,6 +423,19 @@
     "tags": ["main", "relevant", "latest"]
   },
   {
+    "id": "granite-3.1-1b-a400m-instruct",
+    "displayName": "Granite 3.1 1B-A400M Instruct",
+    "architecture": "granitemoe",
+    "repository": "ibm-granite/granite-3.1-1b-a400m-instruct",
+    "relativePath": "granite-3.1-1b-a400m-instruct",
+    "prompt": "Name one advantage of sparse expert models.",
+    "expectedTokens": ["expert", "experts", "efficient", "model"],
+    "maxTokens": 12,
+    "minimumMemoryGB": 8,
+    "minimumDiskGB": 4,
+    "tags": ["main", "relevant", "small", "parity", "stress"]
+  },
+  {
     "id": "granite-moe-hybrid",
     "displayName": "Granite MoE Hybrid",
     "architecture": "granitemoehybrid",

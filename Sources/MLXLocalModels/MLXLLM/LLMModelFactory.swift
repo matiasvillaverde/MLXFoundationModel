@@ -97,6 +97,9 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
                 DeepseekV32Model($0)
             },
             modelType("granite", configuration: GraniteConfiguration.self) { GraniteModel($0) },
+            modelType("granitemoe", configuration: GraniteMoEConfiguration.self) {
+                GraniteMoEModel($0)
+            },
             modelType("granitemoehybrid", configuration: GraniteMoeHybridConfiguration.self) {
                 GraniteMoeHybridModel($0)
             },
