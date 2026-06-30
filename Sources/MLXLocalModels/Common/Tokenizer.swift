@@ -12,9 +12,15 @@ internal struct TokenizerError: Error, Equatable, CustomStringConvertible {
 
 internal func loadTokenizer(configuration: ModelConfiguration, hub: HubApi) async throws -> Tokenizer {
     let files = try await TokenizerConfigLoader(configuration: configuration, hub: hub).load()
+    if let tokenizer = files.tokenizer {
+        return tokenizer
+    }
+    guard let tokenizerData = files.tokenizerData else {
+        throw TokenizerError(message: "missing tokenizer data")
+    }
     return try PreTrainedTokenizer(
         tokenizerConfig: files.tokenizerConfig,
-        tokenizerData: files.tokenizerData
+        tokenizerData: tokenizerData
     )
 }
 
@@ -22,12 +28,16 @@ internal func loadTokenizerConfig(configuration: ModelConfiguration, hub: HubApi
     Config, Config
 ) {
     let files = try await TokenizerConfigLoader(configuration: configuration, hub: hub).load()
-    return (files.tokenizerConfig, files.tokenizerData)
+    guard let tokenizerData = files.tokenizerData else {
+        throw TokenizerError(message: "missing tokenizer data")
+    }
+    return (files.tokenizerConfig, tokenizerData)
 }
 
 private struct TokenizerConfigFiles {
     let tokenizerConfig: Config
-    let tokenizerData: Config
+    let tokenizerData: Config?
+    let tokenizer: (any Tokenizer)?
 }
 
 private struct TokenizerConfigLoader {
@@ -36,14 +46,28 @@ private struct TokenizerConfigLoader {
 
     func load() async throws -> TokenizerConfigFiles {
         let source = try await tokenizerSource()
-        let tokenizerConfig = try await source.requiredTokenizerConfig()
-        let tokenizerData = try await source.tokenizerData
-        let rewriter = TokenizerConfigurationRewriter(registry: replacementTokenizers)
+        do {
+            let tokenizerConfig = try await source.requiredTokenizerConfig()
+            let tokenizerData = try await source.tokenizerData
+            let rewriter = TokenizerConfigurationRewriter(registry: replacementTokenizers)
 
-        return TokenizerConfigFiles(
-            tokenizerConfig: rewriter.rewrite(tokenizerConfig, tokenizerData: tokenizerData),
-            tokenizerData: tokenizerData
-        )
+            return TokenizerConfigFiles(
+                tokenizerConfig: rewriter.rewrite(tokenizerConfig, tokenizerData: tokenizerData),
+                tokenizerData: tokenizerData,
+                tokenizer: nil
+            )
+        } catch {
+            if let tokenizer = try Phi3SmallTiktokenTokenizer.load(
+                from: configuration.modelDirectory(hub: hub)
+            ) {
+                return TokenizerConfigFiles(
+                    tokenizerConfig: Config(["tokenizer_class": Config("Phi3SmallTokenizer")]),
+                    tokenizerData: nil,
+                    tokenizer: tokenizer
+                )
+            }
+            throw error
+        }
     }
 
     private func tokenizerSource() async throws -> LanguageModelConfigurationFromHub {

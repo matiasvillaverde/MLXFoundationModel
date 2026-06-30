@@ -38,6 +38,9 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
             },
             modelType("phi", configuration: PhiConfiguration.self) { PhiModel($0) },
             modelType("phi3", configuration: Phi3Configuration.self) { Phi3Model($0) },
+            modelType("phi3small", configuration: Phi3SmallConfiguration.self) {
+                Phi3SmallModel($0)
+            },
             modelType("phimoe", configuration: PhiMoEConfiguration.self) { PhiMoEModel($0) },
             modelType("gemma", configuration: GemmaConfiguration.self) { GemmaModel($0) },
             modelType("gemma2", configuration: Gemma2Configuration.self) { Gemma2Model($0) },
@@ -250,6 +253,12 @@ internal class LLMRegistry: AbstractModelRegistry, @unchecked Sendable {
     public static let phi3Point5Four4bit = ModelConfiguration(
         id: "mlx-community/Phi-3.5-mini-instruct-4bit",
         defaultPrompt: "What is the gravity on Mars and the moon?",
+        extraEOSTokens: ["<|end|>"]
+    )
+
+    public static let phi3Small8kAQ4_32 = ModelConfiguration(
+        id: "mlx-community/Phi-3-small-8k-instruct-AQ4_32",
+        defaultPrompt: "Write one short sentence about local language models.",
         extraEOSTokens: ["<|end|>"]
     )
 
@@ -475,6 +484,7 @@ internal class LLMRegistry: AbstractModelRegistry, @unchecked Sendable {
             mistral7B4bit,
             mistralNeMo4bit,
             openelm270m4bit,
+            phi3Small8kAQ4_32,
             phi3Point5MoE,
             phi3Point5Four4bit,
             phi4bit,

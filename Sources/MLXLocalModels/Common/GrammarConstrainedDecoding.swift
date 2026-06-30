@@ -32,12 +32,8 @@ internal final class GrammarConstraintCompiler: @unchecked Sendable {
     private let stopTokenCount: Int
 
     internal init(modelDirectory: URL, stopTokenIds: Set<Int>) throws {
-        let tokenizerURL = modelDirectory.appendingPathComponent("tokenizer.json")
-        guard FileManager.default.fileExists(atPath: tokenizerURL.path) else {
-            throw GrammarConstraintError.missingTokenizerJSON(tokenizerURL)
-        }
-        let tokenizerJSON = try String(contentsOf: tokenizerURL, encoding: .utf8)
-        let vocabulary = try TokenizerVocabularyParser.encodedVocabulary(from: tokenizerJSON)
+        let tokenizer = try TokenizerVocabularyParser.loadVocabulary(from: modelDirectory)
+        let vocabulary = tokenizer.vocabulary
         let stopTokens = stopTokenIds.map(Int32.init).sorted()
         self.vocabularySize = vocabulary.count
         self.stopTokenIds = stopTokens
@@ -46,7 +42,7 @@ internal final class GrammarConstraintCompiler: @unchecked Sendable {
         self.handle = try Self.makeHandle(
             vocabulary: vocabulary,
             stopTokenIds: stopTokens,
-            tokenizerJSON: tokenizerJSON
+            tokenizerJSON: tokenizer.tokenizerJSON
         )
         MLXGenerationDiagnostics.recordGrammarConstraint(.init(
             stage: .compilerReady,
@@ -861,6 +857,34 @@ internal struct GrammarConstrainedLogitProcessor: LogitProcessor, @unchecked Sen
 }
 
 private enum TokenizerVocabularyParser {
+    struct LoadedVocabulary {
+        let vocabulary: [String]
+        let tokenizerJSON: String
+    }
+
+    static func loadVocabulary(from modelDirectory: URL) throws -> LoadedVocabulary {
+        let tokenizerURL = modelDirectory.appendingPathComponent("tokenizer.json")
+        if FileManager.default.fileExists(atPath: tokenizerURL.path) {
+            let tokenizerJSON = try String(contentsOf: tokenizerURL, encoding: .utf8)
+            return LoadedVocabulary(
+                vocabulary: try encodedVocabulary(from: tokenizerJSON),
+                tokenizerJSON: tokenizerJSON
+            )
+        }
+
+        let tiktokenURL = modelDirectory.appendingPathComponent(
+            Phi3SmallTiktokenTokenizer.vocabFilename
+        )
+        guard FileManager.default.fileExists(atPath: tiktokenURL.path) else {
+            throw GrammarConstraintError.missingTokenizerJSON(tokenizerURL)
+        }
+
+        return LoadedVocabulary(
+            vocabulary: try encodedTiktokenVocabulary(from: tiktokenURL),
+            tokenizerJSON: #"{"model":{"type":"BPE","vocab":{}},"decoder":{"type":"Raw"}}"#
+        )
+    }
+
     static func encodedVocabulary(from tokenizerJSON: String) throws -> [String] {
         guard let data = tokenizerJSON.data(using: .utf8) else {
             throw GrammarConstraintError.invalidTokenizerJSON("Tokenizer JSON is not UTF-8")
@@ -871,6 +895,11 @@ private enum TokenizerVocabularyParser {
         var entries = try vocabularyParser.parseVocabularyEntries()
         var addedTokenParser = TokenizerJSONVocabularyParser(bytes: bytes)
         entries.merge(try addedTokenParser.parseAddedTokenEntries()) { _, new in new }
+        return try compactVocabulary(from: entries)
+    }
+
+    private static func encodedTiktokenVocabulary(from vocabURL: URL) throws -> [String] {
+        let entries = try Phi3SmallTiktokenTokenizer.vocabularyEntries(from: vocabURL)
         return try compactVocabulary(from: entries)
     }
 

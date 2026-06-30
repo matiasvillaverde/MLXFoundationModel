@@ -148,7 +148,6 @@ struct MLXLMParityTests {
         "mellum",
         "nemotron",
         "nemotron-nas",
-        "phi3small",
         "phixtral",
         "plamo",
         "plamo2",

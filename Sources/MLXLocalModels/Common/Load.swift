@@ -20,6 +20,7 @@ internal enum ModelArtifactMatcher {
         "*.safetensors",
         "*.json",
         "*.jinja",
+        "*.tiktoken",
         "merges.txt",
         "tokenizer.model",
         "vocab.*"
