@@ -55,7 +55,6 @@ MoE and recent family gaps:
 Legacy and compatibility gaps:
 
 - `qwen`
-- `deepseek`
 - `glm`
 - `recurrent_gemma`
 - `rwkv7`

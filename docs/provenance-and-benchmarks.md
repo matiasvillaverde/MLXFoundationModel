@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 107 | Safe area for normal refactors. |
+| Files with no source-port marker | 108 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -56,6 +56,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/Gemma2.swift` | Gemma2 soft-capped attention, grouped KV expansion, decoder block, backbone, greedy-token fast path, config defaults, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Internlm2.swift` | InternLM2 packed attention, dynamic RoPE planning, decoder blocks, greedy-token fast path, config defaults, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/DeepseekV3.swift` | DeepSeek V3 attention layout, YaRN planning, grouped MoE routing, checkpoint key normalization, cache dimensions, greedy-token fast path, sanitizer packing, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/Deepseek.swift` | DeepSeek MoE attention layout, top-k expert routing, shared experts, packed expert checkpoint remapping, tied-head cleanup, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/GLM4MOE.swift` | GLM4 MoE attention layout, layer plan, grouped sparse routing, expert packing, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/AfMoE.swift` | AfMoE full/sliding attention layout, layer schedule, grouped sparse routing, expert packing, mixed cache planning, tied/untied heads, greedy-token fast path, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Qwen3Next.swift` | Qwen3Next layer scheduling, gated full attention, gated-delta linear attention, MoE routing, expert packing, mixed cache planning, tied/untied heads, greedy-token fast path, and LoRA target discovery. |
@@ -114,6 +115,7 @@ Current independence pass:
 - Replaced Phi3 with packed QKV layout, explicit RoPE/LongRoPE planning, tied/untied output handling, greedy-token fast path, and focused config/layout/LoRA coverage.
 - Replaced Llama with explicit Llama/Mistral layout, project-owned RoPE planning for linear, dynamic, and Llama 3 scaling, tied/untied output handling, greedy-token fast path, and focused config/layout/LoRA coverage.
 - Replaced DeepSeek V3 with explicit attention, YaRN, and MoE routing plans; fixed empty KV-cache dimensions; corrected adapter targets; packed expert weights in the sanitizer; and added focused config/layout/routing/forward/sanitizer coverage.
+- Added DeepSeek MoE with explicit GQA attention, RoPE planning, dense-vs-sparse layer scheduling, shared experts, top-k routing, packed expert checkpoint remapping, tied-head cleanup, greedy-token fast path, and focused config/layout/routing/forward/sanitizer coverage.
 - Replaced Granite with an explicit attention layout, linear RoPE scaling plan, stable checkpoint-compatible `model.*` parameter keys, tied/untied output handling, greedy-token fast path, and focused config/layout/forward/LoRA coverage.
 - Replaced ERNIE 4.5 with an explicit attention layout, head-dimension fallback and override handling, stable checkpoint-compatible `model.*` parameter keys, tied/untied output handling, greedy-token fast path, and focused config/layout/forward/LoRA coverage.
 - Replaced OLMo3 with explicit sliding/full attention scheduling, q/k normalization, YaRN-vs-sliding RoPE selection, cache layout, tied/untied output handling, greedy-token fast path, and focused config/layout/cache/LoRA coverage.
@@ -190,10 +192,10 @@ gate. The test runner selected 52 downloadable models and skipped 9 oversized
 models on this 32 GB host. Each selected model ran serialized generation,
 rendered session requests, and token-level grammar constraint checks.
 
-A follow-up serialized `main` sweep on 2026-06-30 selected 30 downloadable
-models, including DeepSeek V2, EXAONE 3.5, GraniteMoE, Helium, Jamba, Mamba,
-and Mamba2, and passed generation, rendered session, token grammar, and
-configured stress checks.
+A follow-up serialized `main` sweep on 2026-06-30 selected 31 downloadable
+models, including DeepSeek, DeepSeek V2, EXAONE 3.5, GraniteMoE, Helium,
+Jamba, Mamba, and Mamba2, and passed generation, rendered session, token
+grammar, and configured stress checks.
 
 The current sweep adds 32 GB-friendly checkpoints for `qwen3_moe`, `mistral`,
 `gpt_oss`, `qwen3_5_moe`, and `nemotron_h`. These entries also run the stress
@@ -234,6 +236,12 @@ GraniteMoE parity was added with
 `ibm-granite/granite-3.1-1b-a400m-instruct`. The checkpoint is 2.5 GB on disk
 and passed targeted real-model generation, rendered session requests, token
 grammar constraints, and stress generation on this host.
+
+DeepSeek parity was added with
+`BlueMoonlight/deepseek-moe-16b-chat-mlx-4Bit`. The checkpoint is 8.6 GB on
+disk and passed targeted release and serialized `main` real-model generation,
+rendered session requests, token grammar constraints, and stress generation on
+this host.
 
 Jamba parity was added with `mlx-community/AI21-Jamba-Reasoning-3B-4bit`. The
 checkpoint is 1.6 GB on disk and passed targeted real-model generation,
@@ -493,6 +501,23 @@ Best stress iteration from the same run:
 | Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `deepseek_v2` | `deepseek-v2-lite-chat-4bit` | 32 | 0.3656 | 0.0988 | 0.2669 | 119.91 | 87.52 |
+
+## DeepSeek Parity Check
+
+These rows come from the targeted release DeepSeek MoE run and the serialized
+debug `main` sweep on 2026-06-30.
+
+| Architecture | Model | Generated | Prompt | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `deepseek` | `deepseek-moe-16b-chat-4bit` release targeted | 2 | 16 | 0.7621 | 0.7169 | 0.0451 | 44.32 | 2.62 |
+| `deepseek` | `deepseek-moe-16b-chat-4bit` debug main | 2 | 16 | 0.2262 | 0.1594 | 0.0668 | 29.94 | 8.84 |
+
+Best stress iterations from the same runs:
+
+| Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `deepseek` | `deepseek-moe-16b-chat-4bit` release targeted | 32 | 0.4319 | 0.1276 | 0.3043 | 105.15 | 74.09 |
+| `deepseek` | `deepseek-moe-16b-chat-4bit` debug main | 32 | 0.9222 | 0.1447 | 0.7775 | 41.16 | 34.70 |
 
 ## GraniteMoE Parity Check
 
