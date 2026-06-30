@@ -602,6 +602,19 @@
     "tags": ["relevant", "latest", "large"]
   },
   {
+    "id": "deepseek-v2-lite-chat-4bit",
+    "displayName": "DeepSeek V2 Lite Chat 4-bit",
+    "architecture": "deepseek_v2",
+    "repository": "mlx-community/DeepSeek-V2-Lite-Chat-4bit-mlx",
+    "relativePath": "DeepSeek-V2-Lite-Chat-4bit-mlx",
+    "prompt": "Write one short sentence about efficient expert models.",
+    "expectedTokens": ["expert", "efficient", "model"],
+    "maxTokens": 18,
+    "minimumMemoryGB": 24,
+    "minimumDiskGB": 10,
+    "tags": ["main", "relevant", "small-fit", "parity", "stress"]
+  },
+  {
     "id": "mimo-7b-rl-4bit",
     "displayName": "MiMo 7B RL 4-bit",
     "architecture": "mimo",

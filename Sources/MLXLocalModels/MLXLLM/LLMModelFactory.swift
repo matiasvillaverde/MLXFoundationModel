@@ -87,6 +87,9 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
             modelType("internlm2", configuration: InternLM2Configuration.self) {
                 InternLM2Model($0)
             },
+            modelType("deepseek_v2", configuration: DeepseekV2Configuration.self) {
+                DeepseekV2Model($0)
+            },
             modelType("deepseek_v3", configuration: DeepseekV3Configuration.self) {
                 DeepseekV3Model($0)
             },
@@ -386,6 +389,11 @@ internal class LLMRegistry: AbstractModelRegistry, @unchecked Sendable {
         defaultPrompt: "Tell me about the history of Spain."
     )
 
+    public static let deepseekV2LiteChat4bit = ModelConfiguration(
+        id: "mlx-community/DeepSeek-V2-Lite-Chat-4bit-mlx",
+        defaultPrompt: "Write one short sentence about efficient expert models."
+    )
+
     public static let granite3Point3Two2b4bit = ModelConfiguration(
         id: "mlx-community/granite-3.3-2b-instruct-4bit",
         defaultPrompt: ""
@@ -471,6 +479,7 @@ internal class LLMRegistry: AbstractModelRegistry, @unchecked Sendable {
             qwen3MoE30bA3b4bit,
             smolLM135M4bit,
             deepseekR1Four4bit,
+            deepseekV2LiteChat4bit,
             mimo7bSft4bit,
             glm4Nine9b4bit,
             acereason7b4bit,

@@ -4,6 +4,7 @@ import MLXFast
 import MLXNN
 
 internal struct DeepseekV3Configuration: Codable, Equatable, Sendable {
+    internal var modelType: String
     internal var vocabSize: Int
     internal var hiddenSize: Int
     internal var intermediateSize: Int
@@ -20,6 +21,8 @@ internal struct DeepseekV3Configuration: Codable, Equatable, Sendable {
     internal var vHeadDim: Int
     internal var qkNopeHeadDim: Int
     internal var normTopkProb: Bool
+    internal var topKMethod: DeepseekMoETopKMethod
+    internal var routingScoreFunction: DeepseekMoERoutingScoreFunction
     internal var nGroup: Int?
     internal var topkGroup: Int?
     internal var numExpertsPerTok: Int?
@@ -32,6 +35,7 @@ internal struct DeepseekV3Configuration: Codable, Equatable, Sendable {
     internal var attentionBias: Bool
 
     internal init(
+        modelType: String = "deepseek_v3",
         vocabSize: Int,
         hiddenSize: Int,
         intermediateSize: Int,
@@ -48,6 +52,8 @@ internal struct DeepseekV3Configuration: Codable, Equatable, Sendable {
         vHeadDim: Int,
         qkNopeHeadDim: Int,
         normTopkProb: Bool = false,
+        topKMethod: DeepseekMoETopKMethod = .greedy,
+        routingScoreFunction: DeepseekMoERoutingScoreFunction = .sigmoid,
         nGroup: Int? = nil,
         topkGroup: Int? = nil,
         numExpertsPerTok: Int? = nil,
@@ -59,6 +65,7 @@ internal struct DeepseekV3Configuration: Codable, Equatable, Sendable {
         ropeScaling: [String: StringOrNumber]? = nil,
         attentionBias: Bool = false
     ) {
+        self.modelType = modelType
         self.vocabSize = vocabSize
         self.hiddenSize = hiddenSize
         self.intermediateSize = intermediateSize
@@ -75,6 +82,8 @@ internal struct DeepseekV3Configuration: Codable, Equatable, Sendable {
         self.vHeadDim = vHeadDim
         self.qkNopeHeadDim = qkNopeHeadDim
         self.normTopkProb = normTopkProb
+        self.topKMethod = topKMethod
+        self.routingScoreFunction = routingScoreFunction
         self.nGroup = nGroup
         self.topkGroup = topkGroup
         self.numExpertsPerTok = numExpertsPerTok
@@ -103,6 +112,8 @@ internal struct DeepseekV3Configuration: Codable, Equatable, Sendable {
         let qkNopeHeadDim = try container.decode(Int.self, forKey: .qkNopeHeadDim)
 
         self.init(
+            modelType: try container.decodeIfPresent(String.self, forKey: .modelType)
+                ?? "deepseek_v3",
             vocabSize: vocabSize,
             hiddenSize: hiddenSize,
             intermediateSize: intermediateSize,
@@ -123,6 +134,14 @@ internal struct DeepseekV3Configuration: Codable, Equatable, Sendable {
             qkNopeHeadDim: qkNopeHeadDim,
             normTopkProb: try container.decodeIfPresent(Bool.self, forKey: .normTopkProb)
                 ?? false,
+            topKMethod: try container.decodeIfPresent(
+                DeepseekMoETopKMethod.self,
+                forKey: .topKMethod
+            ) ?? .greedy,
+            routingScoreFunction: try container.decodeIfPresent(
+                DeepseekMoERoutingScoreFunction.self,
+                forKey: .routingScoreFunction
+            ) ?? .sigmoid,
             nGroup: try container.decodeIfPresent(Int.self, forKey: .nGroup),
             topkGroup: try container.decodeIfPresent(Int.self, forKey: .topkGroup),
             numExpertsPerTok: try container.decodeIfPresent(Int.self, forKey: .numExpertsPerTok),
@@ -148,6 +167,7 @@ internal struct DeepseekV3Configuration: Codable, Equatable, Sendable {
     }
 
     internal enum CodingKeys: String, CodingKey {
+        case modelType = "model_type"
         case vocabSize = "vocab_size"
         case hiddenSize = "hidden_size"
         case intermediateSize = "intermediate_size"
@@ -164,6 +184,8 @@ internal struct DeepseekV3Configuration: Codable, Equatable, Sendable {
         case vHeadDim = "v_head_dim"
         case qkNopeHeadDim = "qk_nope_head_dim"
         case normTopkProb = "norm_topk_prob"
+        case topKMethod = "topk_method"
+        case routingScoreFunction = "scoring_func"
         case nGroup = "n_group"
         case topkGroup = "topk_group"
         case numExpertsPerTok = "num_experts_per_tok"
@@ -174,6 +196,54 @@ internal struct DeepseekV3Configuration: Codable, Equatable, Sendable {
         case ropeTheta = "rope_theta"
         case ropeScaling = "rope_scaling"
         case attentionBias = "attention_bias"
+    }
+
+    internal var usesExpertScoreCorrectionBias: Bool {
+        routingScoreFunction == .sigmoid
+    }
+}
+
+internal enum DeepseekMoETopKMethod: String, Codable, Equatable, Sendable {
+    case greedy
+    case groupLimitedGreedy
+
+    internal init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let value = try container.decode(String.self).lowercased()
+        switch value {
+        case "group_limited_greedy":
+            self = .groupLimitedGreedy
+        case "greedy", "gready":
+            self = .greedy
+        default:
+            self = .greedy
+        }
+    }
+
+    internal func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .greedy:
+            try container.encode("greedy")
+        case .groupLimitedGreedy:
+            try container.encode("group_limited_greedy")
+        }
+    }
+}
+
+internal enum DeepseekMoERoutingScoreFunction: String, Codable, Equatable, Sendable {
+    case sigmoid
+    case softmax
+
+    internal init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let value = try container.decode(String.self).lowercased()
+        switch value {
+        case "softmax":
+            self = .softmax
+        default:
+            self = .sigmoid
+        }
     }
 }
 
@@ -304,6 +374,8 @@ internal struct DeepseekV3RoutingPlan: Equatable, Sendable {
     internal let keptGroupCount: Int
     internal let normalizeTopK: Bool
     internal let routedScalingFactor: Float
+    internal let topKMethod: DeepseekMoETopKMethod
+    internal let routingScoreFunction: DeepseekMoERoutingScoreFunction
 
     internal init(_ config: DeepseekV3Configuration) {
         let routedExperts = config.nRoutedExperts ?? 1
@@ -333,6 +405,8 @@ internal struct DeepseekV3RoutingPlan: Equatable, Sendable {
         self.keptGroupCount = keptGroupCount
         self.normalizeTopK = config.normTopkProb
         self.routedScalingFactor = config.routedScalingFactor
+        self.topKMethod = config.topKMethod
+        self.routingScoreFunction = config.routingScoreFunction
     }
 
     internal var expertsPerGroup: Int {
@@ -416,7 +490,7 @@ private final class DeepseekV3SelfAttention: Module {
                 rank,
                 bias: config.attentionBias
             )
-            self._qALayerNorm.wrappedValue = RMSNorm(dimensions: rank)
+            self._qALayerNorm.wrappedValue = RMSNorm(dimensions: rank, eps: config.rmsNormEps)
             self._qBProj.wrappedValue = Linear(
                 rank,
                 layout.queryProjectionSize,
@@ -435,7 +509,10 @@ private final class DeepseekV3SelfAttention: Module {
             layout.compressedKeyValueSize,
             bias: config.attentionBias
         )
-        self._kvALayerNorm.wrappedValue = RMSNorm(dimensions: layout.kvLoraRank)
+        self._kvALayerNorm.wrappedValue = RMSNorm(
+            dimensions: layout.kvLoraRank,
+            eps: config.rmsNormEps
+        )
         self._kvBProj.wrappedValue = Linear(
             layout.kvLoraRank,
             layout.keyValueProjectionSize,
@@ -537,57 +614,38 @@ private final class DeepseekV3MoEGate: Module {
     private let plan: DeepseekV3RoutingPlan
 
     @ModuleInfo(key: "weight") private var weight: MLXArray
-    @ModuleInfo(key: "e_score_correction_bias") private var expertScoreCorrectionBias: MLXArray
+    @ModuleInfo(key: "e_score_correction_bias") private var expertScoreCorrectionBias: MLXArray?
 
     init(config: DeepseekV3Configuration) {
         self.plan = DeepseekV3RoutingPlan(config)
         self._weight.wrappedValue = zeros([plan.routedExperts, config.hiddenSize])
-        self._expertScoreCorrectionBias.wrappedValue = zeros([plan.routedExperts])
+        if config.usesExpertScoreCorrectionBias {
+            self._expertScoreCorrectionBias.wrappedValue = zeros([plan.routedExperts])
+        }
     }
 
     func callAsFunction(_ input: MLXArray) -> (indices: MLXArray, scores: MLXArray) {
         let batchSize = input.dim(0)
         let sequenceLength = input.dim(1)
 
-        let routedScores = sigmoid(input.matmul(weight.T))
-        var selectionScores = routedScores + expertScoreCorrectionBias
+        let logits = input.matmul(weight.T)
+        let routedScores: MLXArray = switch plan.routingScoreFunction {
+        case .sigmoid:
+            sigmoid(logits)
+        case .softmax:
+            softmax(logits, axis: -1, precise: true)
+        }
+        var selectionScores = routedScores
+        if let expertScoreCorrectionBias {
+            selectionScores = selectionScores + expertScoreCorrectionBias
+        }
 
         if plan.droppedGroupCount > 0 {
-            let groupedScores = selectionScores.reshaped(
-                batchSize,
-                sequenceLength,
-                plan.groupCount,
-                plan.expertsPerGroup
+            selectionScores = limitedGroupScores(
+                selectionScores,
+                batchSize: batchSize,
+                sequenceLength: sequenceLength
             )
-            let topTwoCount = min(2, plan.expertsPerGroup)
-            let groupScoreIndices = argPartition(
-                -groupedScores,
-                kth: topTwoCount - 1,
-                axis: -1
-            )[.ellipsis, ..<topTwoCount]
-            let groupScores = takeAlong(groupedScores, groupScoreIndices, axis: -1)
-                .sum(axis: -1, keepDims: true)
-            let droppedGroupIndices = argPartition(
-                groupScores,
-                kth: plan.droppedGroupCount - 1,
-                axis: -2
-            )[.ellipsis, ..<plan.droppedGroupCount, 0...]
-            let broadcastedIndices = broadcast(
-                droppedGroupIndices,
-                to: [
-                    batchSize,
-                    sequenceLength,
-                    plan.droppedGroupCount,
-                    plan.expertsPerGroup,
-                ]
-            )
-            selectionScores = putAlong(
-                groupedScores,
-                broadcastedIndices,
-                values: MLXArray(0),
-                axis: -2
-            )
-            selectionScores = flattened(selectionScores, start: -2, end: -1)
         }
 
         let expertIndices = argPartition(
@@ -597,12 +655,64 @@ private final class DeepseekV3MoEGate: Module {
         )[.ellipsis, ..<plan.expertsPerToken]
         var expertScores = takeAlong(routedScores, expertIndices, axis: -1)
 
-        if plan.expertsPerToken > 1, plan.normalizeTopK {
+        if plan.routingScoreFunction == .softmax {
+            expertScores = expertScores * plan.routedScalingFactor
+        } else if plan.expertsPerToken > 1, plan.normalizeTopK {
             expertScores = expertScores / (expertScores.sum(axis: -1, keepDims: true) + 1e-20)
             expertScores = expertScores * plan.routedScalingFactor
         }
 
         return (expertIndices, expertScores)
+    }
+
+    private func limitedGroupScores(
+        _ selectionScores: MLXArray,
+        batchSize: Int,
+        sequenceLength: Int
+    ) -> MLXArray {
+        let groupedScores = selectionScores.reshaped(
+            batchSize,
+            sequenceLength,
+            plan.groupCount,
+            plan.expertsPerGroup
+        )
+
+        let groupScores: MLXArray
+        switch plan.topKMethod {
+        case .groupLimitedGreedy:
+            groupScores = groupedScores.max(axis: -1, keepDims: true)
+        case .greedy:
+            let topTwoCount = min(2, plan.expertsPerGroup)
+            let groupScoreIndices = argPartition(
+                -groupedScores,
+                kth: topTwoCount - 1,
+                axis: -1
+            )[.ellipsis, ..<topTwoCount]
+            groupScores = takeAlong(groupedScores, groupScoreIndices, axis: -1)
+                .sum(axis: -1, keepDims: true)
+        }
+
+        let droppedGroupIndices = argPartition(
+            groupScores,
+            kth: plan.droppedGroupCount - 1,
+            axis: -2
+        )[.ellipsis, ..<plan.droppedGroupCount, 0...]
+        let broadcastedIndices = broadcast(
+            droppedGroupIndices,
+            to: [
+                batchSize,
+                sequenceLength,
+                plan.droppedGroupCount,
+                plan.expertsPerGroup,
+            ]
+        )
+        let maskedScores = putAlong(
+            groupedScores,
+            broadcastedIndices,
+            values: MLXArray(0),
+            axis: -2
+        )
+        return flattened(maskedScores, start: -2, end: -1)
     }
 }
 
@@ -734,7 +844,7 @@ internal final class DeepseekV3Model: Module, LLMModel, KVCacheDimensionProvider
         cache: [KVCache]?,
         state: LMOutput.State?
     ) -> GreedyTokenOutput {
-        let hiddenState = lastTokenHiddenState(model(input.tokens, cache: cache))
+        let hiddenState = lastTokenHiddenState(model(input[text: .newAxis].tokens, cache: cache))
         return greedyTokenOutput(logits: lmHead(hiddenState), state: state)
     }
 
@@ -787,3 +897,6 @@ internal final class DeepseekV3Model: Module, LLMModel, KVCacheDimensionProvider
         return layerIndex >= layerCount
     }
 }
+
+internal typealias DeepseekV2Configuration = DeepseekV3Configuration
+internal typealias DeepseekV2Model = DeepseekV3Model
