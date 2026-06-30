@@ -189,9 +189,10 @@ gate. The test runner selected 52 downloadable models and skipped 9 oversized
 models on this 32 GB host. Each selected model ran serialized generation,
 rendered session requests, and token-level grammar constraint checks.
 
-A follow-up serialized `main` sweep on 2026-06-30 selected 28 downloadable
-models, including EXAONE 3.5, Helium, Jamba, Mamba, and Mamba2, and passed
-generation, rendered session, token grammar, and configured stress checks.
+A follow-up serialized `main` sweep on 2026-06-30 selected 29 downloadable
+models, including DeepSeek V2, EXAONE 3.5, Helium, Jamba, Mamba, and Mamba2,
+and passed generation, rendered session, token grammar, and configured stress
+checks.
 
 The current sweep adds 32 GB-friendly checkpoints for `qwen3_moe`, `mistral`,
 `gpt_oss`, `qwen3_5_moe`, and `nemotron_h`. These entries also run the stress
@@ -251,6 +252,12 @@ Mamba2 parity was added with `mlx-community/mamba2-130m-hf-4bit`. The
 checkpoint is 70 MB on disk and passed targeted and serialized `main`
 real-model generation, rendered session requests, token grammar constraints,
 and stress generation on this host.
+
+DeepSeek V2 parity was added with
+`mlx-community/DeepSeek-V2-Lite-Chat-4bit-mlx`. The checkpoint is 8.2 GB on
+disk and passed targeted and serialized `main` real-model generation, rendered
+session requests, token grammar constraints, and stress generation on this
+host.
 
 Helium parity was added with `mlx-community/helium-1-preview-2b-4bit`. The
 checkpoint is 1.1 GB on disk and passed targeted and serialized `main`
@@ -465,6 +472,21 @@ Best stress iteration from the same run:
 | Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `helium` | `helium-1-preview-2b-4bit` | 32 | 0.1868 | 0.0050 | 0.1819 | 175.94 | 171.27 |
+
+## DeepSeek V2 Parity Check
+
+These rows come from the serialized `main` DeepSeek V2 Lite real-model run on
+2026-06-30.
+
+| Architecture | Model | Generated | Prompt | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `deepseek_v2` | `deepseek-v2-lite-chat-4bit` | 2 | 16 | 0.3533 | 0.2940 | 0.0593 | 33.71 | 5.66 |
+
+Best stress iteration from the same run:
+
+| Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `deepseek_v2` | `deepseek-v2-lite-chat-4bit` | 32 | 0.3656 | 0.0988 | 0.2669 | 119.91 | 87.52 |
 
 ## Small-Fit Stress Baseline
 
