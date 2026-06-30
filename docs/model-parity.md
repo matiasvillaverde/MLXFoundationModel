@@ -65,7 +65,6 @@ Legacy and compatibility gaps:
 - `plamo`, `plamo2`
 - `phi3small`, `phixtral`
 - `internlm3`
-- `helium`
 - `mellum`
 - `iquestloopcoder`
 - `telechat3`

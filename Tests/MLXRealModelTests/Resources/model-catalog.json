@@ -528,6 +528,19 @@
     "tags": ["smoke", "main", "relevant", "latest", "small"]
   },
   {
+    "id": "helium-1-preview-2b-4bit",
+    "displayName": "Helium 1 Preview 2B 4-bit",
+    "architecture": "helium",
+    "repository": "mlx-community/helium-1-preview-2b-4bit",
+    "relativePath": "helium-1-preview-2b-4bit",
+    "prompt": "Helium models are",
+    "expectedTokens": ["language", "models", "small"],
+    "maxTokens": 12,
+    "minimumMemoryGB": 8,
+    "minimumDiskGB": 2,
+    "tags": ["main", "relevant", "small", "parity", "stress"]
+  },
+  {
     "id": "bitnet-b1.58-2b-4t-4bit",
     "displayName": "Bitnet b1.58 2B 4T 4-bit",
     "architecture": "bitnet",

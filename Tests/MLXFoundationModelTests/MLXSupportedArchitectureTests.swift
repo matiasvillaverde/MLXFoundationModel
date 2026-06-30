@@ -43,6 +43,7 @@ struct MLXSupportedArchitectureTests {
         "gpt_neox",
         "granite",
         "granitemoehybrid",
+        "helium",
         "internlm2",
         "jamba",
         "jamba_3b",

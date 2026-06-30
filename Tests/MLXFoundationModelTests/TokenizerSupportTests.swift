@@ -37,6 +37,22 @@ struct TokenizerSupportTests {
         #expect(rewriter.rewrite(config).tokenizerClass?.string() == "PreTrainedTokenizer")
     }
 
+    @Test("routes fast Unigram tokenizers to Unigram implementation")
+    func routesFastUnigramTokenizersToUnigramImplementation() {
+        let rewriter = TokenizerConfigurationRewriter(registry: TokenizerReplacementRegistry())
+        let config = Config(["tokenizer_class": Config("PreTrainedTokenizerFast")])
+        let tokenizerData = Config([
+            "model": Config([
+                "type": Config("Unigram")
+            ])
+        ])
+
+        #expect(
+            rewriter.rewrite(config, tokenizerData: tokenizerData)
+                .tokenizerClass?.string() == "XLMRobertaTokenizer"
+        )
+    }
+
     @Test("supports registry replacement updates and removals")
     func supportsRegistryUpdatesAndRemovals() {
         let registry = TokenizerReplacementRegistry(replacements: ["A": "B"])

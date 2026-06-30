@@ -120,6 +120,7 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
             modelType("bitnet", configuration: BitnetConfiguration.self) { BitnetModel($0) },
             modelType("smollm3", configuration: SmolLM3Configuration.self) { SmolLM3Model($0) },
             modelType("ernie4_5", configuration: Ernie45Configuration.self) { Ernie45Model($0) },
+            modelType("helium", configuration: HeliumConfiguration.self) { HeliumModel($0) },
             modelType("lfm2", configuration: LFM2Configuration.self) { LFM2Model($0) },
             modelType("mamba", configuration: MambaConfiguration.self) { MambaModel($0) },
             modelType("baichuan_m1", configuration: BaichuanM1Configuration.self) {

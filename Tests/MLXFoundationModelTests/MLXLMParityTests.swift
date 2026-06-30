@@ -138,7 +138,6 @@ struct MLXLMParityTests {
         "exaone_moe",
         "glm",
         "granitemoe",
-        "helium",
         "hunyuan",
         "hunyuan_v1_dense",
         "internlm3",

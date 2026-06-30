@@ -41,7 +41,7 @@ private struct TokenizerConfigLoader {
         let rewriter = TokenizerConfigurationRewriter(registry: replacementTokenizers)
 
         return TokenizerConfigFiles(
-            tokenizerConfig: rewriter.rewrite(tokenizerConfig),
+            tokenizerConfig: rewriter.rewrite(tokenizerConfig, tokenizerData: tokenizerData),
             tokenizerData: tokenizerData
         )
     }
@@ -104,14 +104,30 @@ internal struct TokenizerConfigurationRewriter: Sendable {
     }
 
     internal func rewrite(_ tokenizerConfig: Config) -> Config {
+        rewrite(tokenizerConfig, tokenizerData: nil)
+    }
+
+    internal func rewrite(_ tokenizerConfig: Config, tokenizerData: Config?) -> Config {
+        if let tokenizerData,
+           tokenizerConfig.tokenizerClass?.string() == "PreTrainedTokenizerFast",
+           tokenizerData.model.type.string() == "Unigram" {
+            return replacingTokenizerClass(in: tokenizerConfig, with: "XLMRobertaTokenizer")
+        }
+
         guard let tokenizerClass = tokenizerConfig.tokenizerClass?.string(),
               let replacement = registry.replacement(for: tokenizerClass),
-              replacement != tokenizerClass,
-              var dictionary = tokenizerConfig.dictionary()
+              replacement != tokenizerClass
         else {
             return tokenizerConfig
         }
 
+        return replacingTokenizerClass(in: tokenizerConfig, with: replacement)
+    }
+
+    private func replacingTokenizerClass(in tokenizerConfig: Config, with replacement: String) -> Config {
+        guard var dictionary = tokenizerConfig.dictionary() else {
+            return tokenizerConfig
+        }
         dictionary["tokenizer_class"] = Config(replacement)
         return Config(dictionary)
     }
