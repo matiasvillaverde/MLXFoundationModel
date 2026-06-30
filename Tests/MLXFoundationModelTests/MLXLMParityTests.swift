@@ -148,7 +148,6 @@ struct MLXLMParityTests {
         "llama4_text",
         "longcat_flash",
         "longcat_flash_ngram",
-        "mamba2",
         "mellum",
         "mixtral",
         "nemotron",

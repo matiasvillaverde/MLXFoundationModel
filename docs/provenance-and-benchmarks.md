@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 104 | Safe area for normal refactors. |
+| Files with no source-port marker | 106 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -20,6 +20,7 @@ Replaced in the current independence pass:
 | --- | --- |
 | `Sources/MLXLocalModels/Common/StringOrNumber.swift` | Config scalar decoding and token-id field helpers. |
 | `Sources/MLXLocalModels/Common/BaseConfiguration.swift` | Base config and mixed per-layer quantization decoding. |
+| `Sources/MLXLocalModels/Common/MLXConfigFileDecoder.swift` | Shared JSON5 config-file loading into dictionary form for profile and memory estimation paths. |
 | `Sources/MLXLocalModels/Common/ModelConfiguration.swift` | Model identity, tokenizer overrides, local directory resolution, and generation token defaults. |
 | `Sources/MLXLocalModels/Common/ModelContainer.swift` | Actor-owned model context and prompt-cache access. |
 | `Sources/MLXLocalModels/Common/ModelFactory.swift` | Model context tokenization, factory dispatch, fallback errors, and trampoline registry. |
@@ -76,6 +77,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/Qwen2MoE.swift` | Qwen2 MoE attention layout, sparse routing, shared expert path, expert packing, tied-head sanitizing, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/LFM2MoE.swift` | LFM2 MoE typed layer planning, attention/convolution layouts, router planning, guarded decoder dispatch, cache/KV-head planning, sanitizer packing, greedy path preservation, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Mamba.swift` | Mamba selective state-space decoding, depthwise convolution cache updates, tied/untied heads, checkpoint weight cleanup, greedy-token fast path, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/Mamba2.swift` | Mamba2 state-space mixer, gated RMS norm, derived intermediate dimensions, cache updates, tied-head cleanup, greedy-token fast path, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/NanoChat.swift` | NanoChat attention layout, custom rotary-frequency plan, RMSNorm/softcap planning, stable transformer checkpoint keys, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Lora+Data.swift` | LoRA JSONL/text data lookup and parsing. |
 | `Sources/MLXLocalModels/MLXLLM/LoraTrain.swift` | LoRA batching, conversion/fusion, masked loss, evaluation, save/load, and training progress. |
@@ -102,6 +104,7 @@ Current independence pass:
 - Replaced generation parameter and logit plan assembly with normalized inputs, explicit sampler/processor planning, and focused coverage for sampler selection plus active processor construction.
 - Replaced LanguageModel core contracts with focused coverage for input slicing, media wrappers, default forwarding, greedy helpers, sanitize fallback, and KV-cache creation.
 - Replaced model loading support with deterministic safetensor discovery, explicit directory errors, and focused coverage for recursive discovery, case-insensitive extensions, and missing directories.
+- Added shared JSON5 config loading for profile and memory-guard paths, covering checkpoint configs that use values such as bare `Infinity`.
 - Replaced KV cache internals with shared append planning, explicit dense and quantized state wrappers, active-window chunk trimming, stable prompt-cache layout serialization, and focused cache growth/chunk/quantization coverage.
 - Replaced Phi with an explicit attention layout, project-owned module structure, config defaults, greedy-token fast path, and focused layout/config/LoRA coverage.
 - Replaced InternLM2 with packed-attention layout, type-specific RoPE scaling, greedy-token fast path, packed LoRA targeting, and focused layout/RoPE/config coverage.
@@ -140,6 +143,7 @@ Current independence pass:
 - Added StableLM with partial-RoPE attention, optional per-head q/k LayerNorm matching upstream checkpoint keys, sequential and parallel residual paths, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 - Added OLMo with affine-free LayerNorm, RoPE attention, HF and legacy mlx-lm config decoding, packed QKV/SwiGLU weight splitting, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 - Added Mamba with selective state-space recurrence, depthwise convolution cache updates, alias-compatible config decoding, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
+- Added Mamba2 with gated state-space recurrence, derived intermediate sizing for compact configs, JSON5 checkpoint profile loading, CPU-safe SSM fallback, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 - Added Helium with grouped attention, traditional RoPE, SwiGLU feed-forward blocks, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 
 Previous performance pass:
@@ -185,9 +189,9 @@ gate. The test runner selected 52 downloadable models and skipped 9 oversized
 models on this 32 GB host. Each selected model ran serialized generation,
 rendered session requests, and token-level grammar constraint checks.
 
-A follow-up serialized `main` sweep on 2026-06-30 selected 27 downloadable
-models, including EXAONE 3.5, Helium, Jamba, and Mamba, and passed generation,
-rendered session, token grammar, and configured stress checks.
+A follow-up serialized `main` sweep on 2026-06-30 selected 28 downloadable
+models, including EXAONE 3.5, Helium, Jamba, Mamba, and Mamba2, and passed
+generation, rendered session, token grammar, and configured stress checks.
 
 The current sweep adds 32 GB-friendly checkpoints for `qwen3_moe`, `mistral`,
 `gpt_oss`, `qwen3_5_moe`, and `nemotron_h`. These entries also run the stress
@@ -242,6 +246,11 @@ this host.
 Mamba parity was added with `mlx-community/mamba-130m-hf-bf16`. The checkpoint
 is 246 MB on disk and passed targeted real-model generation, rendered session
 requests, token grammar constraints, and stress generation on this host.
+
+Mamba2 parity was added with `mlx-community/mamba2-130m-hf-4bit`. The
+checkpoint is 70 MB on disk and passed targeted and serialized `main`
+real-model generation, rendered session requests, token grammar constraints,
+and stress generation on this host.
 
 Helium parity was added with `mlx-community/helium-1-preview-2b-4bit`. The
 checkpoint is 1.1 GB on disk and passed targeted and serialized `main`
@@ -428,6 +437,20 @@ Best stress iteration from the same run:
 | Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `mamba` | `mamba-130m-hf-bf16` | 32 | 0.0933 | 0.0144 | 0.0790 | 405.31 | 342.84 |
+
+## Mamba2 Parity Check
+
+These rows come from the serialized `main` Mamba2 real-model run on 2026-06-30.
+
+| Architecture | Model | Generated | Prompt | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `mamba2` | `mamba2-130m-hf-4bit` | 8 | 5 | 0.0455 | 0.0211 | 0.0244 | 328.15 | 175.99 |
+
+Best stress iteration from the same run:
+
+| Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `mamba2` | `mamba2-130m-hf-4bit` | 32 | 0.0658 | 0.0051 | 0.0607 | 527.55 | 486.27 |
 
 ## Helium Parity Check
 

@@ -111,10 +111,7 @@ internal struct MLXModelMemoryProfile: Equatable, Sendable {
         guard FileManager.default.fileExists(atPath: configURL.path) else {
             return nil
         }
-        let data = try Data(contentsOf: configURL)
-        guard let config = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return nil
-        }
+        let config = try MLXConfigFileDecoder.loadDictionary(at: configURL)
         return profile(from: config)
     }
 
@@ -408,7 +405,7 @@ internal struct MLXModelMemoryProfile: Equatable, Sendable {
             if let value = config[key] as? Int, value > 0 {
                 return value
             }
-            if let value = config[key] as? Double, value > 0 {
+            if let value = config[key] as? Double, value.isFinite, value > 0 {
                 return Int(value)
             }
             if let value = config[key] as? String, let parsed = Int(value), parsed > 0 {

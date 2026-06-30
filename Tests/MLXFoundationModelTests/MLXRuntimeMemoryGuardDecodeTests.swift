@@ -1,8 +1,41 @@
+import Foundation
 @testable import MLXLocalModels
 import Testing
 
 @Suite("MLX runtime memory guard decode")
 struct MLXRuntimeMemoryGuardDecodeTests {
+    @Test("model profile loader accepts JSON5 config values")
+    func modelProfileLoaderAcceptsJSON5ConfigValues() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MLXMemoryProfileJSON5-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let configText = """
+        {
+            "model_type": "mamba2",
+            "num_hidden_layers": 2,
+            "num_attention_heads": 4,
+            "hidden_size": 16,
+            "head_dim": 4,
+            "time_step_limit": [0.0, Infinity]
+        }
+        """
+        try Data(configText.utf8).write(to: directory.appendingPathComponent("config.json"))
+
+        let loadedProfile = try #require(
+            try MLXModelMemoryProfile.load(modelDirectory: directory)
+        )
+
+        #expect(loadedProfile.numLayers == 2)
+        #expect(loadedProfile.numAttentionHeads == 4)
+        #expect(loadedProfile.numKVHeads == 4)
+        #expect(loadedProfile.headDimension == 4)
+    }
+
     @Test("generation peak estimate includes maximum decode KV growth")
     func generationPeakEstimateIncludesMaximumDecodeKVGrowth() {
         let prefillOnly = Self.profile.estimateGenerationPeakBytes(

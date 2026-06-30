@@ -1,12 +1,9 @@
 import Foundation
+import MLXLocalModels
 
 extension MLXModelProfileFactory {
     static func loadJSON(at url: URL) throws -> [String: Any] {
-        let data = try Data(contentsOf: url)
-        guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw CocoaError(.coderInvalidValue)
-        }
-        return object
+        try MLXConfigFileDecoder.loadDictionary(at: url)
     }
 
     static func loadOptionalJSON(at url: URL) throws -> [String: Any] {
@@ -89,7 +86,7 @@ extension MLXModelProfileFactory {
             if let value = config[key] as? Int, value > 0 {
                 return value
             }
-            if let value = config[key] as? Double, value > 0 {
+            if let value = config[key] as? Double, value.isFinite, value > 0 {
                 return Int(value)
             }
             if let value = config[key] as? String, let parsed = Int(value), parsed > 0 {

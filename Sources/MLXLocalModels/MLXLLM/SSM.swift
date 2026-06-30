@@ -209,6 +209,7 @@ internal func ssmUpdate(
 
     if seqLen == 1,
         let state = state,
+        Device.defaultDevice().deviceType == .gpu,
         SSMKernelManager.shared.ssmKernel != nil
     {
         return ssmUpdateKernel(
