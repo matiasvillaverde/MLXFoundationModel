@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 113 | Safe area for normal refactors. |
+| Files with no source-port marker | 115 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -37,6 +37,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/Common/SuScaledRoPE.swift` | LongRoPE factor planning, short/long frequency selection, scalar and batch offsets, and non-rotary tail preservation. |
 | `Sources/MLXLocalModels/Common/Tokenizer.swift` | Tokenizer loading, tokenizer-class rewriting, replacement registry, and streaming detokenization. |
 | `Sources/MLXLocalModels/Common/Phi3SmallTiktokenTokenizer.swift` | Phi-3-small tiktoken vocabulary loading, byte-pair encoding, special-token handling, and chat-template rendering. |
+| `Sources/MLXLocalModels/Common/QwenTiktokenTokenizer.swift` | Qwen tiktoken vocabulary loading, byte-level BPE, special-token handling, and default chat rendering. |
 | `Sources/MLXLocalModels/Common/SentencePieceModelTokenizer.swift` | SentencePiece model-file parsing, duplicate-piece tolerant BPE lookup, byte fallback, special-token splitting, and InternLM-style chat rendering. |
 | `Sources/MLXLocalModels/MLXLLM/LLMModel.swift` | Default text-model prefill chunking and adaptive prefill integration. |
 | `Sources/MLXLocalModels/MLXLLM/LLMModelFactory.swift` | LLM type registration, alias grouping, model load progress, generation-token resolution, and trampoline factory. |
@@ -82,6 +83,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/Qwen35.swift` | Qwen3.5 text config decoding, explicit layer schedule, attention and linear-attention layouts, cache planning, native MTP gating, tied/untied heads, greedy-token fast path, sanitizer, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Qwen35MoE.swift` | Qwen3.5 MoE top-level config fallback, shared top-level weight mapping, expert projection remapping, and sanitizer delegation. |
 | `Sources/MLXLocalModels/MLXLLM/Qwen2MoE.swift` | Qwen2 MoE attention layout, sparse routing, shared expert path, expert packing, tied-head sanitizing, greedy-token fast path, cache dimensions, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/Qwen.swift` | Qwen packed QKV attention, byte-level tokenizer support, SwiGLU feed-forward blocks, tied-head cleanup, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/LFM2MoE.swift` | LFM2 MoE typed layer planning, attention/convolution layouts, router planning, guarded decoder dispatch, cache/KV-head planning, sanitizer packing, greedy path preservation, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Mamba.swift` | Mamba selective state-space decoding, depthwise convolution cache updates, tied/untied heads, checkpoint weight cleanup, greedy-token fast path, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Mamba2.swift` | Mamba2 state-space mixer, gated RMS norm, derived intermediate dimensions, cache updates, tied-head cleanup, greedy-token fast path, and LoRA target discovery. |
@@ -130,6 +132,7 @@ Current independence pass:
 - Replaced OLMo3 with explicit sliding/full attention scheduling, q/k normalization, YaRN-vs-sliding RoPE selection, cache layout, tied/untied output handling, greedy-token fast path, and focused config/layout/cache/LoRA coverage.
 - Replaced Qwen3.5 text and MoE wrappers with explicit config schedule decoding, validated layout plans, shared top-level weight mapping, native MTP gating, greedy-token fast path, and focused schedule/layout/cache/MTP coverage.
 - Added Qwen2 MoE with explicit Qwen2 attention, softmax top-k routing, shared expert gating, expert tensor packing, tied-head cleanup, greedy-token fast path, and focused config/layout/forward/sanitizer coverage.
+- Added Qwen with packed QKV attention, byte-level tiktoken fallback, SwiGLU feed-forward blocks, greedy-token fast path, grammar-vocabulary fallback, and focused config/layout/cache/forward/tokenizer coverage.
 - Replaced LFM2 MoE with typed layer planning, explicit attention/convolution layouts, guarded layer dispatch, complete expert packing, attention-only LoRA targeting, and focused plan/cache/sanitizer coverage.
 - Replaced Phi MoE with explicit attention and router plans, centralized LongRoPE support, safe expert packing, stable `model.*` parameter keys, greedy-token fast path, and focused config/layout/forward/sanitizer coverage.
 - Replaced MiniCPM with explicit attention and scaling plans, registered checkpoint-compatible module keys, tied-head sanitizing, greedy-token fast path, and focused config/layout/forward/sanitizer coverage.
@@ -201,9 +204,9 @@ gate. The test runner selected 52 downloadable models and skipped 9 oversized
 models on this 32 GB host. Each selected model ran serialized generation,
 rendered session requests, and token-level grammar constraint checks.
 
-A follow-up serialized `main` sweep on 2026-07-01 selected 34 downloadable
+A follow-up serialized `main` sweep on 2026-07-01 selected 35 downloadable
 models, including DeepSeek, DeepSeek V2, EXAONE 3.5, GraniteMoE, Helium,
-InternLM3, Jamba, Mamba, Mamba2, and Mixtral, and passed generation, rendered
+InternLM3, Jamba, Mamba, Mamba2, Mixtral, and Qwen, and passed generation, rendered
 session, token grammar, and configured stress checks.
 
 The current sweep adds 32 GB-friendly checkpoints for `qwen3_moe`, `mistral`,
@@ -217,6 +220,11 @@ Qwen2 MoE parity was added with
 `mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit`. The checkpoint is 7.9 GB on disk
 and passed targeted real-model generation, rendered session requests, token
 grammar constraints, and the serialized `main` architecture sweep on this host.
+
+Qwen parity was added with `Qwen/Qwen-1_8B`. The checkpoint is 3.4 GB on disk
+and passed targeted release generation, rendered session requests, token grammar
+constraints, stress generation, and the serialized `main` architecture sweep on
+this host.
 
 MiniCPM3 parity was added with `mlx-community/MiniCPM3-4B-4bit`. The checkpoint
 is 2.2 GB on disk and passed targeted real-model generation, rendered session
@@ -373,6 +381,23 @@ targeted architecture check; the 4-token row is from the serialized
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | `qwen2_moe` | `qwen1.5-moe-a2.7b-chat-4bit` | 8 | 29 | 0.7086 | 0.6075 | 0.1011 | 79.14 | 11.29 |
 | `qwen2_moe` | `qwen1.5-moe-a2.7b-chat-4bit` | 4 | 29 | 0.1902 | 0.0991 | 0.0911 | 43.92 | 21.04 |
+
+## Qwen Parity Check
+
+These rows come from the targeted release Qwen run and the serialized debug
+`main` sweep on 2026-07-01.
+
+| Architecture | Model | Generated | Prompt | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `qwen` | `qwen-1.8b` release targeted | 4 | 17 | 0.1085 | 0.0574 | 0.0510 | 78.38 | 36.88 |
+| `qwen` | `qwen-1.8b` debug main | 2 | 17 | 0.0814 | 0.0493 | 0.0321 | 62.24 | 24.57 |
+
+Best stress iterations from the same runs:
+
+| Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `qwen` | `qwen-1.8b` release targeted | 32 | 0.3389 | 0.0226 | 0.3163 | 101.17 | 94.41 |
+| `qwen` | `qwen-1.8b` debug main | 32 | 0.4424 | 0.0260 | 0.4164 | 76.86 | 72.33 |
 
 ## MiniCPM3 Parity Check
 

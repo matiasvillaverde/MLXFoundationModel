@@ -29,7 +29,7 @@ is a clear Apple interface shape for them in this package.
 
 ## Current Gaps
 
-Snapshot: `ml-explore/mlx-lm` model modules on 2026-06-25.
+Snapshot: `ml-explore/mlx-lm` model modules on 2026-07-01.
 
 Highest priority:
 
@@ -53,7 +53,6 @@ MoE and recent family gaps:
 
 Legacy and compatibility gaps:
 
-- `qwen`
 - `glm`
 - `recurrent_gemma`
 - `rwkv7`
