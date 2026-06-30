@@ -58,7 +58,7 @@ Legacy and compatibility gaps:
 - `qwen`
 - `deepseek`, `deepseek_v2`
 - `glm`
-- `mamba`, `mamba2`
+- `mamba2`
 - `recurrent_gemma`
 - `rwkv7`
 - `solar_open`

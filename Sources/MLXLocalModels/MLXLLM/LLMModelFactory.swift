@@ -121,6 +121,7 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
             modelType("smollm3", configuration: SmolLM3Configuration.self) { SmolLM3Model($0) },
             modelType("ernie4_5", configuration: Ernie45Configuration.self) { Ernie45Model($0) },
             modelType("lfm2", configuration: LFM2Configuration.self) { LFM2Model($0) },
+            modelType("mamba", configuration: MambaConfiguration.self) { MambaModel($0) },
             modelType("baichuan_m1", configuration: BaichuanM1Configuration.self) {
                 BaichuanM1Model($0)
             },

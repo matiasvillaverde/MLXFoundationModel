@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 102 | Safe area for normal refactors. |
+| Files with no source-port marker | 103 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -74,6 +74,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/Qwen35MoE.swift` | Qwen3.5 MoE top-level config fallback, shared top-level weight mapping, expert projection remapping, and sanitizer delegation. |
 | `Sources/MLXLocalModels/MLXLLM/Qwen2MoE.swift` | Qwen2 MoE attention layout, sparse routing, shared expert path, expert packing, tied-head sanitizing, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/LFM2MoE.swift` | LFM2 MoE typed layer planning, attention/convolution layouts, router planning, guarded decoder dispatch, cache/KV-head planning, sanitizer packing, greedy path preservation, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/Mamba.swift` | Mamba selective state-space decoding, depthwise convolution cache updates, tied/untied heads, checkpoint weight cleanup, greedy-token fast path, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/NanoChat.swift` | NanoChat attention layout, custom rotary-frequency plan, RMSNorm/softcap planning, stable transformer checkpoint keys, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Lora+Data.swift` | LoRA JSONL/text data lookup and parsing. |
 | `Sources/MLXLocalModels/MLXLLM/LoraTrain.swift` | LoRA batching, conversion/fusion, masked loss, evaluation, save/load, and training progress. |
@@ -137,6 +138,7 @@ Current independence pass:
 - Added GPT-NeoX with partial-RoPE packed attention, raw Transformers Pythia key mapping, parallel and sequential residual paths, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 - Added StableLM with partial-RoPE attention, optional per-head q/k LayerNorm matching upstream checkpoint keys, sequential and parallel residual paths, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 - Added OLMo with affine-free LayerNorm, RoPE attention, HF and legacy mlx-lm config decoding, packed QKV/SwiGLU weight splitting, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
+- Added Mamba with selective state-space recurrence, depthwise convolution cache updates, alias-compatible config decoding, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 
 Previous performance pass:
 
@@ -181,9 +183,9 @@ gate. The test runner selected 52 downloadable models and skipped 9 oversized
 models on this 32 GB host. Each selected model ran serialized generation,
 rendered session requests, and token-level grammar constraint checks.
 
-A follow-up serialized `main` sweep on 2026-06-30 selected 25 downloadable
-models, including EXAONE 3.5 and Jamba, and passed generation, rendered session,
-token grammar, and configured stress checks.
+A follow-up serialized `main` sweep on 2026-06-30 selected 26 downloadable
+models, including EXAONE 3.5, Jamba, and Mamba, and passed generation, rendered
+session, token grammar, and configured stress checks.
 
 The current sweep adds 32 GB-friendly checkpoints for `qwen3_moe`, `mistral`,
 `gpt_oss`, `qwen3_5_moe`, and `nemotron_h`. These entries also run the stress
@@ -234,6 +236,10 @@ StableLM parity was added with `mlx-community/stablelm-2-zephyr-1_6b-4bit`.
 The checkpoint is 1.1 GB on disk and passed targeted real-model generation,
 rendered session requests, token grammar constraints, and stress generation on
 this host.
+
+Mamba parity was added with `mlx-community/mamba-130m-hf-bf16`. The checkpoint
+is 246 MB on disk and passed targeted real-model generation, rendered session
+requests, token grammar constraints, and stress generation on this host.
 
 The selected `deepseek-r1-distill-qwen-7b-4bit` checkpoint is a Qwen-distilled
 model; its local `config.json` declares `model_type: qwen2`. The full
@@ -401,6 +407,20 @@ Best stress iteration from the same run:
 | Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `stablelm` | `stablelm-2-zephyr-1.6b-4bit` | 32 | 0.5232 | 0.0463 | 0.4769 | 67.10 | 61.16 |
+
+## Mamba Parity Check
+
+These rows come from the serialized `main` Mamba real-model run on 2026-06-30.
+
+| Architecture | Model | Generated | Prompt | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `mamba` | `mamba-130m-hf-bf16` | 8 | 5 | 0.0507 | 0.0258 | 0.0249 | 321.04 | 157.84 |
+
+Best stress iteration from the same run:
+
+| Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `mamba` | `mamba-130m-hf-bf16` | 32 | 0.0933 | 0.0144 | 0.0790 | 405.31 | 342.84 |
 
 ## Small-Fit Stress Baseline
 

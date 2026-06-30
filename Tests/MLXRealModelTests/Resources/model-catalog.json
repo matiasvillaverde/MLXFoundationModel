@@ -480,6 +480,19 @@
     "tags": ["main", "relevant", "latest"]
   },
   {
+    "id": "mamba-130m-hf-bf16",
+    "displayName": "Mamba 130M HF BF16",
+    "architecture": "mamba",
+    "repository": "mlx-community/mamba-130m-hf-bf16",
+    "relativePath": "mamba-130m-hf-bf16",
+    "prompt": "Mamba sequence models are",
+    "expectedTokens": ["sequence", "model", "models"],
+    "maxTokens": 12,
+    "minimumMemoryGB": 4,
+    "minimumDiskGB": 1,
+    "tags": ["main", "relevant", "small", "parity", "stress"]
+  },
+  {
     "id": "exaone-4.0-1.2b-4bit",
     "displayName": "EXAONE 4.0 1.2B 4-bit",
     "architecture": "exaone4",
