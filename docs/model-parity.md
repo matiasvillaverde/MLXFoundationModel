@@ -60,7 +60,6 @@ Legacy and compatibility gaps:
 - `solar_open`
 - `plamo`, `plamo2`
 - `phixtral`
-- `internlm3`
 - `mellum`
 - `iquestloopcoder`
 - `telechat3`
