@@ -132,7 +132,6 @@ struct MLXLMParityTests {
         "bailing_moe_linear",
         "cohere2",
         "dbrx",
-        "deepseek",
         "ernie4_5_moe",
         "exaone_moe",
         "glm",

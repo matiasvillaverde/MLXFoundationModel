@@ -18,6 +18,7 @@ struct MLXSupportedArchitectureTests {
         "bailing_moe",
         "bitnet",
         "cohere",
+        "deepseek",
         "deepseek_v2",
         "deepseek_v3",
         "deepseek_v32",

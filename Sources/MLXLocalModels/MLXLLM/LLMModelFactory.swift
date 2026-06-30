@@ -87,6 +87,9 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
             modelType("internlm2", configuration: InternLM2Configuration.self) {
                 InternLM2Model($0)
             },
+            modelType("deepseek", configuration: DeepseekConfiguration.self) {
+                DeepseekModel($0)
+            },
             modelType("deepseek_v2", configuration: DeepseekV2Configuration.self) {
                 DeepseekV2Model($0)
             },

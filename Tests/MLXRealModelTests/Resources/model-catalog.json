@@ -615,6 +615,19 @@
     "tags": ["relevant", "latest", "large"]
   },
   {
+    "id": "deepseek-moe-16b-chat-4bit",
+    "displayName": "DeepSeek MoE 16B Chat 4-bit",
+    "architecture": "deepseek",
+    "repository": "BlueMoonlight/deepseek-moe-16b-chat-mlx-4Bit",
+    "relativePath": "deepseek-moe-16b-chat-mlx-4Bit",
+    "prompt": "Write one short sentence about efficient expert routing.",
+    "expectedTokens": ["expert", "routing", "efficient", "model"],
+    "maxTokens": 12,
+    "minimumMemoryGB": 32,
+    "minimumDiskGB": 10,
+    "tags": ["main", "relevant", "parity", "stress"]
+  },
+  {
     "id": "deepseek-v2-lite-chat-4bit",
     "displayName": "DeepSeek V2 Lite Chat 4-bit",
     "architecture": "deepseek_v2",
