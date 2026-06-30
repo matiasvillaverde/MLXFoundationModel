@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 100 | Safe area for normal refactors. |
+| Files with no source-port marker | 101 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -47,6 +47,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/MiniCPM3.swift` | MiniCPM3 MLA attention layout, LongRoPE runtime frequencies, residual/embedding/logit scaling, tied-head sanitizing, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/MiniMax.swift` | MiniMax attention layout, sparse routing plan, expert weight packing, stable checkpoint keys, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/MiMoV2Flash.swift` | MiMo v2 Flash full/sliding attention layout, layer scheduling, grouped routing, attention sinks, expert packing, per-layer cache and KV-head planning, greedy-token fast path, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/Olmo.swift` | OLMo LayerNorm-without-affine blocks, GQA-compatible RoPE attention, tied/untied heads, legacy packed-key sanitizing, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/OlmoE.swift` | OLMoE attention layout, sparse routing plan, expert packing, stable checkpoint keys, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/GatedDelta.swift` | Gated-delta layout planning, decay calculation, Metal kernel dispatch, ops fallback, mask handling, unsupported-shape fallback, and deterministic inactive-token output. |
 | `Sources/MLXLocalModels/MLXLLM/Gemma.swift` | Gemma RMSNorm, residual clipping, attention layout, decoder block, backbone, greedy-token fast path, config defaults, and LoRA target discovery. |
@@ -133,6 +134,7 @@ Current independence pass:
 - Added GPT-BigCode with learned position embeddings, multi-query packed attention, raw Transformers key mapping, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 - Added GPT-NeoX with partial-RoPE packed attention, raw Transformers Pythia key mapping, parallel and sequential residual paths, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 - Added StableLM with partial-RoPE attention, optional per-head q/k LayerNorm matching upstream checkpoint keys, sequential and parallel residual paths, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
+- Added OLMo with affine-free LayerNorm, RoPE attention, HF and legacy mlx-lm config decoding, packed QKV/SwiGLU weight splitting, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 
 Previous performance pass:
 
@@ -206,6 +208,11 @@ GPT-NeoX parity was added with `EleutherAI/pythia-70m-deduped`. The checkpoint
 is 324 MB on disk, uses raw Transformers GPT-NeoX keys, and passed targeted
 real-model generation, rendered session requests, token grammar constraints,
 and stress generation on this host.
+
+OLMo parity was added with `allenai/OLMo-1B-hf`. The checkpoint is 4.4 GB on
+disk, uses raw Transformers OLMo keys, and passed targeted real-model
+generation, rendered session requests, token grammar constraints, and stress
+generation on this host.
 
 StableLM parity was added with `mlx-community/stablelm-2-zephyr-1_6b-4bit`.
 The checkpoint is 1.1 GB on disk and passed targeted real-model generation,
@@ -333,6 +340,20 @@ Best stress iteration from the same run:
 | Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `gpt_neox` | `pythia-70m-deduped` | 32 | 0.1010 | 0.0051 | 0.0959 | 333.66 | 316.77 |
+
+## OLMo Parity Check
+
+These rows come from the targeted OLMo real-model run on 2026-06-30.
+
+| Architecture | Model | Generated | Prompt | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `olmo` | `olmo-1b-hf` | 8 | 10 | 0.3873 | 0.2479 | 0.1394 | 57.39 | 20.66 |
+
+Best stress iteration from the same run:
+
+| Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `olmo` | `olmo-1b-hf` | 32 | 0.4752 | 0.0171 | 0.4580 | 69.86 | 67.34 |
 
 ## StableLM Parity Check
 

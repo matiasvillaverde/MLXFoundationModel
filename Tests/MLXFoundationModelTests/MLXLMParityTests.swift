@@ -157,7 +157,6 @@ struct MLXLMParityTests {
         "mixtral",
         "nemotron",
         "nemotron-nas",
-        "olmo",
         "phi3small",
         "phixtral",
         "plamo",

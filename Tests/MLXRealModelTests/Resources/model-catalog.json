@@ -856,6 +856,19 @@
     "tags": ["registry-only", "small"]
   },
   {
+    "id": "olmo-1b-hf",
+    "displayName": "OLMo 1B HF",
+    "architecture": "olmo",
+    "repository": "allenai/OLMo-1B-hf",
+    "relativePath": "OLMo-1B-hf",
+    "prompt": "Write one short sentence about open language models.",
+    "expectedTokens": ["open", "language", "model"],
+    "maxTokens": 16,
+    "minimumMemoryGB": 12,
+    "minimumDiskGB": 6,
+    "tags": ["main", "relevant", "small", "parity", "stress"]
+  },
+  {
     "id": "olmoe",
     "displayName": "OLMoE",
     "architecture": "olmoe",

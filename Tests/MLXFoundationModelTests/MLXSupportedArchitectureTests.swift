@@ -58,6 +58,7 @@ struct MLXSupportedArchitectureTests {
         "ministral3",
         "nanochat",
         "nemotron_h",
+        "olmo",
         "olmo2",
         "olmo3",
         "olmoe",

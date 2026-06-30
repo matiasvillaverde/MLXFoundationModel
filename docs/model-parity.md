@@ -71,7 +71,6 @@ Legacy and compatibility gaps:
 - `iquestloopcoder`
 - `telechat3`
 - `youtu_llm`
-- `olmo`
 
 ## Out Of Scope For This Track
 

@@ -75,7 +75,10 @@ struct MLXRealModelInterfaceTests {
             model: model,
             request: Self.sessionStyleRequest,
             limits: ResourceLimits(
-                maxTokens: min(8, MLXRealModelEnvironment.architectureGenerationTokenLimit),
+                maxTokens: min(
+                    8,
+                    max(4, MLXRealModelEnvironment.architectureGenerationTokenLimit)
+                ),
                 maxTime: .seconds(MLXRealModelEnvironment.architectureGenerationTimeoutSeconds),
                 reusePromptCache: false
             )
