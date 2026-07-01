@@ -999,6 +999,17 @@
     "tags": ["main", "relevant", "parity", "small", "stress"]
   },
   {
+    "id": "recurrent-gemma",
+    "displayName": "RecurrentGemma",
+    "architecture": "recurrent_gemma",
+    "repository": null,
+    "relativePath": "recurrent-gemma",
+    "prompt": "Write one short sentence about recurrent language models.",
+    "expectedTokens": ["recurrent", "model", "language"],
+    "maxTokens": 12,
+    "tags": ["registry-only"]
+  },
+  {
     "id": "seed-oss-36b-instruct-2bit",
     "displayName": "Seed-OSS 36B Instruct 2-bit",
     "architecture": "seed_oss",

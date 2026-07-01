@@ -40,9 +40,7 @@ MoE and recent family gaps:
 
 - `bailing_moe_linear`
 
-Legacy and compatibility gaps:
-
-- `recurrent_gemma`
+Legacy and compatibility gaps: none.
 
 ## Out Of Scope For This Track
 

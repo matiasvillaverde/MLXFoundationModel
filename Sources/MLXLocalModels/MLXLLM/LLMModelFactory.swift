@@ -63,6 +63,9 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
             ) {
                 Gemma4AssistantModel($0)
             },
+            modelType("recurrent_gemma", configuration: RecurrentGemmaConfiguration.self) {
+                RecurrentGemmaModel($0)
+            },
             modelType("qwen2", configuration: Qwen2Configuration.self) { Qwen2Model($0) },
             modelType("qwen", configuration: QwenConfiguration.self) { QwenModel($0) },
             modelType("qwen2_moe", configuration: Qwen2MoEConfiguration.self) {

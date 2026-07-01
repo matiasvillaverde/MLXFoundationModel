@@ -259,6 +259,7 @@ private let kExpectedCatalogArchitectures: Set<String> = [
     "qwen3_5_text",
     "qwen3_moe",
     "qwen3_next",
+    "recurrent_gemma",
     "rwkv7",
     "seed_oss",
     "solar_open",

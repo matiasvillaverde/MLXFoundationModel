@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 141 | Safe area for normal refactors. |
+| Files with no source-port marker | 142 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -47,6 +47,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/HeadLinear.swift` | Shared head-wise dense and quantized projections plus MLA KV projection splitting. |
 | `Sources/MLXLocalModels/MLXLLM/Cohere2.swift` | Cohere2 grouped attention, hybrid sliding/full attention schedule, mixed cache planning, tied output head, greedy-token fast path, stale rotary cleanup, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/RWKV7.swift` | RWKV7 time-mixing, channel-mixing, recurrent WKV state updates, Metal recurrence dispatch, tied-head fallback, greedy-token fast path, and cache planning. |
+| `Sources/MLXLocalModels/MLXLLM/RecurrentGemma.swift` | RecurrentGemma Griffin blocks with local attention, gated linear recurrence, convolution state, tied-head fallback, soft-capped logits, mixed cache planning, sanitizer cleanup, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/GPT2.swift` | GPT-2 learned position embeddings, cache-aware position IDs, pre-norm attention and MLP blocks, raw Transformers sanitizer, tied output head, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/GPTBigCode.swift` | GPT-BigCode learned position embeddings, multi-query packed attention, raw Transformers sanitizer, tied/untied output heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/GPTNeoX.swift` | GPT-NeoX partial-RoPE packed attention, parallel and sequential residual blocks, raw Transformers sanitizer, tied/untied output heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
@@ -196,6 +197,7 @@ Current independence pass:
 - Added Mamba2 with gated state-space recurrence, derived intermediate sizing for compact configs, JSON5 checkpoint profile loading, CPU-safe SSM fallback, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 - Added Helium with grouped attention, traditional RoPE, SwiGLU feed-forward blocks, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 - Added RWKV7 with project-owned time-mixing, channel-mixing, recurrent WKV cache updates, a Metal recurrence path, greedy-token fast path, focused architecture/tokenizer coverage, and real Goose 0.1B validation.
+- Added RecurrentGemma with Griffin recurrent/local-attention blocks, one-plus RMSNorm, convolution and RGLRU state caches, tied-head fallback, soft-capped logits, focused architecture coverage, and a registry-only catalog entry until a small MLX checkpoint is available.
 - Added legacy PLaMo with shared-head attention, checkpoint-compatible `model.layers.layers.*` keys, shared-KV cache expansion, tied-head cleanup, greedy-token fast path, focused architecture coverage, and an oversized PLaMo 13B catalog entry.
 - Added PLaMo 2 with hybrid Mamba/attention blocks, JSONL tokenizer support, grammar-vocabulary export, mixed-cache planning, checkpoint sanitizing, focused architecture/tokenizer coverage, and real PLaMo 2 1B validation.
 - Added TeleChat3 with grouped attention, TeleChat3 YaRN RoPE scaling, SwiGLU feed-forward blocks, tied-head cleanup, greedy-token fast path, focused architecture coverage, and an oversized real-model catalog entry.
@@ -286,18 +288,18 @@ in the E2E harness. `samairtimer/MobileLLM-R1-360M-4bit` was not used because
 its published index omits attention tensors. The `llama4` wrapper alias remains
 registry-only until a small complete wrapper checkpoint is available.
 
-`glm4_moe`, `solar_open`, `glm4_moe_lite`, pure `nemotron`, `nemotron-nas`, and
-`afm7`
-are still registry-only in the catalog, and no exact `glm4-moe`, `solar-open`,
-`glm4-moe-lite`, `nemotron`, `nemotron-nas`, or `afm7` checkpoint directory is
-present locally. Solar Open uses the same GLM4 MoE implementation path that mlx-lm exposes for
+`glm4_moe`, `solar_open`, `glm4_moe_lite`, pure `nemotron`, `nemotron-nas`,
+`afm7`, and `recurrent_gemma` are still registry-only in the catalog, and no
+exact `glm4-moe`, `solar-open`, `glm4-moe-lite`, `nemotron`, `nemotron-nas`,
+`afm7`, or `recurrent-gemma` checkpoint directory is present locally. Solar Open
+uses the same GLM4 MoE implementation path that mlx-lm exposes for
 `solar_open`. The smallest published MLX Solar Open checkpoint found during
 this pass was `mlx-community/Solar-Open-100B-4bit`; `hf download --dry-run`
 reported twelve weight shards of about 57 GB total, so it is intentionally left
 out of the 32 GB E2E sweep. Current small Nemotron MLX search hits are
 `nemotron_h` or `llama` configs, and Hugging Face model search returned no exact
-`nemotron-nas` or `afm7` MLX checkpoint, so these stay registry-only until fit
-checkpoints are available.
+`nemotron-nas`, `afm7`, or `recurrent_gemma` MLX checkpoint, so these stay
+registry-only until fit checkpoints are available.
 
 Qwen2 MoE parity was added with
 `mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit`. The checkpoint is 7.9 GB on disk
