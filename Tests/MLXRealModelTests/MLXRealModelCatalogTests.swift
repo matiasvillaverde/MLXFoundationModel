@@ -149,6 +149,7 @@ private let kExpectedCatalogArchitectures: Set<String> = [
     "bailing_moe",
     "bitnet",
     "cohere",
+    "cohere2",
     "deepseek_v3",
     "ernie4_5",
     "exaone",
@@ -215,6 +216,7 @@ private let kExpectedCatalogArchitectures: Set<String> = [
 
 private let kExpectedMainCatalogArchitectures: Set<String> = [
     "bitnet",
+    "cohere2",
     "ernie4_5",
     "exaone",
     "exaone4",
@@ -252,6 +254,7 @@ private let kExpectedRelevantCatalogArchitectures: Set<String> = [
     "apertus",
     "baichuan_m1",
     "bitnet",
+    "cohere2",
     "deepseek_v3",
     "ernie4_5",
     "exaone",

@@ -807,6 +807,19 @@
     "tags": []
   },
   {
+    "id": "cohere2-tiny-aya-global-4bit",
+    "displayName": "Cohere2 Tiny Aya Global 4-bit",
+    "architecture": "cohere2",
+    "repository": "Siarhei/tiny-aya-global-4bit",
+    "relativePath": "tiny-aya-global-4bit",
+    "prompt": "Write one short sentence about multilingual local assistants.",
+    "expectedTokens": ["local", "assistant", "language"],
+    "maxTokens": 12,
+    "minimumMemoryGB": 16,
+    "minimumDiskGB": 6,
+    "tags": ["main", "relevant", "parity", "small", "stress"]
+  },
+  {
     "id": "openelm-270m-instruct",
     "displayName": "OpenELM 270M Instruct",
     "architecture": "openelm",
