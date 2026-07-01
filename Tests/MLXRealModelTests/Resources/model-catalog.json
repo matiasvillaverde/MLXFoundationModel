@@ -304,6 +304,19 @@
     "tags": ["large"]
   },
   {
+    "id": "phixtral-2x2_8",
+    "displayName": "Phixtral 2x2.8B",
+    "architecture": "phixtral",
+    "repository": "mlabonne/phixtral-2x2_8",
+    "relativePath": "phixtral-2x2_8",
+    "prompt": "Write one short sentence about local mixture-of-experts models.",
+    "expectedTokens": ["local", "expert", "model"],
+    "maxTokens": 12,
+    "minimumMemoryGB": 24,
+    "minimumDiskGB": 10,
+    "tags": ["main", "relevant", "parity", "stress"]
+  },
+  {
     "id": "gemma-2b-it-4bit",
     "displayName": "Gemma 2B Instruct 4-bit",
     "architecture": "gemma",
