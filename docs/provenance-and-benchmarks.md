@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 121 | Safe area for normal refactors. |
+| Files with no source-port marker | 122 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -71,6 +71,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/AfMoE.swift` | AfMoE full/sliding attention layout, layer schedule, grouped sparse routing, expert packing, mixed cache planning, tied/untied heads, greedy-token fast path, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Qwen3Next.swift` | Qwen3Next layer scheduling, gated full attention, gated-delta linear attention, MoE routing, expert packing, mixed cache planning, tied/untied heads, greedy-token fast path, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/GraniteMoeHybrid.swift` | Granite MoE Hybrid typed layer scheduling, attention and Mamba layout planning, MoE routing, shared/dense feed-forward remapping, mixed cache planning, tied/untied heads, greedy-token fast path, SSM mask use, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/Mellum.swift` | Mellum full/sliding attention scheduling, per-layer RoPE selection, q/k RMSNorm, sparse MoE routing, expert packing, mixed cache planning, tied/untied heads, greedy-token fast path, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Nemotron.swift` | Nemotron LayerNorm1P, partial-RoPE grouped-query attention, squared-ReLU feed-forward blocks, tied/untied heads, greedy-token fast path, cache dimensions, sanitizer cleanup, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/NemotronH.swift` | Nemotron H typed block scheduling, attention and Mamba layout planning, squared-ReLU dense and routed feed-forward paths, grouped expert routing, mixed cache planning, tied/untied heads, greedy-token fast path, SSM mask use, sanitizer packing, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/GLM4MoELite.swift` | GLM4 MoE Lite and GLM DSA attention planning, grouped routing, DSA cache layout, multi-head projection quantization, tied/untied heads, greedy-token fast path, sanitizer packing, and LoRA target discovery. |
@@ -159,6 +160,7 @@ Current independence pass:
 - Replaced AfMoE with explicit full/sliding attention, layer, routing, and expert-packing plans; fixed grouped routing edge cases; added mixed cache creation, tied-head cleanup, greedy-token fast path, LoRA target discovery, and focused config/layout/routing/cache/forward/sanitizer coverage.
 - Replaced Qwen3Next with explicit layer, attention, linear-attention, MoE, sanitizer, and expert-packing plans; fixed later-layer expert packing; added robust mixed-cache mask selection, tied-head cleanup, greedy-token fast path, LoRA target discovery, and focused config/layout/cache/forward/sanitizer coverage.
 - Replaced Granite MoE Hybrid with typed layer, attention, Mamba, MoE, sanitizer, and cache plans; removed the local no-op SSM mask; fixed later-layer MoE/shared-MLP sanitizer remapping; added tied-head cleanup, greedy-token fast path, LoRA target discovery, and focused config/layout/cache/forward/sanitizer coverage.
+- Added Mellum with full/sliding attention scheduling, YaRN/default per-layer RoPE selection, q/k RMSNorm, sparse MoE routing, sidecar-aware expert packing, mixed cache planning, greedy-token fast path, LoRA target discovery, and focused config/layout/cache/forward/sanitizer coverage.
 - Added Nemotron with checkpoint-compatible LayerNorm1P, partial-RoPE grouped attention, squared-ReLU MLP blocks, tied-head cleanup, greedy-token fast path, LoRA target discovery, and focused config/layout/norm/cache/forward/sanitizer coverage.
 - Replaced Nemotron H with typed block, cache, attention, Mamba, MoE, and sanitizer plans; fixed array-form `time_step_limit` decoding; added grouped routing, tied-head cleanup, greedy-token fast path, LoRA target discovery, and focused config/layout/routing/cache/forward/sanitizer coverage.
 - Replaced GLM4 MoE Lite with explicit attention, DSA, layer, routing, projection, and sanitizer plans; registered layers through `@ModuleInfo`; added tied-head cleanup, greedy-token fast path, LoRA target discovery, and focused schedule/layout/routing/cache/sanitizer coverage.
