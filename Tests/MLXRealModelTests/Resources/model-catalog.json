@@ -726,6 +726,19 @@
     "tags": ["main", "relevant", "parity", "stress"]
   },
   {
+    "id": "hunyuan-mt-7b",
+    "displayName": "Hunyuan MT 7B BF16",
+    "architecture": "hunyuan_v1_dense",
+    "repository": "tencent/Hunyuan-MT-7B",
+    "relativePath": "Hunyuan-MT-7B",
+    "prompt": "Translate to German: Local language models are useful.",
+    "expectedTokens": ["Lokale", "Sprachmodelle", "Modelle"],
+    "maxTokens": 16,
+    "minimumMemoryGB": 32,
+    "minimumDiskGB": 17,
+    "tags": ["main", "relevant", "parity", "stress"]
+  },
+  {
     "id": "glm4-moe",
     "displayName": "GLM4 MoE",
     "architecture": "glm4_moe",
