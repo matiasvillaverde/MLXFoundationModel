@@ -50,7 +50,7 @@ make test-main-architectures  # serialized across representative models
 
 Use `MLX_TEST_MODELS_DIR=/path/to/models` to reuse shared model storage.
 
-`make test-main-architectures` currently covers 44 representative entries,
+`make test-main-architectures` currently covers 45 representative entries,
 including:
 
 | Architecture | Model |
@@ -70,6 +70,7 @@ including:
 | `mamba2` | `mamba2-130m-hf-4bit` |
 | `exaone` | `exaone-3.5-2.4b-instruct-4bit` |
 | `exaone4` | `exaone-4.0-1.2b-4bit` |
+| `exaone_moe` | `exaone-moe-dummy-7b-a1b` |
 | `ernie4_5` | `ernie-4.5-0.3b-bf16` |
 | `helium` | `helium-1-preview-2b-4bit` |
 | `bitnet` | `bitnet-b1.58-2b-4t-4bit` |

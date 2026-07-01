@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 128 | Safe area for normal refactors. |
+| Files with no source-port marker | 129 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -79,6 +79,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/GLM4MoELite.swift` | GLM4 MoE Lite and GLM DSA attention planning, grouped routing, DSA cache layout, multi-head projection quantization, tied/untied heads, greedy-token fast path, sanitizer packing, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Llama.swift` | Llama/Mistral attention layout, linear/dynamic/Llama 3 RoPE planning, decoder block, backbone, tied/untied output heads, greedy-token fast path, config validation, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Exaone.swift` | EXAONE 3.x grouped-query attention, llama3 RoPE scaling, SwiGLU feed-forward blocks, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/ExaoneMoE.swift` | EXAONE MoE mixed sliding/full attention, dense/sparse MLP layer planning, grouped expert routing, expert packing, mixed cache planning, tied/untied heads, greedy-token fast path, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Phi3.swift` | Phi3 packed QKV attention, RoPE/LongRoPE planning, decoder block, backbone, tied/untied output heads, greedy-token fast path, config defaults, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Phi3Small.swift` | Phi-3-small packed QKV attention, block-sparse attention planning, MuP scaling, GeGELU feed-forward blocks, tied output head, dummy-token suppression, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Phi.swift` | Phi attention layout, decoder block, backbone, greedy-token fast path, configuration defaults, and LoRA target discovery. |
@@ -183,6 +184,7 @@ Current independence pass:
 - Added RWKV7 with project-owned time-mixing, channel-mixing, recurrent WKV cache updates, a Metal recurrence path, greedy-token fast path, focused architecture/tokenizer coverage, and real Goose 0.1B validation.
 - Added PLaMo 2 with hybrid Mamba/attention blocks, JSONL tokenizer support, grammar-vocabulary export, mixed-cache planning, checkpoint sanitizing, focused architecture/tokenizer coverage, and real PLaMo 2 1B validation.
 - Added TeleChat3 with grouped attention, TeleChat3 YaRN RoPE scaling, SwiGLU feed-forward blocks, tied-head cleanup, greedy-token fast path, focused architecture coverage, and an oversized real-model catalog entry.
+- Added EXAONE MoE with mixed sliding/full attention, dense/sparse MLP scheduling, grouped sparse routing, expert packing, mixed cache planning, greedy-token fast path, focused architecture coverage, and a fit-on-32GB architecture checkpoint entry.
 
 Previous performance pass:
 
@@ -217,22 +219,23 @@ make test-all-architectures
 
 ## E2E Result
 
-The current release all-architecture sweep passed for every model selected by
+An earlier release all-architecture sweep passed for every model selected by
 the memory gate. The test runner selected 80 local models and skipped 9
 oversized models on this 32 GB host. Each selected model ran serialized
 generation, rendered session requests, and token-level grammar constraint
 checks.
 
-A serialized release `main` sweep on 2026-07-01 selected 44 downloadable
+A serialized release `main` sweep on 2026-07-01 selected 45 downloadable
 models, including Cohere2, DeepSeek, DeepSeek V2, ERNIE 4.5 MoE, EXAONE 3.5,
-GraniteMoE, Helium, Hunyuan V1 Dense, InternLM3, Jamba, Mamba, Mamba2, Mixtral,
-PLaMo 2, Phixtral, Qwen, RWKV7, Seed OSS, and GLM, and passed generation,
-rendered session, token grammar, and configured stress checks.
+EXAONE MoE, GraniteMoE, Helium, Hunyuan V1 Dense, InternLM3, Jamba, Mamba,
+Mamba2, Mixtral, PLaMo 2, Phixtral, Qwen, RWKV7, Seed OSS, and GLM, and passed
+generation, rendered session, token grammar, and configured stress checks.
 
-The current sweep adds a 32 GB-friendly `plamo2` checkpoint and keeps the
-32 GB-friendly coverage for `ernie4_5_moe`, `qwen3_moe`, `mistral`, `gpt_oss`,
-`qwen3_5_moe`, and `nemotron_h`. These entries also run the stress test, which
-preloads one session and repeats generation on that same session.
+The latest `main` sweep adds the 32 GB-friendly `exaone_moe` checkpoint and
+keeps the 32 GB-friendly coverage for `plamo2`, `ernie4_5_moe`, `qwen3_moe`,
+`mistral`, `gpt_oss`, `qwen3_5_moe`, and `nemotron_h`. These entries also run
+the stress test, which preloads one session and repeats generation on that same
+session.
 
 `glm4_moe`, `solar_open`, `glm4_moe_lite`, and pure `nemotron` are still
 registry-only in the catalog, and no exact `glm4-moe`, `solar-open`,
@@ -344,6 +347,12 @@ EXAONE 3.x parity was added with
 and passed targeted real-model generation, rendered session requests, token
 grammar constraints, and stress generation on this host.
 
+EXAONE MoE parity was added with `nuxlear/EXAONE-MoE-Dummy-7B-A1B`. This is a
+public architecture checkpoint, not a quality language model. The checkpoint is
+13 GB on disk and passed targeted release generation, rendered session
+requests, token grammar constraints, 32-token stress generation, and the
+serialized release `main` architecture sweep on this host.
+
 StableLM parity was added with `mlx-community/stablelm-2-zephyr-1_6b-4bit`.
 The checkpoint is 1.1 GB on disk and passed targeted real-model generation,
 rendered session requests, token grammar constraints, and stress generation on
@@ -453,6 +462,25 @@ targeted architecture check; the 4-token row is from the serialized
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | `qwen2_moe` | `qwen1.5-moe-a2.7b-chat-4bit` | 8 | 29 | 0.7086 | 0.6075 | 0.1011 | 79.14 | 11.29 |
 | `qwen2_moe` | `qwen1.5-moe-a2.7b-chat-4bit` | 4 | 29 | 0.1902 | 0.0991 | 0.0911 | 43.92 | 21.04 |
+
+## EXAONE MoE Parity Check
+
+These rows come from the targeted release EXAONE MoE run on 2026-07-01. The
+checkpoint is a dummy architecture checkpoint, so these numbers validate loader,
+routing, cache, and generation mechanics rather than output quality.
+
+| Architecture | Model | Generated | Prompt | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `exaone_moe` | `exaone-moe-dummy-7b-a1b` release targeted | 4 | 17 | 0.8187 | 0.7586 | 0.0601 | 66.59 | 4.89 |
+| `exaone_moe` | `exaone-moe-dummy-7b-a1b` release main | 2 | 17 | 0.9424 | 0.7273 | 0.2151 | 9.30 | 2.12 |
+
+Best stress iterations from the targeted run, plus the release `main` sweep
+stress row:
+
+| Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `exaone_moe` | `exaone-moe-dummy-7b-a1b` release targeted | 32 | 0.2973 | 0.0560 | 0.2412 | 132.66 | 107.65 |
+| `exaone_moe` | `exaone-moe-dummy-7b-a1b` release main | 32 | 0.8723 | 0.6008 | 0.2715 | 117.84 | 36.68 |
 
 ## Qwen Parity Check
 
