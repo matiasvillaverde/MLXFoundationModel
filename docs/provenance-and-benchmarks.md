@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 117 | Safe area for normal refactors. |
+| Files with no source-port marker | 118 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -41,6 +41,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/Common/SentencePieceModelTokenizer.swift` | SentencePiece model-file parsing, duplicate-piece tolerant BPE lookup, byte fallback, special-token splitting, and InternLM-style chat rendering. |
 | `Sources/MLXLocalModels/MLXLLM/LLMModel.swift` | Default text-model prefill chunking and adaptive prefill integration. |
 | `Sources/MLXLocalModels/MLXLLM/LLMModelFactory.swift` | LLM type registration, alias grouping, model load progress, generation-token resolution, and trampoline factory. |
+| `Sources/MLXLocalModels/MLXLLM/Cohere2.swift` | Cohere2 grouped attention, hybrid sliding/full attention schedule, mixed cache planning, tied output head, greedy-token fast path, stale rotary cleanup, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/GPT2.swift` | GPT-2 learned position embeddings, cache-aware position IDs, pre-norm attention and MLP blocks, raw Transformers sanitizer, tied output head, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/GPTBigCode.swift` | GPT-BigCode learned position embeddings, multi-query packed attention, raw Transformers sanitizer, tied/untied output heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/GPTNeoX.swift` | GPT-NeoX partial-RoPE packed attention, parallel and sequential residual blocks, raw Transformers sanitizer, tied/untied output heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
@@ -113,6 +114,7 @@ Current independence pass:
 - Replaced LoRA layer adapters with focused coverage for dense/quantized conversion, adapter-only training, no-op initialization, fusion, and quantized mode preservation.
 - Replaced LoRA training helpers with focused coverage for shifted causal batches, prediction-length masking, weighted evaluation, adapter conversion/fusion, and quantized dequantize fusion.
 - Replaced LLM model factory registration with grouped aliases, testable generation-token resolution, and focused coverage for alias registration plus EOS/suppress-token precedence.
+- Added Cohere2 with hybrid sliding/full attention scheduling, LayerNorm bias handling, mixed cache planning, tied output head, greedy-token fast path, focused coverage, and real Tiny Aya Global validation.
 - Replaced generation parameter and logit plan assembly with normalized inputs, explicit sampler/processor planning, and focused coverage for sampler selection plus active processor construction.
 - Replaced LanguageModel core contracts with focused coverage for input slicing, media wrappers, default forwarding, greedy helpers, sanitize fallback, and KV-cache creation.
 - Replaced model loading support with deterministic safetensor discovery, explicit directory errors, and focused coverage for recursive discovery, case-insensitive extensions, and missing directories.
@@ -204,15 +206,15 @@ make test-all-architectures
 ## E2E Result
 
 The current all-architecture sweep passed for every model selected by the memory
-gate. The test runner selected 52 downloadable models and skipped 9 oversized
-models on this 32 GB host. Each selected model ran serialized generation,
-rendered session requests, and token-level grammar constraint checks.
+gate. The test runner selected 75 local models and skipped 9 oversized models on
+this 32 GB host. Each selected model ran serialized generation, rendered session
+requests, and token-level grammar constraint checks.
 
-A follow-up serialized `main` sweep on 2026-07-01 selected 38 downloadable
-models, including DeepSeek, DeepSeek V2, EXAONE 3.5, GraniteMoE, Helium,
-Hunyuan V1 Dense, InternLM3, Jamba, Mamba, Mamba2, Mixtral, Phixtral, Qwen, and
-GLM, and passed generation, rendered session, token grammar, and configured
-stress checks.
+A follow-up serialized `main` sweep on 2026-07-01 selected 39 downloadable
+models, including Cohere2, DeepSeek, DeepSeek V2, EXAONE 3.5, GraniteMoE,
+Helium, Hunyuan V1 Dense, InternLM3, Jamba, Mamba, Mamba2, Mixtral, Phixtral,
+Qwen, and GLM, and passed generation, rendered session, token grammar, and
+configured stress checks.
 
 The current sweep adds 32 GB-friendly checkpoints for `qwen3_moe`, `mistral`,
 `gpt_oss`, `qwen3_5_moe`, and `nemotron_h`. These entries also run the stress
@@ -243,6 +245,11 @@ requests, token grammar constraints, stress generation, and the serialized
 
 Phixtral parity was added with `mlabonne/phixtral-2x2_8`. The checkpoint is
 8.3 GB on disk and passed targeted release generation, rendered session
+requests, token grammar constraints, stress generation, and the serialized
+`main` architecture sweep on this host.
+
+Cohere2 parity was added with `Siarhei/tiny-aya-global-4bit`. The checkpoint is
+1.8 GB on disk and passed targeted release generation, rendered session
 requests, token grammar constraints, stress generation, and the serialized
 `main` architecture sweep on this host.
 
@@ -469,6 +476,25 @@ Best stress iterations from the same runs:
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `phixtral` | `phixtral-2x2_8` release targeted | 32 | 0.9589 | 0.0962 | 0.8627 | 37.09 | 33.37 |
 | `phixtral` | `phixtral-2x2_8` debug main | 32 | 1.2686 | 0.1056 | 1.1630 | 27.52 | 25.23 |
+
+## Cohere2 Parity Check
+
+These rows come from the targeted release Cohere2 run and the serialized debug
+`main` and release `all` sweeps on 2026-07-01.
+
+| Architecture | Model | Generated | Prompt | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `cohere2` | `cohere2-tiny-aya-global-4bit` release targeted | 4 | 392 | 0.6703 | 0.3593 | 0.3110 | 12.86 | 5.97 |
+| `cohere2` | `cohere2-tiny-aya-global-4bit` debug main | 4 | 392 | 0.6517 | 0.3130 | 0.3387 | 11.81 | 6.14 |
+| `cohere2` | `cohere2-tiny-aya-global-4bit` release all | 4 | 392 | 0.6170 | 0.3144 | 0.3026 | 13.22 | 6.48 |
+
+Best stress iterations from the same runs:
+
+| Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `cohere2` | `cohere2-tiny-aya-global-4bit` release targeted | 28 | 0.8007 | 0.2961 | 0.5046 | 55.48 | 34.97 |
+| `cohere2` | `cohere2-tiny-aya-global-4bit` debug main | 28 | 1.0836 | 0.3005 | 0.7830 | 35.76 | 25.84 |
+| `cohere2` | `cohere2-tiny-aya-global-4bit` release all | 28 | 0.7971 | 0.2951 | 0.5020 | 55.78 | 35.13 |
 
 ## MiniCPM3 Parity Check
 
