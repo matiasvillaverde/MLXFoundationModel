@@ -37,6 +37,7 @@ struct DeepseekV3ArchitectureTests {
         #expect(config.maxPositionEmbeddings == 4_096)
         #expect(config.ropeTheta == 10_000)
         #expect(config.attentionBias == false)
+        #expect(config.tieWordEmbeddings == false)
     }
 
     @Test("builds DeepSeek V3 attention layout")

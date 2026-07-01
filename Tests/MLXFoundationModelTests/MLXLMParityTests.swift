@@ -138,8 +138,7 @@ struct MLXLMParityTests {
         "nemotron-nas",
         "plamo",
         "recurrent_gemma",
-        "step3p5",
-        "youtu_llm"
+        "step3p5"
     ]
 
     private static let nonTextModelTypes: Set<String> = [

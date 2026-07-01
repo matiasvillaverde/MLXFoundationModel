@@ -100,6 +100,8 @@ struct MLXSupportedArchitectureTests {
         "smollm3",
         "stablelm",
         "starcoder2",
-        "telechat3"
+        "telechat3",
+        "youtu",
+        "youtu_llm"
     ]
 }

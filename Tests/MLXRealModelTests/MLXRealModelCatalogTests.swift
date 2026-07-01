@@ -235,7 +235,8 @@ private let kExpectedCatalogArchitectures: Set<String> = [
     "smollm3",
     "stablelm",
     "starcoder2",
-    "telechat3"
+    "telechat3",
+    "youtu_llm"
 ]
 
 private let kExpectedMainCatalogArchitectures: Set<String> = [
@@ -278,7 +279,8 @@ private let kExpectedMainCatalogArchitectures: Set<String> = [
     "seed_oss",
     "smollm3",
     "stablelm",
-    "starcoder2"
+    "starcoder2",
+    "youtu_llm"
 ]
 
 private let kExpectedRelevantCatalogArchitectures: Set<String> = [
@@ -333,5 +335,6 @@ private let kExpectedRelevantCatalogArchitectures: Set<String> = [
     "seed_oss",
     "smollm3",
     "stablelm",
-    "starcoder2"
+    "starcoder2",
+    "youtu_llm"
 ]

@@ -67,7 +67,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/Gemma2.swift` | Gemma2 soft-capped attention, grouped KV expansion, decoder block, backbone, greedy-token fast path, config defaults, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Internlm2.swift` | InternLM2 packed attention, dynamic RoPE planning, decoder blocks, greedy-token fast path, config defaults, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/InternLM3.swift` | InternLM3 grouped-query attention, dynamic RoPE planning, checkpoint-compatible module keys, tied-head cleanup, greedy-token fast path, cache dimensions, and LoRA target discovery. |
-| `Sources/MLXLocalModels/MLXLLM/DeepseekV3.swift` | DeepSeek V3 attention layout, YaRN planning, grouped MoE routing, checkpoint key normalization, cache dimensions, greedy-token fast path, sanitizer packing, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/DeepseekV3.swift` | DeepSeek V2/V3 and Youtu MLA attention layout, YaRN and nested-RoPE config planning, grouped MoE routing, tied/untied heads, checkpoint key normalization, cache dimensions, greedy-token fast path, sanitizer packing, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Deepseek.swift` | DeepSeek MoE attention layout, top-k expert routing, shared experts, packed expert checkpoint remapping, tied-head cleanup, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Mixtral.swift` | Mixtral grouped-query attention, top-k sparse routing, expert tensor packing, tied-head cleanup, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/GLM4MOE.swift` | GLM4 MoE attention layout, layer plan, grouped sparse routing, expert packing, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
@@ -245,8 +245,16 @@ session.
 A targeted release Hunyuan run on 2026-07-01 added `hunyuan` coverage with
 `mlx-community/Hunyuan-7B-Instruct-4bit`. It passed generation, rendered
 session requests, token-level grammar constraints, and stress generation on the
-same 32 GB host. A full `main` sweep has not yet been rerun with the new
-47-model catalog.
+same 32 GB host.
+
+A targeted release Youtu run on 2026-07-01 added `youtu_llm` coverage with
+`tencent/Youtu-LLM-2B`. It passed generation, rendered session requests,
+token-level grammar constraints, and stress generation on the same 32 GB host.
+
+A later serialized release `main` sweep on 2026-07-01 selected all 48 main
+catalog entries, including `hunyuan`, `hunyuan_v1_dense`, and `youtu_llm`, and
+passed generation, rendered session requests, token-level grammar constraints,
+and configured stress checks.
 
 `glm4_moe`, `solar_open`, `glm4_moe_lite`, and pure `nemotron` are still
 registry-only in the catalog, and no exact `glm4-moe`, `solar-open`,
@@ -929,6 +937,26 @@ Best stress iterations from the same runs:
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `hunyuan` | `hunyuan-7b-instruct-4bit` release targeted | 8 | 0.2179 | 0.0748 | 0.1431 | 55.92 | 36.71 |
 | `hunyuan` | `hunyuan-7b-instruct-4bit` release targeted | 19 | 0.3828 | 0.0764 | 0.3063 | 62.02 | 49.64 |
+
+## Youtu LLM Parity Check
+
+These rows come from targeted and `main` release Youtu runs on 2026-07-01. The
+checkpoint is `tencent/Youtu-LLM-2B`, uses `model_type: youtu`, and passed
+generation, session-style request rendering, token-level grammar constraints,
+and repeated generation on a MacBook Pro Mac14,5 with an Apple M2 Max and
+32 GB unified memory.
+
+| Architecture | Model | Generated | Prompt | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `youtu_llm` | `youtu-llm-2b` release targeted | 4 | 11 | 0.1883 | 0.1239 | 0.0643 | 62.18 | 21.25 |
+| `youtu_llm` | `youtu-llm-2b` release main | 2 | 11 | 0.1053 | 0.0675 | 0.0378 | 52.88 | 19.00 |
+
+Best stress iterations from the same runs:
+
+| Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `youtu_llm` | `youtu-llm-2b` release targeted | 32 | 0.5027 | 0.0664 | 0.4363 | 73.34 | 63.65 |
+| `youtu_llm` | `youtu-llm-2b` release main | 32 | 0.5040 | 0.0692 | 0.4348 | 73.59 | 63.49 |
 
 ## Small-Fit Stress Baseline
 

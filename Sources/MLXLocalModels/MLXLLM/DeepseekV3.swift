@@ -33,6 +33,7 @@ internal struct DeepseekV3Configuration: Codable, Equatable, Sendable {
     internal var ropeTheta: Float
     internal var ropeScaling: [String: StringOrNumber]?
     internal var attentionBias: Bool
+    internal var tieWordEmbeddings: Bool
 
     internal init(
         modelType: String = "deepseek_v3",
@@ -63,7 +64,8 @@ internal struct DeepseekV3Configuration: Codable, Equatable, Sendable {
         rmsNormEps: Float = 1e-6,
         ropeTheta: Float = 10_000,
         ropeScaling: [String: StringOrNumber]? = nil,
-        attentionBias: Bool = false
+        attentionBias: Bool = false,
+        tieWordEmbeddings: Bool = false
     ) {
         self.modelType = modelType
         self.vocabSize = vocabSize
@@ -94,10 +96,12 @@ internal struct DeepseekV3Configuration: Codable, Equatable, Sendable {
         self.ropeTheta = ropeTheta
         self.ropeScaling = ropeScaling
         self.attentionBias = attentionBias
+        self.tieWordEmbeddings = tieWordEmbeddings
     }
 
     internal init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let additional = try decoder.container(keyedBy: DeepseekV3AdditionalCodingKeys.self)
         let vocabSize = try container.decode(Int.self, forKey: .vocabSize)
         let hiddenSize = try container.decode(Int.self, forKey: .hiddenSize)
         let intermediateSize = try container.decode(Int.self, forKey: .intermediateSize)
@@ -110,6 +114,10 @@ internal struct DeepseekV3Configuration: Codable, Equatable, Sendable {
         let qkRopeHeadDim = try container.decode(Int.self, forKey: .qkRopeHeadDim)
         let vHeadDim = try container.decode(Int.self, forKey: .vHeadDim)
         let qkNopeHeadDim = try container.decode(Int.self, forKey: .qkNopeHeadDim)
+        let ropeParameters = try additional.decodeIfPresent(
+            [String: StringOrNumber].self,
+            forKey: .ropeParameters
+        )
 
         self.init(
             modelType: try container.decodeIfPresent(String.self, forKey: .modelType)
@@ -156,13 +164,19 @@ internal struct DeepseekV3Configuration: Codable, Equatable, Sendable {
             ) ?? 4_096,
             rmsNormEps: try container.decodeIfPresent(Float.self, forKey: .rmsNormEps)
                 ?? 1e-6,
-            ropeTheta: try container.decodeIfPresent(Float.self, forKey: .ropeTheta) ?? 10_000,
+            ropeTheta: try container.decodeIfPresent(Float.self, forKey: .ropeTheta)
+                ?? ropeParameters?["rope_theta"]?.asFloat()
+                ?? 10_000,
             ropeScaling: try container.decodeIfPresent(
                 [String: StringOrNumber].self,
                 forKey: .ropeScaling
             ),
             attentionBias: try container.decodeIfPresent(Bool.self, forKey: .attentionBias)
-                ?? false
+                ?? false,
+            tieWordEmbeddings: try container.decodeIfPresent(
+                Bool.self,
+                forKey: .tieWordEmbeddings
+            ) ?? false
         )
     }
 
@@ -196,11 +210,16 @@ internal struct DeepseekV3Configuration: Codable, Equatable, Sendable {
         case ropeTheta = "rope_theta"
         case ropeScaling = "rope_scaling"
         case attentionBias = "attention_bias"
+        case tieWordEmbeddings = "tie_word_embeddings"
     }
 
     internal var usesExpertScoreCorrectionBias: Bool {
         routingScoreFunction == .sigmoid
     }
+}
+
+private enum DeepseekV3AdditionalCodingKeys: String, CodingKey {
+    case ropeParameters = "rope_parameters"
 }
 
 internal enum DeepseekMoETopKMethod: String, Codable, Equatable, Sendable {
@@ -791,7 +810,7 @@ private final class DeepseekV3DecoderLayer: Module {
 }
 
 private final class DeepseekV3Backbone: Module {
-    @ModuleInfo(key: "embed_tokens") private var embedTokens: Embedding
+    @ModuleInfo(key: "embed_tokens") fileprivate var embedTokens: Embedding
     fileprivate let layers: [DeepseekV3DecoderLayer]
     @ModuleInfo(key: "norm") private var norm: RMSNorm
 
@@ -825,18 +844,21 @@ internal final class DeepseekV3Model: Module, LLMModel, KVCacheDimensionProvider
 
     private let config: DeepseekV3Configuration
     fileprivate let model: DeepseekV3Backbone
-    @ModuleInfo(key: "lm_head") private var lmHead: Linear
+    @ModuleInfo(key: "lm_head") private var lmHead: Linear?
 
     init(_ config: DeepseekV3Configuration) {
         self.config = config
         self.kvHeads = Array(repeating: config.numAttentionHeads, count: config.numHiddenLayers)
         self.vocabularySize = config.vocabSize
         self.model = DeepseekV3Backbone(config: config)
-        self._lmHead.wrappedValue = Linear(config.hiddenSize, config.vocabSize, bias: false)
+
+        if !config.tieWordEmbeddings {
+            self._lmHead.wrappedValue = Linear(config.hiddenSize, config.vocabSize, bias: false)
+        }
     }
 
     internal func callAsFunction(_ inputs: MLXArray, cache: [KVCache]?) -> MLXArray {
-        lmHead(model(inputs, cache: cache))
+        logits(from: model(inputs, cache: cache))
     }
 
     internal func greedyToken(
@@ -845,7 +867,7 @@ internal final class DeepseekV3Model: Module, LLMModel, KVCacheDimensionProvider
         state: LMOutput.State?
     ) -> GreedyTokenOutput {
         let hiddenState = lastTokenHiddenState(model(input[text: .newAxis].tokens, cache: cache))
-        return greedyTokenOutput(logits: lmHead(hiddenState), state: state)
+        return greedyTokenOutput(logits: logits(from: hiddenState), state: state)
     }
 
     internal func sanitize(weights: [String: MLXArray]) -> [String: MLXArray] {
@@ -874,6 +896,7 @@ internal final class DeepseekV3Model: Module, LLMModel, KVCacheDimensionProvider
             !key.contains(".rotary_emb.inv_freq")
                 && !key.contains(".mlp.experts.")
                 && !Self.isExtraPredictorLayer(key, layerCount: config.numHiddenLayers)
+                && (!config.tieWordEmbeddings || !Self.isTiedOutputHead(key))
         }
     }
 
@@ -882,6 +905,13 @@ internal final class DeepseekV3Model: Module, LLMModel, KVCacheDimensionProvider
             ? ["q_proj", "kv_a_proj_with_mqa", "kv_b_proj"]
             : ["q_a_proj", "q_b_proj", "kv_a_proj_with_mqa", "kv_b_proj"]
         return model.layers.map { ($0.selfAttention, targets) }
+    }
+
+    private func logits(from hiddenStates: MLXArray) -> MLXArray {
+        if let lmHead {
+            return lmHead(hiddenStates)
+        }
+        return model.embedTokens.asLinear(hiddenStates)
     }
 
     private static func isExtraPredictorLayer(_ key: String, layerCount: Int) -> Bool {
@@ -896,7 +926,13 @@ internal final class DeepseekV3Model: Module, LLMModel, KVCacheDimensionProvider
         }
         return layerIndex >= layerCount
     }
+
+    private static func isTiedOutputHead(_ key: String) -> Bool {
+        key.hasPrefix("lm_head.")
+    }
 }
 
 internal typealias DeepseekV2Configuration = DeepseekV3Configuration
 internal typealias DeepseekV2Model = DeepseekV3Model
+internal typealias YoutuLLMConfiguration = DeepseekV3Configuration
+internal typealias YoutuLLMModel = DeepseekV3Model
