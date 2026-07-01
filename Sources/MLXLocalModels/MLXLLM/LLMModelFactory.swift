@@ -184,6 +184,10 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
             modelType("lille-130m", configuration: Lille130mConfiguration.self) {
                 Lille130mModel($0)
             },
+            modelType("llama4", configuration: Llama4Configuration.self) { Llama4Model($0) },
+            modelType("llama4_text", configuration: Llama4TextConfiguration.self) {
+                Llama4TextModel($0)
+            },
             modelType("olmo", configuration: OlmoConfiguration.self) { OlmoModel($0) },
             modelType("olmoe", configuration: OlmoEConfiguration.self) { OlmoEModel($0) },
             modelType("olmo2", configuration: Olmo2Configuration.self) { Olmo2Model($0) },

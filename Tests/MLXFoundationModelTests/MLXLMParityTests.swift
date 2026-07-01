@@ -130,8 +130,6 @@ struct MLXLMParityTests {
         "iquestloopcoder",
         "kimi_k25",
         "kimi_linear",
-        "llama4",
-        "llama4_text",
         "longcat_flash",
         "longcat_flash_ngram",
         "nemotron-nas",

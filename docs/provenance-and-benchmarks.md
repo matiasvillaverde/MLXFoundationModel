@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 132 | Safe area for normal refactors. |
+| Files with no source-port marker | 134 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -81,6 +81,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/NemotronH.swift` | Nemotron H typed block scheduling, attention and Mamba layout planning, squared-ReLU dense and routed feed-forward paths, grouped expert routing, mixed cache planning, tied/untied heads, greedy-token fast path, SSM mask use, sanitizer packing, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/GLM4MoELite.swift` | GLM4 MoE Lite and GLM DSA attention planning, grouped routing, DSA cache layout, multi-head projection quantization, tied/untied heads, greedy-token fast path, sanitizer packing, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Llama.swift` | Llama/Mistral attention layout, linear/dynamic/Llama 3 RoPE planning, decoder block, backbone, tied/untied output heads, greedy-token fast path, config validation, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/Llama4.swift` | Llama 4 text and wrapper config decoding, per-layer RoPE flags, no-scale q/k RMSNorm, dense and top-1 MoE feed-forward blocks, fused expert packing, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Exaone.swift` | EXAONE 3.x grouped-query attention, llama3 RoPE scaling, SwiGLU feed-forward blocks, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/ExaoneMoE.swift` | EXAONE MoE mixed sliding/full attention, dense/sparse MLP layer planning, grouped expert routing, expert packing, mixed cache planning, tied/untied heads, greedy-token fast path, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Klear.swift` | Klear grouped-query attention, q/k RMSNorm, dense and sparse MoE layers, bias-assisted top-k routing, shared experts, tied-head cleanup, greedy-token fast path, cache dimensions, and LoRA target discovery. |
@@ -145,6 +146,7 @@ Current independence pass:
 - Replaced Phi3 with packed QKV layout, explicit RoPE/LongRoPE planning, tied/untied output handling, greedy-token fast path, and focused config/layout/LoRA coverage.
 - Added Phi-3-small with packed QKV attention, block-sparse attention planning, MuP scaling, tiktoken tokenizer support, grammar-vocabulary fallback, dummy-token suppression, greedy-token fast path, and focused config/layout/forward/tokenizer coverage.
 - Replaced Llama with explicit Llama/Mistral layout, project-owned RoPE planning for linear, dynamic, and Llama 3 scaling, tied/untied output handling, greedy-token fast path, and focused config/layout/LoRA coverage.
+- Added Llama 4 text and wrapper support with per-layer RoPE flags, q/k RMSNorm, dense and top-1 MoE feed-forward paths, fused expert packing, tied-head cleanup, greedy-token fast path, cache planning, focused architecture coverage, and real Minini 140M validation.
 - Replaced DeepSeek V3 with explicit attention, YaRN, and MoE routing plans; fixed empty KV-cache dimensions; corrected adapter targets; packed expert weights in the sanitizer; and added focused config/layout/routing/forward/sanitizer coverage.
 - Added DeepSeek MoE with explicit GQA attention, RoPE planning, dense-vs-sparse layer scheduling, shared experts, top-k routing, packed expert checkpoint remapping, tied-head cleanup, greedy-token fast path, and focused config/layout/routing/forward/sanitizer coverage.
 - Added Mixtral with explicit GQA attention, top-k expert routing, packed expert checkpoint remapping, tied-head cleanup, greedy-token fast path, and Mistral-family prompt-style inference for Mixtral checkpoints.
@@ -252,10 +254,10 @@ A targeted release Youtu run on 2026-07-01 added `youtu_llm` coverage with
 `tencent/Youtu-LLM-2B`. It passed generation, rendered session requests,
 token-level grammar constraints, and stress generation on the same 32 GB host.
 
-A later serialized release `main` sweep on 2026-07-01 selected all 49 main
-catalog entries, including `dbrx`, `hunyuan`, `hunyuan_v1_dense`, and
-`youtu_llm`, and passed generation, rendered session requests, token-level
-grammar constraints, and configured stress checks.
+A later serialized release `main` sweep on 2026-07-01 selected all 50 main
+catalog entries, including `dbrx`, `hunyuan`, `hunyuan_v1_dense`,
+`llama4_text`, and `youtu_llm`, and passed generation, rendered session
+requests, token-level grammar constraints, and configured stress checks.
 
 DBRX parity was added with `yujiepan/dbrx-tiny-random`. This is a tiny random
 architecture probe, not a quality checkpoint. It passed targeted release
@@ -263,6 +265,14 @@ generation, rendered session requests, token grammar constraints, stress
 generation, and the serialized `main` architecture sweep on this host. The
 published full DBRX MLX checkpoints found during this pass remain too large for
 the 32 GB sweep.
+
+Llama 4 text parity was added with `aloobun/minini-140m-it`. The checkpoint is
+284 MB on disk, complete, public, and instruction-tuned enough to validate
+streaming text. `trl-internal-testing/tiny-Llama4ForCausalLM` remains useful for
+focused shape tests, but its random weights emitted only empty special-token text
+in the E2E harness. `samairtimer/MobileLLM-R1-360M-4bit` was not used because
+its published index omits attention tensors. The `llama4` wrapper alias remains
+registry-only until a small complete wrapper checkpoint is available.
 
 `glm4_moe`, `solar_open`, `glm4_moe_lite`, and pure `nemotron` are still
 registry-only in the catalog, and no exact `glm4-moe`, `solar-open`,
@@ -515,6 +525,24 @@ stress row:
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `exaone_moe` | `exaone-moe-dummy-7b-a1b` release targeted | 32 | 0.2973 | 0.0560 | 0.2412 | 132.66 | 107.65 |
 | `exaone_moe` | `exaone-moe-dummy-7b-a1b` release main | 32 | 0.8723 | 0.6008 | 0.2715 | 117.84 | 36.68 |
+
+## Llama 4 Text Parity Check
+
+These rows come from targeted and serialized release `main` Llama 4 text runs on
+2026-07-01. `minini-140m-it` is the 32 GB-host E2E checkpoint; full Llama 4
+Scout/Maverick checkpoints are outside this host's memory budget.
+
+| Architecture | Model | Generated | Prompt | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `llama4_text` | `minini-140m-it` release targeted | 16 | 16 | 0.0627 | 0.0207 | 0.0420 | 381.31 | 255.31 |
+| `llama4_text` | `minini-140m-it` release main | 2 | 16 | 0.0306 | 0.0202 | 0.0104 | 191.79 | 65.40 |
+
+Best stress iterations from the same runs:
+
+| Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `llama4_text` | `minini-140m-it` release targeted | 32 | 0.0883 | 0.0191 | 0.0692 | 462.58 | 362.45 |
+| `llama4_text` | `minini-140m-it` release main | 32 | 0.0899 | 0.0201 | 0.0697 | 458.92 | 356.13 |
 
 ## Klear Parity Check
 

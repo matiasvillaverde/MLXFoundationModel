@@ -61,6 +61,8 @@ struct MLXSupportedArchitectureTests {
         "lfm2_moe",
         "lille-130m",
         "llama",
+        "llama4",
+        "llama4_text",
         "mamba",
         "mamba2",
         "mellum",

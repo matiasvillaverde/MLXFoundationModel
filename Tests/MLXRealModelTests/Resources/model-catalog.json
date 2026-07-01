@@ -746,6 +746,30 @@
     "tags": ["main", "relevant", "parity", "small", "stress"]
   },
   {
+    "id": "minini-140m-it",
+    "displayName": "Minini 140M Instruct",
+    "architecture": "llama4_text",
+    "repository": "aloobun/minini-140m-it",
+    "relativePath": "minini-140m-it",
+    "prompt": "Write one short sentence about useful software.",
+    "expectedTokens": [],
+    "maxTokens": 16,
+    "minimumMemoryGB": 4,
+    "minimumDiskGB": 1,
+    "tags": ["main", "relevant", "parity", "small", "stress"]
+  },
+  {
+    "id": "llama4-wrapper",
+    "displayName": "Llama 4 Wrapper",
+    "architecture": "llama4",
+    "repository": null,
+    "relativePath": "llama4-wrapper",
+    "prompt": "Say hello.",
+    "expectedTokens": [],
+    "maxTokens": 8,
+    "tags": ["registry-only"]
+  },
+  {
     "id": "youtu-llm-2b",
     "displayName": "Youtu LLM 2B",
     "architecture": "youtu_llm",
