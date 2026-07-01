@@ -46,7 +46,7 @@ MoE and recent family gaps:
 - `cohere2`
 - `ernie4_5_moe`
 - `exaone_moe`
-- `hunyuan`, `hunyuan_v1_dense`
+- `hunyuan`
 - `bailing_moe_linear`
 - `afm7`
 - `nemotron`, `nemotron-nas`

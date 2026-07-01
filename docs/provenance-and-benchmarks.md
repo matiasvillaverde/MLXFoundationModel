@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 116 | Safe area for normal refactors. |
+| Files with no source-port marker | 117 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -46,6 +46,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/GPTNeoX.swift` | GPT-NeoX partial-RoPE packed attention, parallel and sequential residual blocks, raw Transformers sanitizer, tied/untied output heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/StableLM.swift` | StableLM partial-RoPE attention, optional per-head q/k LayerNorm, sequential and parallel residual blocks, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/GLM.swift` | GLM grouped-query attention, traditional RoPE, fused SwiGLU feed-forward blocks, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/HunyuanV1Dense.swift` | Hunyuan V1 Dense grouped-query attention, dynamic-alpha RoPE, q/k RMSNorm, tied-head cleanup, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Helium.swift` | Helium grouped attention, traditional RoPE planning, SwiGLU feed-forward blocks, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/BailingMoe.swift` | Bailing MoE attention layout, sparse routing plan, grouped expert selection, expert packing, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Mistral3Text.swift` | Mistral 3 attention layout, Llama 4 position scaling, full/sliding layer scheduling, cache planning, VLM weight unwrapping, greedy-token fast path, and LoRA target discovery. |
@@ -120,6 +121,7 @@ Current independence pass:
 - Replaced Phi with an explicit attention layout, project-owned module structure, config defaults, greedy-token fast path, and focused layout/config/LoRA coverage.
 - Replaced InternLM2 with packed-attention layout, type-specific RoPE scaling, greedy-token fast path, packed LoRA targeting, and focused layout/RoPE/config coverage.
 - Added InternLM3 with grouped-query attention, dynamic RoPE scaling, checkpoint-compatible keys, greedy-token fast path, SentencePiece tokenizer coverage, and targeted real-model validation.
+- Added Hunyuan V1 Dense with dynamic-alpha RoPE, q/k RMSNorm, tied-head cleanup, greedy-token fast path, focused coverage, and real Hunyuan MT validation.
 - Replaced Gemma with a shared project-owned norm, explicit attention layout, stable checkpoint keys, greedy-token fast path, and focused config/layout/LoRA coverage.
 - Replaced Gemma2 with soft-capped attention layout, grouped KV expansion, greedy-token fast path, stable checkpoint keys, and focused config/layout/LoRA coverage.
 - Replaced Phi3 with packed QKV layout, explicit RoPE/LongRoPE planning, tied/untied output handling, greedy-token fast path, and focused config/layout/LoRA coverage.
@@ -206,10 +208,11 @@ gate. The test runner selected 52 downloadable models and skipped 9 oversized
 models on this 32 GB host. Each selected model ran serialized generation,
 rendered session requests, and token-level grammar constraint checks.
 
-A follow-up serialized `main` sweep on 2026-07-01 selected 36 downloadable
+A follow-up serialized `main` sweep on 2026-07-01 selected 37 downloadable
 models, including DeepSeek, DeepSeek V2, EXAONE 3.5, GraniteMoE, Helium,
-InternLM3, Jamba, Mamba, Mamba2, Mixtral, Qwen, and GLM, and passed generation,
-rendered session, token grammar, and configured stress checks.
+Hunyuan V1 Dense, InternLM3, Jamba, Mamba, Mamba2, Mixtral, Qwen, and GLM, and
+passed generation, rendered session, token grammar, and configured stress
+checks.
 
 The current sweep adds 32 GB-friendly checkpoints for `qwen3_moe`, `mistral`,
 `gpt_oss`, `qwen3_5_moe`, and `nemotron_h`. These entries also run the stress
@@ -232,6 +235,11 @@ GLM parity was added with `zai-org/glm-edge-1.5b-chat`. The checkpoint is 3.0 GB
 on disk and passed targeted release generation, rendered session requests, token
 grammar constraints, stress generation, and the serialized `main` architecture
 sweep on this host.
+
+Hunyuan V1 Dense parity was added with `tencent/Hunyuan-MT-7B`. The checkpoint
+is 15 GB on disk and passed targeted release generation, rendered session
+requests, token grammar constraints, stress generation, and the serialized
+`main` architecture sweep on this host.
 
 MiniCPM3 parity was added with `mlx-community/MiniCPM3-4B-4bit`. The checkpoint
 is 2.2 GB on disk and passed targeted real-model generation, rendered session
@@ -422,6 +430,23 @@ Best stress iterations from the same runs:
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `glm` | `glm-edge-1.5b-chat` targeted | 32 | 0.3393 | 0.0238 | 0.3154 | 101.44 | 94.32 |
 | `glm` | `glm-edge-1.5b-chat` main | 32 | 0.3375 | 0.0234 | 0.3141 | 101.88 | 94.81 |
+
+## Hunyuan V1 Dense Parity Check
+
+These rows come from the targeted release Hunyuan MT run and the serialized
+release `main` sweep on 2026-07-01.
+
+| Architecture | Model | Generated | Prompt | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `hunyuan_v1_dense` | `hunyuan-mt-7b` targeted | 4 | 12 | 2.6591 | 2.2062 | 0.4529 | 8.83 | 1.50 |
+| `hunyuan_v1_dense` | `hunyuan-mt-7b` main | 4 | 12 | 2.0707 | 1.7768 | 0.2940 | 13.61 | 1.93 |
+
+Best stress iterations from the same runs:
+
+| Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `hunyuan_v1_dense` | `hunyuan-mt-7b` targeted | 32 | 1.5269 | 0.1150 | 1.4119 | 22.66 | 20.96 |
+| `hunyuan_v1_dense` | `hunyuan-mt-7b` main | 32 | 1.5290 | 0.1149 | 1.4142 | 22.63 | 20.93 |
 
 ## MiniCPM3 Parity Check
 
