@@ -48,7 +48,7 @@ MoE and recent family gaps:
 - `hunyuan`
 - `bailing_moe_linear`
 - `afm7`
-- `nemotron`, `nemotron-nas`
+- `nemotron-nas`
 
 Legacy and compatibility gaps:
 

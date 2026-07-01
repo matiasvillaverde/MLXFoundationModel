@@ -71,6 +71,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/AfMoE.swift` | AfMoE full/sliding attention layout, layer schedule, grouped sparse routing, expert packing, mixed cache planning, tied/untied heads, greedy-token fast path, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Qwen3Next.swift` | Qwen3Next layer scheduling, gated full attention, gated-delta linear attention, MoE routing, expert packing, mixed cache planning, tied/untied heads, greedy-token fast path, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/GraniteMoeHybrid.swift` | Granite MoE Hybrid typed layer scheduling, attention and Mamba layout planning, MoE routing, shared/dense feed-forward remapping, mixed cache planning, tied/untied heads, greedy-token fast path, SSM mask use, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/Nemotron.swift` | Nemotron LayerNorm1P, partial-RoPE grouped-query attention, squared-ReLU feed-forward blocks, tied/untied heads, greedy-token fast path, cache dimensions, sanitizer cleanup, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/NemotronH.swift` | Nemotron H typed block scheduling, attention and Mamba layout planning, squared-ReLU dense and routed feed-forward paths, grouped expert routing, mixed cache planning, tied/untied heads, greedy-token fast path, SSM mask use, sanitizer packing, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/GLM4MoELite.swift` | GLM4 MoE Lite and GLM DSA attention planning, grouped routing, DSA cache layout, multi-head projection quantization, tied/untied heads, greedy-token fast path, sanitizer packing, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Llama.swift` | Llama/Mistral attention layout, linear/dynamic/Llama 3 RoPE planning, decoder block, backbone, tied/untied output heads, greedy-token fast path, config validation, and LoRA target discovery. |
@@ -158,6 +159,7 @@ Current independence pass:
 - Replaced AfMoE with explicit full/sliding attention, layer, routing, and expert-packing plans; fixed grouped routing edge cases; added mixed cache creation, tied-head cleanup, greedy-token fast path, LoRA target discovery, and focused config/layout/routing/cache/forward/sanitizer coverage.
 - Replaced Qwen3Next with explicit layer, attention, linear-attention, MoE, sanitizer, and expert-packing plans; fixed later-layer expert packing; added robust mixed-cache mask selection, tied-head cleanup, greedy-token fast path, LoRA target discovery, and focused config/layout/cache/forward/sanitizer coverage.
 - Replaced Granite MoE Hybrid with typed layer, attention, Mamba, MoE, sanitizer, and cache plans; removed the local no-op SSM mask; fixed later-layer MoE/shared-MLP sanitizer remapping; added tied-head cleanup, greedy-token fast path, LoRA target discovery, and focused config/layout/cache/forward/sanitizer coverage.
+- Added Nemotron with checkpoint-compatible LayerNorm1P, partial-RoPE grouped attention, squared-ReLU MLP blocks, tied-head cleanup, greedy-token fast path, LoRA target discovery, and focused config/layout/norm/cache/forward/sanitizer coverage.
 - Replaced Nemotron H with typed block, cache, attention, Mamba, MoE, and sanitizer plans; fixed array-form `time_step_limit` decoding; added grouped routing, tied-head cleanup, greedy-token fast path, LoRA target discovery, and focused config/layout/routing/cache/forward/sanitizer coverage.
 - Replaced GLM4 MoE Lite with explicit attention, DSA, layer, routing, projection, and sanitizer plans; registered layers through `@ModuleInfo`; added tied-head cleanup, greedy-token fast path, LoRA target discovery, and focused schedule/layout/routing/cache/sanitizer coverage.
 - Added GPT-2 with learned position embeddings, cache-aware position IDs, raw Transformers and MLX-prefixed sanitizer paths, tied output head, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
@@ -224,13 +226,16 @@ The current sweep adds 32 GB-friendly checkpoints for `qwen3_moe`, `mistral`,
 `gpt_oss`, `qwen3_5_moe`, and `nemotron_h`. These entries also run the stress
 test, which preloads one session and repeats generation on that same session.
 
-`glm4_moe`, `solar_open`, and `glm4_moe_lite` are still registry-only in the
-catalog, and no exact `glm4-moe`, `solar-open`, or `glm4-moe-lite` checkpoint
-directory is present locally. Solar Open uses the same GLM4 MoE implementation
-path that mlx-lm exposes for `solar_open`. The smallest published MLX Solar
-Open checkpoint found during this pass was `mlx-community/Solar-Open-100B-4bit`;
-`hf download --dry-run` reported twelve weight shards of about 57 GB total, so
-it is intentionally left out of the 32 GB E2E sweep.
+`glm4_moe`, `solar_open`, `glm4_moe_lite`, and pure `nemotron` are still
+registry-only in the catalog, and no exact `glm4-moe`, `solar-open`,
+`glm4-moe-lite`, or `nemotron` checkpoint directory is present locally. Solar
+Open uses the same GLM4 MoE implementation path that mlx-lm exposes for
+`solar_open`. The smallest published MLX Solar Open checkpoint found during
+this pass was `mlx-community/Solar-Open-100B-4bit`; `hf download --dry-run`
+reported twelve weight shards of about 57 GB total, so it is intentionally left
+out of the 32 GB E2E sweep. Current small Nemotron MLX search hits are
+`nemotron_h` or `llama` configs, so pure `nemotron` stays registry-only until a
+fit checkpoint is available.
 
 Qwen2 MoE parity was added with
 `mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit`. The checkpoint is 7.9 GB on disk
