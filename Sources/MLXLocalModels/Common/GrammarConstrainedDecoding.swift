@@ -863,6 +863,15 @@ private enum TokenizerVocabularyParser {
     }
 
     static func loadVocabulary(from modelDirectory: URL) throws -> LoadedVocabulary {
+        let rwkv7VocabURL = modelDirectory.appendingPathComponent(RWKV7Tokenizer.vocabFilename)
+        if FileManager.default.fileExists(atPath: rwkv7VocabURL.path),
+           RWKV7Tokenizer.canLoad(from: modelDirectory) {
+            return LoadedVocabulary(
+                vocabulary: try encodedRWKV7Vocabulary(from: rwkv7VocabURL),
+                tokenizerJSON: #"{"model":{"type":"BPE","vocab":{}},"decoder":{"type":"Raw"}}"#
+            )
+        }
+
         let tokenizerURL = modelDirectory.appendingPathComponent("tokenizer.json")
         if FileManager.default.fileExists(atPath: tokenizerURL.path) {
             let tokenizerJSON = try String(contentsOf: tokenizerURL, encoding: .utf8)
@@ -928,6 +937,11 @@ private enum TokenizerVocabularyParser {
 
     private static func encodedQwenTiktokenVocabulary(from vocabURL: URL) throws -> [String] {
         let entries = try QwenTiktokenTokenizer.vocabularyEntries(from: vocabURL)
+        return try compactVocabulary(from: entries)
+    }
+
+    private static func encodedRWKV7Vocabulary(from vocabURL: URL) throws -> [String] {
+        let entries = try RWKV7Tokenizer.vocabularyEntries(from: vocabURL)
         return try compactVocabulary(from: entries)
     }
 

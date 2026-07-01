@@ -47,6 +47,16 @@ private struct TokenizerConfigLoader {
     func load() async throws -> TokenizerConfigFiles {
         let source = try await tokenizerSource()
         do {
+            if let tokenizer = try RWKV7Tokenizer.load(
+                from: configuration.modelDirectory(hub: hub)
+            ) {
+                return TokenizerConfigFiles(
+                    tokenizerConfig: Config(["tokenizer_class": Config("Rwkv7Tokenizer")]),
+                    tokenizerData: nil,
+                    tokenizer: tokenizer
+                )
+            }
+
             let tokenizerConfig = try await source.requiredTokenizerConfig()
             let tokenizerData = try await source.tokenizerData
             let rewriter = TokenizerConfigurationRewriter(registry: replacementTokenizers)
@@ -182,6 +192,7 @@ internal final class TokenizerReplacementRegistry: @unchecked Sendable {
         "Qwen3Tokenizer": "PreTrainedTokenizer",
         "CohereTokenizer": "PreTrainedTokenizer",
         "GPTNeoXTokenizer": "PreTrainedTokenizer",
+        "Rwkv7Tokenizer": "PreTrainedTokenizer",
     ]
 
     private let lock = NSLock()
