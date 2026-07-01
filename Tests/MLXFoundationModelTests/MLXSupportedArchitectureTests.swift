@@ -55,6 +55,7 @@ struct MLXSupportedArchitectureTests {
         "hunyuan",
         "hunyuan_v1_dense",
         "internlm2",
+        "iquestloopcoder",
         "jamba",
         "jamba_3b",
         "kimi_k25",

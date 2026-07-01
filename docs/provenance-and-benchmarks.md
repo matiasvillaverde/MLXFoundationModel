@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 138 | Safe area for normal refactors. |
+| Files with no source-port marker | 139 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -70,6 +70,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/InternLM3.swift` | InternLM3 grouped-query attention, dynamic RoPE planning, checkpoint-compatible module keys, tied-head cleanup, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/DeepseekV3.swift` | DeepSeek V2/V3 and Youtu MLA attention layout, split `embed_q`/`unembed_out` decode path, YaRN and nested-RoPE config planning, grouped MoE routing, tied/untied heads, checkpoint key normalization, cache dimensions, greedy-token fast path, sanitizer packing, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/KimiK25.swift` | Kimi K2.5 wrapper configuration, language-model weight unwrapping, multimodal sidecar cleanup, DeepSeek V3 text-stack delegation, cache dimensions, greedy-token fast path, and LoRA target preservation. |
+| `Sources/MLXLocalModels/MLXLLM/IQuestLoopCoder.swift` | IQuest Loop Coder two-pass decoder, full plus local rotating cache layout, learned global/local attention gates, tied-head cleanup, greedy-token fast path, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/LongcatFlash.swift` | LongCat Flash MLA attention, two-pass decoder layers, identity zero-expert routing, n-gram embedding variant, cache layout, expert packing, split MLA projection sanitizing, greedy-token fast path, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Deepseek.swift` | DeepSeek MoE attention layout, top-k expert routing, shared experts, packed expert checkpoint remapping, tied-head cleanup, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Dbrx.swift` | DBRX packed QKV attention, RoPE planning, no-bias LayerNorm, SwitchGLU MoE routing, fused expert checkpoint packing, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
@@ -198,6 +199,7 @@ Current independence pass:
 - Added Klear with grouped attention, q/k RMSNorm, sparse expert routing, shared experts, quantized checkpoint sidecar handling, focused architecture coverage, and a 32 GB-host real-model catalog entry.
 - Added Hunyuan with dense and sparse MoE paths, Hunyuan `hy.tiktoken` tokenizer support, grammar-vocabulary export, focused architecture/tokenizer coverage, and a 32 GB-host 7B real-model catalog entry.
 - Added Kimi K2.5 with a wrapper around the DeepSeek V3 text stack, shared head-wise MLA projections, language-model namespace sanitizing, focused architecture coverage, and an oversized real-model catalog entry.
+- Added IQuest Loop Coder with a two-loop full/local attention decoder, learned per-head attention mixing, focused cache/forward/sanitizer coverage, and a guarded oversized real-model catalog entry.
 - Added LongCat Flash and LongCat Flash n-gram with shared MLA projection helpers, two-attention decoder layers, identity zero-expert routing, n-gram decode context caching, focused architecture coverage, and guarded real-model catalog entries.
 
 Previous performance pass:
@@ -330,6 +332,13 @@ stack and the current split MLA `embed_q`/`unembed_out` weight layout.
 reports 449,313,304,576 bytes of weights across 91 shards, so the catalog
 requires 512 GB RAM and 420 GiB disk. On this 32 GB host it is expected to be
 skipped by the real-model runner before load.
+
+IQuest Loop Coder parity was added with a focused Swift two-pass decoder:
+loop one uses a full KV cache, loop two uses a rotating local cache, and each
+layer learns a per-head gate over global and local attention. The published
+`mlx-community/IQuest-Coder-V1-40B-Loop-Instruct-4bit` index reports
+22,386,295,040 bytes of weights across 5 shards, so the catalog requires 48 GB
+RAM and 24 GiB disk. On this 32 GB host it is expected to skip before load.
 
 LongCat Flash parity was added for both `longcat_flash` and
 `longcat_flash_ngram`. `mlx-community/LongCat-Flash-Chat-4bit` reports

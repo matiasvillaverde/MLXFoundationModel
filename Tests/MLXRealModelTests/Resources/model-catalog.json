@@ -720,6 +720,19 @@
     "tags": ["relevant", "latest", "large", "parity"]
   },
   {
+    "id": "iquest-coder-v1-40b-loop-instruct-4bit",
+    "displayName": "IQuest Coder V1 40B Loop Instruct 4-bit",
+    "architecture": "iquestloopcoder",
+    "repository": "mlx-community/IQuest-Coder-V1-40B-Loop-Instruct-4bit",
+    "relativePath": "IQuest-Coder-V1-40B-Loop-Instruct-4bit",
+    "prompt": "Write one short sentence about loop-based code models.",
+    "expectedTokens": ["code", "model", "loop"],
+    "maxTokens": 12,
+    "minimumMemoryGB": 48,
+    "minimumDiskGB": 24,
+    "tags": ["relevant", "latest", "large", "parity"]
+  },
+  {
     "id": "longcat-flash-chat-4bit",
     "displayName": "LongCat Flash Chat 4-bit",
     "architecture": "longcat_flash",

@@ -84,6 +84,17 @@ struct MLXRealModelCatalogTests {
         #expect(klear.memoryGuardTier == "off")
     }
 
+    @Test("IQuest Loop Coder declares its oversized guard policy")
+    func iQuestLoopCoderDeclaresOversizedGuardPolicy() throws {
+        let models = try MLXRealModelCatalog.load()
+        let iQuestLoopCoder = try #require(
+            models.first { $0.id == "iquest-coder-v1-40b-loop-instruct-4bit" }
+        )
+
+        #expect(iQuestLoopCoder.minimumMemoryGB == 48)
+        #expect(iQuestLoopCoder.minimumDiskGB == 24)
+    }
+
     @Test("resource gate uses artifact-size fallback when catalog metadata is absent")
     func resourceGateUsesArtifactSizeFallbackWhenCatalogMetadataIsAbsent() {
         let small = Self.fixtureModel(id: "small")
@@ -202,6 +213,7 @@ private let kExpectedCatalogArchitectures: Set<String> = [
     "hunyuan",
     "hunyuan_v1_dense",
     "internlm2",
+    "iquestloopcoder",
     "jamba",
     "jamba_3b",
     "kimi_k25",
@@ -330,6 +342,7 @@ private let kExpectedRelevantCatalogArchitectures: Set<String> = [
     "hunyuan",
     "hunyuan_v1_dense",
     "jamba",
+    "iquestloopcoder",
     "kimi_k25",
     "lfm2",
     "lfm2_moe",

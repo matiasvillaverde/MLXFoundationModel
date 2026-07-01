@@ -45,7 +45,6 @@ MoE and recent family gaps:
 Legacy and compatibility gaps:
 
 - `recurrent_gemma`
-- `iquestloopcoder`
 
 ## Out Of Scope For This Track
 

@@ -116,6 +116,9 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
             modelType("kimi_k25", configuration: KimiK25Configuration.self) {
                 KimiK25Model($0)
             },
+            modelType("iquestloopcoder", configuration: IQuestLoopCoderConfiguration.self) {
+                IQuestLoopCoderModel($0)
+            },
             modelType("longcat_flash", configuration: LongcatFlashConfiguration.self) {
                 LongcatFlashModel($0)
             },
