@@ -608,6 +608,20 @@
     "tags": ["main", "relevant", "small-fit", "parity", "stress"]
   },
   {
+    "id": "klear-46b-a2.5b-instruct-3bit",
+    "displayName": "Klear 46B-A2.5B Instruct 3-bit",
+    "architecture": "Klear",
+    "repository": "mlx-community/Klear-46B-A2.5B-Instruct-3bit",
+    "relativePath": "Klear-46B-A2.5B-Instruct-3bit",
+    "prompt": "Write one short sentence about sparse expert models.",
+    "expectedTokens": ["expert", "model", "sparse"],
+    "maxTokens": 8,
+    "minimumMemoryGB": 32,
+    "minimumDiskGB": 22,
+    "memoryGuardTier": "off",
+    "tags": ["main", "relevant", "small-fit", "parity", "stress"]
+  },
+  {
     "id": "ernie-4.5-0.3b-bf16",
     "displayName": "ERNIE 4.5 0.3B BF16",
     "architecture": "ernie4_5",

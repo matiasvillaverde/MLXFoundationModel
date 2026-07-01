@@ -66,6 +66,15 @@ struct MLXRealModelCatalogTests {
         #expect(largeDownloadable.allSatisfy { ($0.minimumDiskGB ?? 0) > 0 })
     }
 
+    @Test("Klear declares its serialized-run memory guard policy")
+    func klearDeclaresSerializedRunMemoryGuardPolicy() throws {
+        let models = try MLXRealModelCatalog.load()
+        let klear = try #require(models.first { $0.id == "klear-46b-a2.5b-instruct-3bit" })
+
+        #expect(klear.minimumMemoryGB == 32)
+        #expect(klear.memoryGuardTier == "off")
+    }
+
     @Test("resource gate uses artifact-size fallback when catalog metadata is absent")
     func resourceGateUsesArtifactSizeFallbackWhenCatalogMetadataIsAbsent() {
         let small = Self.fixtureModel(id: "small")
@@ -139,12 +148,14 @@ struct MLXRealModelCatalogTests {
             maxTokens: 1,
             minimumMemoryGB: minimumMemoryGB,
             minimumDiskGB: nil,
+            memoryGuardTier: nil,
             tags: []
         )
     }
 }
 
 private let kExpectedCatalogArchitectures: Set<String> = [
+    "Klear",
     "acereason",
     "afmoe",
     "apertus",
@@ -227,6 +238,7 @@ private let kExpectedCatalogArchitectures: Set<String> = [
 ]
 
 private let kExpectedMainCatalogArchitectures: Set<String> = [
+    "Klear",
     "bitnet",
     "cohere2",
     "ernie4_5",
@@ -268,6 +280,7 @@ private let kExpectedMainCatalogArchitectures: Set<String> = [
 ]
 
 private let kExpectedRelevantCatalogArchitectures: Set<String> = [
+    "Klear",
     "acereason",
     "apertus",
     "baichuan_m1",

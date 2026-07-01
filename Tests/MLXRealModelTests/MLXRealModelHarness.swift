@@ -31,7 +31,7 @@ enum MLXRealModelHarness {
         try await run(
             model: model,
             input: input,
-            runtime: ModelRuntimePreferences(promptCachePolicy: .memory)
+            runtime: MLXRealModelEnvironment.runtimePreferences(for: model)
         )
     }
 
@@ -79,7 +79,7 @@ enum MLXRealModelHarness {
         sampling: SamplingParameters,
         limits: ResourceLimits,
         prompt: String? = nil,
-        runtime: ModelRuntimePreferences = ModelRuntimePreferences(promptCachePolicy: .memory),
+        runtime: ModelRuntimePreferences? = nil,
         runtimeCapabilities: MLXGenerationRuntimeCapabilities = .scalar
     ) async throws -> (result: GenerationResult, events: [MLXGenerationDiagnosticEvent]) {
         try await MLXGenerationDiagnostics.withRecording {
@@ -91,7 +91,7 @@ enum MLXRealModelHarness {
             return try await run(
                 model: model,
                 input: input,
-                runtime: runtime,
+                runtime: runtime ?? MLXRealModelEnvironment.runtimePreferences(for: model),
                 runtimeCapabilities: runtimeCapabilities
             )
         }
@@ -234,7 +234,7 @@ enum MLXRealModelHarness {
         try await preload(
             session: session,
             model: model,
-            runtime: ModelRuntimePreferences(promptCachePolicy: .memory)
+            runtime: MLXRealModelEnvironment.runtimePreferences(for: model)
         )
     }
 

@@ -140,6 +140,7 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
                 GLM4MoELiteModel($0)
             },
             modelType("acereason", configuration: Qwen2Configuration.self) { Qwen2Model($0) },
+            modelType("Klear", configuration: KlearConfiguration.self) { KlearModel($0) },
             modelType("falcon_h1", configuration: FalconH1Configuration.self) {
                 FalconH1Model($0)
             },

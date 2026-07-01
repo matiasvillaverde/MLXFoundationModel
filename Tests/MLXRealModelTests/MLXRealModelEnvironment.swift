@@ -1,4 +1,5 @@
 import Foundation
+@testable import MLXLocalModels
 
 enum MLXRealModelEnvironment {
     private static let environment = ProcessInfo.processInfo.environment
@@ -48,6 +49,22 @@ enum MLXRealModelEnvironment {
 
     static var stressTimeoutSeconds: Int {
         integerValue(for: "MLX_REAL_MODEL_STRESS_TIMEOUT_SECONDS", defaultValue: 240, minimumValue: 1)
+    }
+
+    static func runtimePreferences(for model: MLXRealModelCatalog.Model) -> ModelRuntimePreferences {
+        ModelRuntimePreferences(
+            promptCachePolicy: .memory,
+            memoryGuard: memoryGuardConfiguration(for: model)
+        )
+    }
+
+    static func memoryGuardConfiguration(
+        for model: MLXRealModelCatalog.Model
+    ) -> MLXMemoryGuardConfiguration {
+        MLXMemoryGuardConfiguration(
+            tier: memoryGuardTier(for: model),
+            hardLimitFraction: memoryGuardHardLimitFraction
+        )
     }
 
     static func selectedModels(from models: [MLXRealModelCatalog.Model]) -> [MLXRealModelCatalog.Model] {
@@ -230,6 +247,27 @@ enum MLXRealModelEnvironment {
             return integer
         }
         return max(1, Int(ProcessInfo.processInfo.physicalMemory / 1_073_741_824))
+    }
+
+    private static func memoryGuardTier(for model: MLXRealModelCatalog.Model) -> MLXMemoryGuardTier {
+        if let value = environment["MLX_REAL_MODEL_MEMORY_GUARD_TIER"],
+           let tier = MLXMemoryGuardTier(rawValue: value) {
+            return tier
+        }
+        if let value = model.memoryGuardTier,
+           let tier = MLXMemoryGuardTier(rawValue: value) {
+            return tier
+        }
+        return .balanced
+    }
+
+    private static var memoryGuardHardLimitFraction: Double {
+        guard let value = environment["MLX_REAL_MODEL_MEMORY_GUARD_HARD_LIMIT_FRACTION"],
+              let fraction = Double(value)
+        else {
+            return 0.95
+        }
+        return fraction
     }
 
     private static func estimatedRuntimeBytes(forModelLoadBytes bytes: Int64) -> Int64 {
