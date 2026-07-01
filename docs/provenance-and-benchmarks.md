@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 127 | Safe area for normal refactors. |
+| Files with no source-port marker | 128 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -99,6 +99,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/Mamba2.swift` | Mamba2 state-space mixer, gated RMS norm, derived intermediate dimensions, cache updates, tied-head cleanup, greedy-token fast path, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/NanoChat.swift` | NanoChat attention layout, custom rotary-frequency plan, RMSNorm/softcap planning, stable transformer checkpoint keys, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Plamo2.swift` | PLaMo 2 hybrid attention/Mamba layer planning, q/k RMSNorm attention, SSM mixer, mixed cache planning, checkpoint sanitizing, tied-head cleanup, greedy-token fast path, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/TeleChat3.swift` | TeleChat3 grouped attention, YaRN RoPE scaling, SwiGLU feed-forward blocks, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Lora+Data.swift` | LoRA JSONL/text data lookup and parsing. |
 | `Sources/MLXLocalModels/MLXLLM/LoraTrain.swift` | LoRA batching, conversion/fusion, masked loss, evaluation, save/load, and training progress. |
 
@@ -181,6 +182,7 @@ Current independence pass:
 - Added Helium with grouped attention, traditional RoPE, SwiGLU feed-forward blocks, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 - Added RWKV7 with project-owned time-mixing, channel-mixing, recurrent WKV cache updates, a Metal recurrence path, greedy-token fast path, focused architecture/tokenizer coverage, and real Goose 0.1B validation.
 - Added PLaMo 2 with hybrid Mamba/attention blocks, JSONL tokenizer support, grammar-vocabulary export, mixed-cache planning, checkpoint sanitizing, focused architecture/tokenizer coverage, and real PLaMo 2 1B validation.
+- Added TeleChat3 with grouped attention, TeleChat3 YaRN RoPE scaling, SwiGLU feed-forward blocks, tied-head cleanup, greedy-token fast path, focused architecture coverage, and an oversized real-model catalog entry.
 
 Previous performance pass:
 
@@ -268,6 +270,12 @@ PLaMo 2 parity was added with `mlx-community/plamo-2-1b`. The checkpoint is
 requests, token grammar constraints, stress generation, the serialized release
 `main` architecture sweep, and the serialized release `all` architecture sweep
 on this host.
+
+TeleChat3 parity was added with `mlx-community/TeleChat3-36B-Thinking-4bit`.
+The checkpoint is 19 GB on disk and is cataloged with a 48 GB memory
+requirement. On this 32 GB host, the targeted release generation run was
+rejected by the memory guard before load: estimated weights were 18.99 GB and
+the active host available-memory ceiling after guard scaling was 17.21 GB.
 
 Phixtral parity was added with `mlabonne/phixtral-2x2_8`. The checkpoint is
 8.3 GB on disk and passed targeted release generation, rendered session

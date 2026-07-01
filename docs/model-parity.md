@@ -53,7 +53,6 @@ Legacy and compatibility gaps:
 - `recurrent_gemma`
 - `plamo`
 - `iquestloopcoder`
-- `telechat3`
 - `youtu_llm`
 
 ## Out Of Scope For This Track
