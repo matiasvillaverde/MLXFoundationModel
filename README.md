@@ -50,7 +50,8 @@ make test-main-architectures  # serialized across representative models
 
 Use `MLX_TEST_MODELS_DIR=/path/to/models` to reuse shared model storage.
 
-`make test-main-architectures` currently runs real-model E2E checks for:
+`make test-main-architectures` currently covers 44 representative entries,
+including:
 
 | Architecture | Model |
 | --- | --- |
@@ -74,6 +75,7 @@ Use `MLX_TEST_MODELS_DIR=/path/to/models` to reuse shared model storage.
 | `bitnet` | `bitnet-b1.58-2b-4t-4bit` |
 | `starcoder2` | `starcoder2-3b-4bit` |
 | `openelm` | `openelm-270m-instruct` |
+| `plamo2` | `plamo-2-1b` |
 | `jamba` | `jamba-reasoning-3b-4bit` |
 
 ## Add Package

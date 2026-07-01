@@ -51,7 +51,7 @@ MoE and recent family gaps:
 Legacy and compatibility gaps:
 
 - `recurrent_gemma`
-- `plamo`, `plamo2`
+- `plamo`
 - `iquestloopcoder`
 - `telechat3`
 - `youtu_llm`

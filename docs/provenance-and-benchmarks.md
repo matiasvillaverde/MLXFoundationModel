@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 124 | Safe area for normal refactors. |
+| Files with no source-port marker | 127 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -40,6 +40,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/Common/QwenTiktokenTokenizer.swift` | Qwen tiktoken vocabulary loading, byte-level BPE, special-token handling, and default chat rendering. |
 | `Sources/MLXLocalModels/Common/SentencePieceModelTokenizer.swift` | SentencePiece model-file parsing, duplicate-piece tolerant BPE lookup, byte fallback, special-token splitting, and InternLM-style chat rendering. |
 | `Sources/MLXLocalModels/Common/RWKV7Tokenizer.swift` | RWKV7 longest-match byte tokenizer loading, special-token handling, grammar-vocabulary fallback, and UTF-8 decode recovery. |
+| `Sources/MLXLocalModels/Common/PlamoTokenizer.swift` | Plamo JSONL vocabulary loading, longest-match encoding, byte fallback, special-token handling, and grammar-vocabulary export. |
 | `Sources/MLXLocalModels/MLXLLM/LLMModel.swift` | Default text-model prefill chunking and adaptive prefill integration. |
 | `Sources/MLXLocalModels/MLXLLM/LLMModelFactory.swift` | LLM type registration, alias grouping, model load progress, generation-token resolution, and trampoline factory. |
 | `Sources/MLXLocalModels/MLXLLM/Cohere2.swift` | Cohere2 grouped attention, hybrid sliding/full attention schedule, mixed cache planning, tied output head, greedy-token fast path, stale rotary cleanup, and LoRA target discovery. |
@@ -97,6 +98,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/Mamba.swift` | Mamba selective state-space decoding, depthwise convolution cache updates, tied/untied heads, checkpoint weight cleanup, greedy-token fast path, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Mamba2.swift` | Mamba2 state-space mixer, gated RMS norm, derived intermediate dimensions, cache updates, tied-head cleanup, greedy-token fast path, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/NanoChat.swift` | NanoChat attention layout, custom rotary-frequency plan, RMSNorm/softcap planning, stable transformer checkpoint keys, greedy-token fast path, cache dimensions, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/Plamo2.swift` | PLaMo 2 hybrid attention/Mamba layer planning, q/k RMSNorm attention, SSM mixer, mixed cache planning, checkpoint sanitizing, tied-head cleanup, greedy-token fast path, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Lora+Data.swift` | LoRA JSONL/text data lookup and parsing. |
 | `Sources/MLXLocalModels/MLXLLM/LoraTrain.swift` | LoRA batching, conversion/fusion, masked loss, evaluation, save/load, and training progress. |
 
@@ -178,6 +180,7 @@ Current independence pass:
 - Added Mamba2 with gated state-space recurrence, derived intermediate sizing for compact configs, JSON5 checkpoint profile loading, CPU-safe SSM fallback, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 - Added Helium with grouped attention, traditional RoPE, SwiGLU feed-forward blocks, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 - Added RWKV7 with project-owned time-mixing, channel-mixing, recurrent WKV cache updates, a Metal recurrence path, greedy-token fast path, focused architecture/tokenizer coverage, and real Goose 0.1B validation.
+- Added PLaMo 2 with hybrid Mamba/attention blocks, JSONL tokenizer support, grammar-vocabulary export, mixed-cache planning, checkpoint sanitizing, focused architecture/tokenizer coverage, and real PLaMo 2 1B validation.
 
 Previous performance pass:
 
@@ -205,27 +208,29 @@ below is mainly a regression check for normal model execution.
 Command:
 
 ```sh
+CONFIGURATION=release \
 MLX_TEST_MODELS_DIR="$PWD/.build/test-models" \
 make test-all-architectures
 ```
 
 ## E2E Result
 
-The current all-architecture sweep passed for every model selected by the memory
-gate. The test runner selected 79 local models and skipped 9 oversized models on
-this 32 GB host. Each selected model ran serialized generation, rendered session
-requests, and token-level grammar constraint checks.
+The current release all-architecture sweep passed for every model selected by
+the memory gate. The test runner selected 80 local models and skipped 9
+oversized models on this 32 GB host. Each selected model ran serialized
+generation, rendered session requests, and token-level grammar constraint
+checks.
 
-A follow-up serialized `main` sweep on 2026-07-01 selected 43 downloadable
+A serialized release `main` sweep on 2026-07-01 selected 44 downloadable
 models, including Cohere2, DeepSeek, DeepSeek V2, ERNIE 4.5 MoE, EXAONE 3.5,
 GraniteMoE, Helium, Hunyuan V1 Dense, InternLM3, Jamba, Mamba, Mamba2, Mixtral,
-Phixtral, Qwen, RWKV7, Seed OSS, and GLM, and passed generation, rendered
-session, token grammar, and configured stress checks.
+PLaMo 2, Phixtral, Qwen, RWKV7, Seed OSS, and GLM, and passed generation,
+rendered session, token grammar, and configured stress checks.
 
-The current sweep adds a 32 GB-friendly `ernie4_5_moe` checkpoint and keeps the
-32 GB-friendly coverage for `qwen3_moe`, `mistral`, `gpt_oss`, `qwen3_5_moe`,
-and `nemotron_h`. These entries also run the stress test, which preloads one
-session and repeats generation on that same session.
+The current sweep adds a 32 GB-friendly `plamo2` checkpoint and keeps the
+32 GB-friendly coverage for `ernie4_5_moe`, `qwen3_moe`, `mistral`, `gpt_oss`,
+`qwen3_5_moe`, and `nemotron_h`. These entries also run the stress test, which
+preloads one session and repeats generation on that same session.
 
 `glm4_moe`, `solar_open`, `glm4_moe_lite`, and pure `nemotron` are still
 registry-only in the catalog, and no exact `glm4-moe`, `solar-open`,
@@ -257,6 +262,12 @@ Hunyuan V1 Dense parity was added with `tencent/Hunyuan-MT-7B`. The checkpoint
 is 15 GB on disk and passed targeted release generation, rendered session
 requests, token grammar constraints, stress generation, and the serialized
 `main` architecture sweep on this host.
+
+PLaMo 2 parity was added with `mlx-community/plamo-2-1b`. The checkpoint is
+5.2 GB on disk and passed targeted release generation, rendered session
+requests, token grammar constraints, stress generation, the serialized release
+`main` architecture sweep, and the serialized release `all` architecture sweep
+on this host.
 
 Phixtral parity was added with `mlabonne/phixtral-2x2_8`. The checkpoint is
 8.3 GB on disk and passed targeted release generation, rendered session
@@ -773,6 +784,25 @@ Best stress iterations from the same runs:
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `seed_oss` | `seed-oss-36b-instruct-2bit` release targeted | 32 | 3.5508 | 1.5092 | 2.0416 | 15.67 | 9.01 |
 | `seed_oss` | `seed-oss-36b-instruct-2bit` debug all | 32 | 3.3109 | 1.1842 | 2.1267 | 15.05 | 9.66 |
+
+## PLaMo 2 Parity Check
+
+These rows come from the targeted release PLaMo 2 run and the serialized
+release `main` and `all` sweeps on 2026-07-01.
+
+| Architecture | Model | Generated | Prompt | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `plamo2` | `plamo-2-1b` release targeted | 4 | 7 | 0.1462 | 0.0646 | 0.0816 | 49.01 | 27.36 |
+| `plamo2` | `plamo-2-1b` release main | 2 | 7 | 0.1700 | 0.0960 | 0.0740 | 27.03 | 11.77 |
+| `plamo2` | `plamo-2-1b` release all | 2 | 7 | 0.1152 | 0.0646 | 0.0505 | 39.57 | 17.37 |
+
+Best stress iterations from the same runs:
+
+| Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `plamo2` | `plamo-2-1b` release targeted | 16 | 0.2808 | 0.0216 | 0.2592 | 61.74 | 56.99 |
+| `plamo2` | `plamo-2-1b` release main | 32 | 0.5275 | 0.0246 | 0.5029 | 63.63 | 60.67 |
+| `plamo2` | `plamo-2-1b` release all | 32 | 0.5290 | 0.0249 | 0.5041 | 63.48 | 60.49 |
 
 ## Mixtral Parity Check
 
