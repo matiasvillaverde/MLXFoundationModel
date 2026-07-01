@@ -1613,9 +1613,11 @@ internal class ChunkedKVCache: KVCacheSimple {
 
 /// Simple cache for Mamba-style state space models
 internal class MambaCache: BaseKVCache {
-    private var cache: [MLXArray?] = [nil, nil]
+    private var cache: [MLXArray?]
 
-    public override init() {
+    public init(size: Int = 2) {
+        precondition(size > 0, "MambaCache size must be positive")
+        self.cache = Array(repeating: nil, count: size)
         super.init()
     }
 
@@ -1651,8 +1653,8 @@ internal class MambaCache: BaseKVCache {
             return result
         }
         set {
-            guard newValue.count == cache.count else {
-                fatalError("MambaCache state must have exactly \(cache.count) elements")
+            if newValue.count != cache.count {
+                cache = Array(repeating: nil, count: newValue.count)
             }
             for (i, array) in newValue.enumerated() {
                 // Check if this is our nil placeholder (empty array with size 0)
@@ -1666,7 +1668,7 @@ internal class MambaCache: BaseKVCache {
     }
 
     override func copy() -> KVCache {
-        let new = MambaCache()
+        let new = MambaCache(size: cache.count)
         new.state = state.map { $0[.ellipsis] }
         return new
     }

@@ -93,7 +93,7 @@ try:
 
     has_tokenizer = any(
         os.path.isfile(os.path.join(model_path, filename))
-        for filename in ("tokenizer.json", "tokenizer.model", "cl100k_base.tiktoken", "hy.tiktoken")
+        for filename in ("tokenizer.json", "tokenizer.model", "cl100k_base.tiktoken", "tiktoken.model", "hy.tiktoken")
     )
     has_weights = False
     with os.scandir(model_path) as entries:

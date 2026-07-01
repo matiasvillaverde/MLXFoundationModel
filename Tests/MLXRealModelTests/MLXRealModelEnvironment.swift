@@ -208,6 +208,7 @@ enum MLXRealModelEnvironment {
         let hasSentencePieceTokenizer = fileManager.fileExists(atPath: "\(path)/tokenizer.model")
         let hasTiktokenTokenizer = [
             "cl100k_base.tiktoken",
+            "tiktoken.model",
             "qwen.tiktoken",
             "hy.tiktoken"
         ].contains { fileManager.fileExists(atPath: "\(path)/\($0)") }

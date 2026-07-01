@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 144 | Safe area for normal refactors. |
+| Files with no source-port marker | 146 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -39,6 +39,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/Common/Phi3SmallTiktokenTokenizer.swift` | Phi-3-small tiktoken vocabulary loading, byte-pair encoding, special-token handling, and chat-template rendering. |
 | `Sources/MLXLocalModels/Common/QwenTiktokenTokenizer.swift` | Qwen tiktoken vocabulary loading, byte-level BPE, special-token handling, and default chat rendering. |
 | `Sources/MLXLocalModels/Common/HunyuanTiktokenTokenizer.swift` | Hunyuan `hy.tiktoken` vocabulary loading, byte-level BPE, special-token handling, grammar-vocabulary export, and chat rendering. |
+| `Sources/MLXLocalModels/Common/KimiTiktokenTokenizer.swift` | Kimi `tiktoken.model` loading, special-token and reserved-token handling, byte-level BPE, compact chat rendering, and grammar-vocabulary export. |
 | `Sources/MLXLocalModels/Common/SentencePieceModelTokenizer.swift` | SentencePiece model-file parsing, duplicate-piece tolerant BPE lookup, byte fallback, special-token splitting, and InternLM-style chat rendering. |
 | `Sources/MLXLocalModels/Common/RWKV7Tokenizer.swift` | RWKV7 longest-match byte tokenizer loading, special-token handling, grammar-vocabulary fallback, and UTF-8 decode recovery. |
 | `Sources/MLXLocalModels/Common/PlamoTokenizer.swift` | Plamo JSONL vocabulary loading, longest-match encoding, byte fallback, special-token handling, and grammar-vocabulary export. |
@@ -73,6 +74,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/InternLM3.swift` | InternLM3 grouped-query attention, dynamic RoPE planning, checkpoint-compatible module keys, tied-head cleanup, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/DeepseekV3.swift` | DeepSeek V2/V3 and Youtu MLA attention layout, split `embed_q`/`unembed_out` decode path, YaRN and nested-RoPE config planning, grouped MoE routing, tied/untied heads, checkpoint key normalization, cache dimensions, greedy-token fast path, sanitizer packing, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/KimiK25.swift` | Kimi K2.5 wrapper configuration, language-model weight unwrapping, multimodal sidecar cleanup, DeepSeek V3 text-stack delegation, cache dimensions, greedy-token fast path, and LoRA target preservation. |
+| `Sources/MLXLocalModels/MLXLLM/KimiLinear.swift` | Kimi Linear MLA attention, KDA gated-delta layers, short-conv recurrent cache state, sparse MoE routing, mixed cache planning, tokenizer/grammar compatibility, greedy-token fast path, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/IQuestLoopCoder.swift` | IQuest Loop Coder two-pass decoder, full plus local rotating cache layout, learned global/local attention gates, tied-head cleanup, greedy-token fast path, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/LongcatFlash.swift` | LongCat Flash MLA attention, two-pass decoder layers, identity zero-expert routing, n-gram embedding variant, cache layout, expert packing, split MLA projection sanitizing, greedy-token fast path, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Deepseek.swift` | DeepSeek MoE attention layout, top-k expert routing, shared experts, packed expert checkpoint remapping, tied-head cleanup, greedy-token fast path, cache dimensions, and LoRA target discovery. |
@@ -178,6 +180,7 @@ Current independence pass:
 - Replaced OLMoE with explicit attention and sparse-routing plans, stable `model.*` checkpoint keys, expert packing, tied-head handling, greedy-token fast path, and focused config/layout/routing/forward/sanitizer coverage.
 - Replaced Bailing MoE with explicit attention, layer, routing, and expert-packing plans; fixed grouped routing edge cases; added tied-head handling, greedy-token fast path, cache creation, LoRA target discovery, and focused config/routing/forward/sanitizer coverage.
 - Added Bailing MoE Linear with mixed global attention and recurrent GLA layers, grouped RMSNorm gating, dense/sparse MoE scheduling, mixed cache creation, checkpoint sanitizing, focused architecture coverage, and a registry-only catalog entry until an exact checkpoint is available.
+- Added Kimi Linear with MLA attention, KDA gated-delta layers, four-slot recurrent cache support, Kimi tiktoken fallback and grammar-vocabulary export, sparse-MoE checkpoint remapping, a tiny-random real-model catalog entry, and focused config/cache/forward/sanitizer/tokenizer coverage.
 - Replaced MiMo v2 Flash with explicit full/sliding attention and layer-schedule plans, safer grouped routing, attention-sink handling, expert packing, per-layer cache/KV-head planning, greedy-token fast path, and focused config/layout/routing/cache/forward/sanitizer coverage.
 - Replaced GLM4 MoE with explicit attention, layer, and grouped-routing plans, safer correction-bias routing, expert packing, tied-head cleanup, greedy-token fast path, and focused config/layout/routing/cache/forward/sanitizer coverage.
 - Replaced AfMoE with explicit full/sliding attention, layer, routing, and expert-packing plans; fixed grouped routing edge cases; added mixed cache creation, tied-head cleanup, greedy-token fast path, LoRA target discovery, and focused config/layout/routing/cache/forward/sanitizer coverage.
@@ -306,6 +309,12 @@ out of the 32 GB E2E sweep. Current small Nemotron MLX search hits are
 `nemotron_h` or `llama` configs, and Hugging Face model search returned no exact
 `nemotron-nas`, `afm7`, `recurrent_gemma`, or `bailing_moe_linear` MLX
 checkpoint, so these stay registry-only until fit checkpoints are available.
+
+Kimi Linear parity was added with `yujiepan/kimi-linear-tiny-random` as the
+32 GB-host real-model representative. It passed release generation, rendered
+session requests, token-level grammar constraints, and stress generation. Public
+MLX 48B-A3B 3-bit and 4-bit checkpoints exist; dry-run sizes were 21.5 GB and
+27.6 GB, so they are not used as the default 32 GB E2E representative.
 
 Step3.5 parity was added with an oversized catalog entry for
 `mlx-community/Step-3.5-Flash-4bit`. `hf download --dry-run` reported 32 files
@@ -1070,6 +1079,25 @@ Best stress iterations from the same runs:
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `dbrx` | `dbrx-tiny-random` release targeted | 32 | 0.0447 | 0.0155 | 0.0293 | 1093.53 | 715.59 |
 | `dbrx` | `dbrx-tiny-random` release main | 32 | 0.0458 | 0.0157 | 0.0301 | 1064.46 | 698.87 |
+
+## Kimi Linear Parity Check
+
+These rows come from a targeted release Kimi Linear run on 2026-07-01. The
+checkpoint is `yujiepan/kimi-linear-tiny-random`, uses
+`model_type: kimi_linear`, and validates the MLA, KDA, tokenizer, grammar, and
+mixed-cache paths. The checkpoint is intentionally tiny and random.
+
+| Architecture | Model | Generated | Prompt | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `kimi_linear` | `kimi-linear-tiny-random` release targeted | 2 | 10 | 0.0298 | 0.0206 | 0.0093 | 215.82 | 67.06 |
+
+Best stress iterations from the same run:
+
+| Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `kimi_linear` | `kimi-linear-tiny-random` release targeted | 32 | 0.0697 | 0.0238 | 0.0459 | 696.51 | 458.92 |
+| `kimi_linear` | `kimi-linear-tiny-random` release targeted | 32 | 0.0488 | 0.0067 | 0.0421 | 759.93 | 656.20 |
+| `kimi_linear` | `kimi-linear-tiny-random` release targeted | 32 | 0.0470 | 0.0062 | 0.0408 | 784.32 | 680.70 |
 
 ## Small-Fit Stress Baseline
 

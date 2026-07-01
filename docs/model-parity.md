@@ -31,9 +31,7 @@ is a clear Apple interface shape for them in this package.
 
 Snapshot: `ml-explore/mlx-lm` model modules on 2026-07-01.
 
-Highest priority:
-
-- `kimi_linear`
+Highest priority: none.
 
 MoE and recent family gaps: none.
 

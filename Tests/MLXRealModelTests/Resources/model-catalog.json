@@ -1361,6 +1361,19 @@
     "tags": ["registry-only"]
   },
   {
+    "id": "kimi-linear-tiny-random",
+    "displayName": "Kimi Linear Tiny Random",
+    "architecture": "kimi_linear",
+    "repository": "yujiepan/kimi-linear-tiny-random",
+    "relativePath": "kimi-linear-tiny-random",
+    "prompt": "Say hello.",
+    "expectedTokens": [],
+    "maxTokens": 8,
+    "minimumMemoryGB": 4,
+    "minimumDiskGB": 1,
+    "tags": ["main", "relevant", "parity", "small", "stress"]
+  },
+  {
     "id": "nanochat",
     "displayName": "NanoChat",
     "architecture": "nanochat",

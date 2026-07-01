@@ -61,6 +61,7 @@ struct MLXSupportedArchitectureTests {
         "jamba",
         "jamba_3b",
         "kimi_k25",
+        "kimi_linear",
         "lfm2",
         "lfm2_moe",
         "lille-130m",

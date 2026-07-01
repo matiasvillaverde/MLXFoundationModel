@@ -901,6 +901,16 @@ private enum TokenizerVocabularyParser {
             )
         }
 
+        let kimiTiktokenURL = modelDirectory.appendingPathComponent(
+            KimiTiktokenTokenizer.vocabFilename
+        )
+        if FileManager.default.fileExists(atPath: kimiTiktokenURL.path) {
+            return LoadedVocabulary(
+                vocabulary: try encodedKimiTiktokenVocabulary(from: kimiTiktokenURL),
+                tokenizerJSON: #"{"model":{"type":"BPE","vocab":{}},"decoder":{"type":"Raw"}}"#
+            )
+        }
+
         let hunyuanTiktokenURL = modelDirectory.appendingPathComponent(
             HunyuanTiktokenTokenizer.vocabFilename
         )
@@ -955,6 +965,11 @@ private enum TokenizerVocabularyParser {
 
     private static func encodedQwenTiktokenVocabulary(from vocabURL: URL) throws -> [String] {
         let entries = try QwenTiktokenTokenizer.vocabularyEntries(from: vocabURL)
+        return try compactVocabulary(from: entries)
+    }
+
+    private static func encodedKimiTiktokenVocabulary(from vocabURL: URL) throws -> [String] {
+        let entries = try KimiTiktokenTokenizer.vocabularyEntries(from: vocabURL)
         return try compactVocabulary(from: entries)
     }
 

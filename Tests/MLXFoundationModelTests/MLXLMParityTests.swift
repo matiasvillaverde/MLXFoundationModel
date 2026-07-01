@@ -124,9 +124,7 @@ struct MLXLMParityTests {
         "youtu_llm"
     ]
 
-    private static let expectedDeferredTextModelTypes: Set<String> = [
-        "kimi_linear"
-    ]
+    private static let expectedDeferredTextModelTypes: Set<String> = []
 
     private static let nonTextModelTypes: Set<String> = [
         "clip",
