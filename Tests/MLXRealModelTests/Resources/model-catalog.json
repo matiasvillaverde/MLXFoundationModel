@@ -1010,6 +1010,19 @@
     "tags": ["registry-only"]
   },
   {
+    "id": "step3p5-flash-4bit",
+    "displayName": "Step3.5 Flash 4-bit",
+    "architecture": "step3p5",
+    "repository": "mlx-community/Step-3.5-Flash-4bit",
+    "relativePath": "Step-3.5-Flash-4bit",
+    "prompt": "Write one short sentence about efficient reasoning.",
+    "expectedTokens": ["reason", "reasoning", "efficient"],
+    "maxTokens": 8,
+    "minimumMemoryGB": 384,
+    "minimumDiskGB": 112,
+    "tags": ["parity", "large"]
+  },
+  {
     "id": "seed-oss-36b-instruct-2bit",
     "displayName": "Seed-OSS 36B Instruct 2-bit",
     "architecture": "seed_oss",

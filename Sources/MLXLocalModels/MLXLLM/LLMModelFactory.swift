@@ -88,6 +88,9 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
             modelType("qwen3_5_text", configuration: Qwen35TextConfiguration.self) {
                 Qwen35TextModel($0)
             },
+            modelType("step3p5", configuration: Step3p5Configuration.self) {
+                Step3p5Model($0)
+            },
             modelType("minicpm", configuration: MiniCPMConfiguration.self) { MiniCPMModel($0) },
             modelType("minicpm3", configuration: MiniCPM3Configuration.self) {
                 MiniCPM3Model($0)

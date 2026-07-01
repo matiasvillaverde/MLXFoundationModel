@@ -110,6 +110,7 @@ struct MLXSupportedArchitectureTests {
         "solar_open",
         "smollm3",
         "stablelm",
+        "step3p5",
         "starcoder2",
         "telechat3",
         "youtu",
