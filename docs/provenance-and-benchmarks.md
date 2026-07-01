@@ -224,8 +224,13 @@ The current sweep adds 32 GB-friendly checkpoints for `qwen3_moe`, `mistral`,
 `gpt_oss`, `qwen3_5_moe`, and `nemotron_h`. These entries also run the stress
 test, which preloads one session and repeats generation on that same session.
 
-`glm4_moe` and `glm4_moe_lite` are still registry-only in the catalog, and no
-exact `glm4-moe` or `glm4-moe-lite` checkpoint directory is present locally.
+`glm4_moe`, `solar_open`, and `glm4_moe_lite` are still registry-only in the
+catalog, and no exact `glm4-moe`, `solar-open`, or `glm4-moe-lite` checkpoint
+directory is present locally. Solar Open uses the same GLM4 MoE implementation
+path that mlx-lm exposes for `solar_open`. The smallest published MLX Solar
+Open checkpoint found during this pass was `mlx-community/Solar-Open-100B-4bit`;
+`hf download --dry-run` reported twelve weight shards of about 57 GB total, so
+it is intentionally left out of the 32 GB E2E sweep.
 
 Qwen2 MoE parity was added with
 `mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit`. The checkpoint is 7.9 GB on disk
