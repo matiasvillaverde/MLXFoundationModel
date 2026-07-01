@@ -17,7 +17,7 @@ struct MLXLMParityTests {
         #expect(Self.nonTextModelTypes.isDisjoint(with: Self.mlxLMTextModelTypes))
     }
 
-    // Snapshot from ml-explore/mlx-lm model modules on 2026-06-25.
+    // Snapshot from ml-explore/mlx-lm model modules on 2026-07-01.
     // This list intentionally tracks text-generation families only. VLM, OCR,
     // embedding, reranker, and helper modules are not part of the Foundation
     // Models-compatible text parity target.
@@ -130,7 +130,6 @@ struct MLXLMParityTests {
         "afm7",
         "bailing_moe_linear",
         "dbrx",
-        "ernie4_5_moe",
         "exaone_moe",
         "hunyuan",
         "iquestloopcoder",

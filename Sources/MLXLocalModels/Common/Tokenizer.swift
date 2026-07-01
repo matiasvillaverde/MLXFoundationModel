@@ -272,6 +272,7 @@ internal final class TokenizerReplacementRegistry: @unchecked Sendable {
         "Qwen2Tokenizer": "PreTrainedTokenizer",
         "Qwen3Tokenizer": "PreTrainedTokenizer",
         "CohereTokenizer": "PreTrainedTokenizer",
+        "Ernie4_5_Tokenizer": "PreTrainedTokenizer",
         "GPTNeoXTokenizer": "PreTrainedTokenizer",
         "Rwkv7Tokenizer": "PreTrainedTokenizer",
     ]

@@ -39,6 +39,14 @@ struct TokenizerSupportTests {
         #expect(rewriter.rewrite(config).tokenizerClass?.string() == "PreTrainedTokenizer")
     }
 
+    @Test("default registry rewrites ERNIE 4.5 tokenizer class")
+    func defaultRegistryRewritesErnie45TokenizerClass() {
+        let rewriter = TokenizerConfigurationRewriter(registry: TokenizerReplacementRegistry())
+        let config = Config(["tokenizer_class": Config("Ernie4_5_Tokenizer")])
+
+        #expect(rewriter.rewrite(config).tokenizerClass?.string() == "PreTrainedTokenizer")
+    }
+
     @Test("default registry rewrites RWKV7 tokenizer class")
     func defaultRegistryRewritesRWKV7TokenizerClass() {
         let rewriter = TokenizerConfigurationRewriter(registry: TokenizerReplacementRegistry())

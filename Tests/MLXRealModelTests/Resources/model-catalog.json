@@ -606,6 +606,19 @@
     "tags": ["smoke", "main", "relevant", "latest", "small"]
   },
   {
+    "id": "ernie-4.5-21b-a3b-pt-4bit",
+    "displayName": "ERNIE 4.5 21B-A3B PT 4-bit",
+    "architecture": "ernie4_5_moe",
+    "repository": "mlx-community/ERNIE-4.5-21B-A3B-PT-4bit",
+    "relativePath": "ERNIE-4.5-21B-A3B-PT-4bit",
+    "prompt": "Open mixture-of-experts models are",
+    "expectedTokens": ["open", "expert", "model"],
+    "maxTokens": 16,
+    "minimumMemoryGB": 32,
+    "minimumDiskGB": 14,
+    "tags": ["main", "relevant", "small-fit", "parity", "stress"]
+  },
+  {
     "id": "helium-1-preview-2b-4bit",
     "displayName": "Helium 1 Preview 2B 4-bit",
     "architecture": "helium",
