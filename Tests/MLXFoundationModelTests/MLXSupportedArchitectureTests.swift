@@ -57,6 +57,7 @@ struct MLXSupportedArchitectureTests {
         "llama",
         "mamba",
         "mamba2",
+        "mellum",
         "mimo",
         "mimo_v2_flash",
         "minicpm",

@@ -192,6 +192,7 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
             modelType("nemotron", configuration: NemotronConfiguration.self) {
                 NemotronModel($0)
             },
+            modelType("mellum", configuration: MellumConfiguration.self) { MellumModel($0) },
             modelType("afmoe", configuration: AfMoEConfiguration.self) { AfMoEModel($0) },
             modelType("jamba", "jamba_3b", configuration: JambaConfiguration.self) {
                 JambaModel($0)

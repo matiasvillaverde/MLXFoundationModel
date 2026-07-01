@@ -1154,6 +1154,19 @@
     "tags": ["registry-only"]
   },
   {
+    "id": "mellum2-12b-a2.5b-instruct-4bit",
+    "displayName": "Mellum2 12B-A2.5B Instruct 4-bit",
+    "architecture": "mellum",
+    "repository": "jedisct1/Mellum2-12B-A2.5B-Instruct-mlx-4bit",
+    "relativePath": "Mellum2-12B-A2.5B-Instruct-mlx-4bit",
+    "prompt": "Write one short sentence about code models.",
+    "expectedTokens": ["code", "model", "models"],
+    "maxTokens": 18,
+    "minimumMemoryGB": 16,
+    "minimumDiskGB": 8,
+    "tags": ["main", "relevant", "small-fit", "parity", "stress"]
+  },
+  {
     "id": "nemotron-h",
     "displayName": "Nemotron H",
     "architecture": "nemotron_h",
