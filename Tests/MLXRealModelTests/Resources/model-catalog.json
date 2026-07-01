@@ -1143,6 +1143,17 @@
     "tags": ["registry-only"]
   },
   {
+    "id": "nemotron",
+    "displayName": "Nemotron",
+    "architecture": "nemotron",
+    "repository": null,
+    "relativePath": "nemotron",
+    "prompt": "Write one short sentence about efficient decoder models.",
+    "expectedTokens": ["efficient", "decoder", "model"],
+    "maxTokens": 12,
+    "tags": ["registry-only"]
+  },
+  {
     "id": "nemotron-h",
     "displayName": "Nemotron H",
     "architecture": "nemotron_h",
