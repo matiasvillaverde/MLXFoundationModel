@@ -129,7 +129,7 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
             modelType("minimax", configuration: MiniMaxConfiguration.self) { MiniMaxModel($0) },
             modelType("glm", configuration: GLMConfiguration.self) { GLMModel($0) },
             modelType("glm4", configuration: GLM4Configuration.self) { GLM4Model($0) },
-            modelType("glm4_moe", configuration: GLM4MoEConfiguration.self) {
+            modelType("glm4_moe", "solar_open", configuration: GLM4MoEConfiguration.self) {
                 GLM4MoEModel($0)
             },
             modelType(

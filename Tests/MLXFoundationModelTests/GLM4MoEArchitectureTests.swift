@@ -34,6 +34,36 @@ struct GLM4MoEArchitectureTests {
         #expect(config.topkMethod == "noaux_tc")
     }
 
+    @Test("decodes Solar Open configuration through GLM4 MoE")
+    func decodesSolarOpenConfigurationThroughGLM4MoE() throws {
+        let config = try JSONDecoder.json5().decode(
+            GLM4MoEConfiguration.self,
+            from: Data(Self.solarOpenConfigJSON.utf8)
+        )
+        let attention = GLM4MoEAttentionLayout(config)
+        let layers = GLM4MoELayerPlan(config)
+        let routing = GLM4MoERoutingPlan(config)
+        let model = GLM4MoEModel(config)
+
+        #expect(config.modelType == "solar_open")
+        #expect(config.vocabularySize == 128)
+        #expect(config.moeIntermediateSize == 16)
+        #expect(config.kvHeads == 2)
+        #expect(config.headDim == 8)
+        #expect(config.nGroup == 2)
+        #expect(config.topkGroup == 1)
+        #expect(config.scoringFunc == "softmax")
+        #expect(config.attentionBias)
+        #expect(config.useQkNorm)
+        #expect(config.tieWordEmbeddings)
+        #expect(attention.rotaryDimensions == 4)
+        #expect(layers.usesSparseExperts(layerIndex: 0) == false)
+        #expect(layers.usesSparseExperts(layerIndex: 1))
+        #expect(routing.selectedExpertCount == 2)
+        #expect(routing.scoreFunction == .softmax)
+        #expect(model.modelType == "solar_open")
+    }
+
     @Test("builds attention, layer, and routing plans")
     func buildsAttentionLayerAndRoutingPlans() {
         let config = Self.smallConfig(
@@ -190,6 +220,37 @@ struct GLM4MoEArchitectureTests {
             partialRotaryFactor: partialRotaryFactor
         )
     }
+
+    private static let solarOpenConfigJSON = #"""
+    {
+        "model_type": "solar_open",
+        "vocab_size": 128,
+        "hidden_size": 32,
+        "intermediate_size": 64,
+        "moe_intermediate_size": 16,
+        "num_hidden_layers": 2,
+        "num_attention_heads": 4,
+        "num_key_value_heads": 2,
+        "head_dim": 8,
+        "n_shared_experts": 1,
+        "n_routed_experts": 4,
+        "routed_scaling_factor": 1.25,
+        "num_experts_per_tok": 2,
+        "first_k_dense_replace": 1,
+        "norm_topk_prob": true,
+        "max_position_embeddings": 4096,
+        "rms_norm_eps": 0.000001,
+        "rope_theta": 1000000,
+        "tie_word_embeddings": true,
+        "partial_rotary_factor": 0.5,
+        "attention_bias": true,
+        "use_qk_norm": true,
+        "n_group": 2,
+        "topk_group": 1,
+        "scoring_func": "softmax",
+        "topk_method": "noaux_tc"
+    }
+    """#
 
     private func sigmoid(_ value: Float) -> Float {
         1 / (1 + exp(-value))

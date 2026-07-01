@@ -763,6 +763,17 @@
     "tags": ["registry-only"]
   },
   {
+    "id": "solar-open",
+    "displayName": "Solar Open",
+    "architecture": "solar_open",
+    "repository": null,
+    "relativePath": "solar-open",
+    "prompt": "Write one short sentence about open local models.",
+    "expectedTokens": ["open", "local", "model"],
+    "maxTokens": 12,
+    "tags": ["registry-only"]
+  },
+  {
     "id": "glm4-moe-lite",
     "displayName": "GLM4 MoE Lite",
     "architecture": "glm4_moe_lite",
