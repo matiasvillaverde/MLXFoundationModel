@@ -69,6 +69,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/InternLM3.swift` | InternLM3 grouped-query attention, dynamic RoPE planning, checkpoint-compatible module keys, tied-head cleanup, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/DeepseekV3.swift` | DeepSeek V2/V3 and Youtu MLA attention layout, YaRN and nested-RoPE config planning, grouped MoE routing, tied/untied heads, checkpoint key normalization, cache dimensions, greedy-token fast path, sanitizer packing, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Deepseek.swift` | DeepSeek MoE attention layout, top-k expert routing, shared experts, packed expert checkpoint remapping, tied-head cleanup, greedy-token fast path, cache dimensions, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/Dbrx.swift` | DBRX packed QKV attention, RoPE planning, no-bias LayerNorm, SwitchGLU MoE routing, fused expert checkpoint packing, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Mixtral.swift` | Mixtral grouped-query attention, top-k sparse routing, expert tensor packing, tied-head cleanup, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/GLM4MOE.swift` | GLM4 MoE attention layout, layer plan, grouped sparse routing, expert packing, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/AfMoE.swift` | AfMoE full/sliding attention layout, layer schedule, grouped sparse routing, expert packing, mixed cache planning, tied/untied heads, greedy-token fast path, and LoRA target discovery. |
@@ -251,10 +252,17 @@ A targeted release Youtu run on 2026-07-01 added `youtu_llm` coverage with
 `tencent/Youtu-LLM-2B`. It passed generation, rendered session requests,
 token-level grammar constraints, and stress generation on the same 32 GB host.
 
-A later serialized release `main` sweep on 2026-07-01 selected all 48 main
-catalog entries, including `hunyuan`, `hunyuan_v1_dense`, and `youtu_llm`, and
-passed generation, rendered session requests, token-level grammar constraints,
-and configured stress checks.
+A later serialized release `main` sweep on 2026-07-01 selected all 49 main
+catalog entries, including `dbrx`, `hunyuan`, `hunyuan_v1_dense`, and
+`youtu_llm`, and passed generation, rendered session requests, token-level
+grammar constraints, and configured stress checks.
+
+DBRX parity was added with `yujiepan/dbrx-tiny-random`. This is a tiny random
+architecture probe, not a quality checkpoint. It passed targeted release
+generation, rendered session requests, token grammar constraints, stress
+generation, and the serialized `main` architecture sweep on this host. The
+published full DBRX MLX checkpoints found during this pass remain too large for
+the 32 GB sweep.
 
 `glm4_moe`, `solar_open`, `glm4_moe_lite`, and pure `nemotron` are still
 registry-only in the catalog, and no exact `glm4-moe`, `solar-open`,
@@ -957,6 +965,27 @@ Best stress iterations from the same runs:
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `youtu_llm` | `youtu-llm-2b` release targeted | 32 | 0.5027 | 0.0664 | 0.4363 | 73.34 | 63.65 |
 | `youtu_llm` | `youtu-llm-2b` release main | 32 | 0.5040 | 0.0692 | 0.4348 | 73.59 | 63.49 |
+
+## DBRX Parity Check
+
+These rows come from targeted and `main` release DBRX runs on 2026-07-01. The
+checkpoint is `yujiepan/dbrx-tiny-random`, uses `model_type: dbrx`, and passed
+generation, session-style request rendering, token-level grammar constraints,
+and repeated generation on a MacBook Pro Mac14,5 with an Apple M2 Max and
+32 GB unified memory. The checkpoint is intentionally tiny and random, so these
+numbers prove architecture coverage rather than production DBRX quality.
+
+| Architecture | Model | Generated | Prompt | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `dbrx` | `dbrx-tiny-random` release targeted | 4 | 227 | 0.7062 | 0.6934 | 0.0128 | 312.96 | 5.66 |
+| `dbrx` | `dbrx-tiny-random` release main | 2 | 227 | 0.0295 | 0.0176 | 0.0119 | 167.61 | 67.70 |
+
+Best stress iterations from the same runs:
+
+| Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `dbrx` | `dbrx-tiny-random` release targeted | 32 | 0.0447 | 0.0155 | 0.0293 | 1093.53 | 715.59 |
+| `dbrx` | `dbrx-tiny-random` release main | 32 | 0.0458 | 0.0157 | 0.0301 | 1064.46 | 698.87 |
 
 ## Small-Fit Stress Baseline
 

@@ -96,6 +96,7 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
             modelType("cohere2", configuration: Cohere2Configuration.self) {
                 Cohere2Model($0)
             },
+            modelType("dbrx", configuration: DbrxConfiguration.self) { DbrxModel($0) },
             modelType("openelm", configuration: OpenElmConfiguration.self) { OpenELMModel($0) },
             modelType("internlm2", configuration: InternLM2Configuration.self) {
                 InternLM2Model($0)

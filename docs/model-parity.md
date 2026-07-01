@@ -37,7 +37,6 @@ Highest priority:
 - `kimi_linear`, `kimi_k25`
 - `longcat_flash`, `longcat_flash_ngram`
 - `step3p5`
-- `dbrx`
 
 MoE and recent family gaps:
 

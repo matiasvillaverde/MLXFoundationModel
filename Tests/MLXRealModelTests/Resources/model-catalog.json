@@ -733,6 +733,19 @@
     "tags": ["main", "relevant", "small-fit", "parity", "stress"]
   },
   {
+    "id": "dbrx-tiny-random",
+    "displayName": "DBRX Tiny Random",
+    "architecture": "dbrx",
+    "repository": "yujiepan/dbrx-tiny-random",
+    "relativePath": "dbrx-tiny-random",
+    "prompt": "Say hello.",
+    "expectedTokens": [],
+    "maxTokens": 8,
+    "minimumMemoryGB": 4,
+    "minimumDiskGB": 1,
+    "tags": ["main", "relevant", "parity", "small", "stress"]
+  },
+  {
     "id": "youtu-llm-2b",
     "displayName": "Youtu LLM 2B",
     "architecture": "youtu_llm",

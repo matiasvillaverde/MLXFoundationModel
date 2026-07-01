@@ -20,6 +20,7 @@ struct MLXSupportedArchitectureTests {
         "bitnet",
         "cohere",
         "cohere2",
+        "dbrx",
         "deepseek",
         "deepseek_v2",
         "deepseek_v3",

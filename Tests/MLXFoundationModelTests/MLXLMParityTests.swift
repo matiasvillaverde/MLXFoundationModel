@@ -127,7 +127,6 @@ struct MLXLMParityTests {
     private static let expectedDeferredTextModelTypes: Set<String> = [
         "afm7",
         "bailing_moe_linear",
-        "dbrx",
         "iquestloopcoder",
         "kimi_k25",
         "kimi_linear",
