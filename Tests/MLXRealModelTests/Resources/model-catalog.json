@@ -1407,6 +1407,17 @@
     "tags": ["registry-only"]
   },
   {
+    "id": "afm7",
+    "displayName": "AFM7",
+    "architecture": "afm7",
+    "repository": null,
+    "relativePath": "afm7",
+    "prompt": "Write one short sentence about KV reuse language models.",
+    "expectedTokens": ["reuse", "model", "language"],
+    "maxTokens": 12,
+    "tags": ["registry-only"]
+  },
+  {
     "id": "jamba-reasoning-3b-4bit",
     "displayName": "AI21 Jamba Reasoning 3B 4-bit",
     "architecture": "jamba",

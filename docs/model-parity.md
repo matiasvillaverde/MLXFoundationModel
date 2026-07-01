@@ -39,7 +39,6 @@ Highest priority:
 MoE and recent family gaps:
 
 - `bailing_moe_linear`
-- `afm7`
 
 Legacy and compatibility gaps:
 

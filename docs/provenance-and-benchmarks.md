@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 140 | Safe area for normal refactors. |
+| Files with no source-port marker | 141 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -77,6 +77,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/Mixtral.swift` | Mixtral grouped-query attention, top-k sparse routing, expert tensor packing, tied-head cleanup, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/GLM4MOE.swift` | GLM4 MoE attention layout, layer plan, grouped sparse routing, expert packing, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/AfMoE.swift` | AfMoE full/sliding attention layout, layer schedule, grouped sparse routing, expert packing, mixed cache planning, tied/untied heads, greedy-token fast path, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/AFM7.swift` | AFM7 fused-QKV attention, fake 8-bit KV reuse, shared materialized KV across reuse layers, tied embedding head, greedy-token fast path, cache dimensions, sanitizer cleanup, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Qwen3Next.swift` | Qwen3Next layer scheduling, gated full attention, gated-delta linear attention, MoE routing, expert packing, mixed cache planning, tied/untied heads, greedy-token fast path, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/GraniteMoeHybrid.swift` | Granite MoE Hybrid typed layer scheduling, attention and Mamba layout planning, MoE routing, shared/dense feed-forward remapping, mixed cache planning, tied/untied heads, greedy-token fast path, SSM mask use, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Mellum.swift` | Mellum full/sliding attention scheduling, per-layer RoPE selection, q/k RMSNorm, sparse MoE routing, expert packing, mixed cache planning, tied/untied heads, greedy-token fast path, and LoRA target discovery. |
@@ -176,6 +177,7 @@ Current independence pass:
 - Replaced MiMo v2 Flash with explicit full/sliding attention and layer-schedule plans, safer grouped routing, attention-sink handling, expert packing, per-layer cache/KV-head planning, greedy-token fast path, and focused config/layout/routing/cache/forward/sanitizer coverage.
 - Replaced GLM4 MoE with explicit attention, layer, and grouped-routing plans, safer correction-bias routing, expert packing, tied-head cleanup, greedy-token fast path, and focused config/layout/routing/cache/forward/sanitizer coverage.
 - Replaced AfMoE with explicit full/sliding attention, layer, routing, and expert-packing plans; fixed grouped routing edge cases; added mixed cache creation, tied-head cleanup, greedy-token fast path, LoRA target discovery, and focused config/layout/routing/cache/forward/sanitizer coverage.
+- Added AFM7 with fused-QKV attention, fake 8-bit key/value quantization, materialized-KV reuse layers, tied embedding output, greedy-token fast path, cache dimensions, and focused config/layout/cache/forward/sanitizer coverage.
 - Replaced Qwen3Next with explicit layer, attention, linear-attention, MoE, sanitizer, and expert-packing plans; fixed later-layer expert packing; added robust mixed-cache mask selection, tied-head cleanup, greedy-token fast path, LoRA target discovery, and focused config/layout/cache/forward/sanitizer coverage.
 - Replaced Granite MoE Hybrid with typed layer, attention, Mamba, MoE, sanitizer, and cache plans; removed the local no-op SSM mask; fixed later-layer MoE/shared-MLP sanitizer remapping; added tied-head cleanup, greedy-token fast path, LoRA target discovery, and focused config/layout/cache/forward/sanitizer coverage.
 - Added Mellum with full/sliding attention scheduling, YaRN/default per-layer RoPE selection, q/k RMSNorm, sparse MoE routing, sidecar-aware expert packing, mixed cache planning, greedy-token fast path, LoRA target discovery, and focused config/layout/cache/forward/sanitizer coverage.
@@ -284,17 +286,18 @@ in the E2E harness. `samairtimer/MobileLLM-R1-360M-4bit` was not used because
 its published index omits attention tensors. The `llama4` wrapper alias remains
 registry-only until a small complete wrapper checkpoint is available.
 
-`glm4_moe`, `solar_open`, `glm4_moe_lite`, pure `nemotron`, and `nemotron-nas`
+`glm4_moe`, `solar_open`, `glm4_moe_lite`, pure `nemotron`, `nemotron-nas`, and
+`afm7`
 are still registry-only in the catalog, and no exact `glm4-moe`, `solar-open`,
-`glm4-moe-lite`, `nemotron`, or `nemotron-nas` checkpoint directory is present locally. Solar
-Open uses the same GLM4 MoE implementation path that mlx-lm exposes for
+`glm4-moe-lite`, `nemotron`, `nemotron-nas`, or `afm7` checkpoint directory is
+present locally. Solar Open uses the same GLM4 MoE implementation path that mlx-lm exposes for
 `solar_open`. The smallest published MLX Solar Open checkpoint found during
 this pass was `mlx-community/Solar-Open-100B-4bit`; `hf download --dry-run`
 reported twelve weight shards of about 57 GB total, so it is intentionally left
 out of the 32 GB E2E sweep. Current small Nemotron MLX search hits are
 `nemotron_h` or `llama` configs, and Hugging Face model search returned no exact
-`nemotron-nas` MLX checkpoint, so these stay registry-only until fit checkpoints
-are available.
+`nemotron-nas` or `afm7` MLX checkpoint, so these stay registry-only until fit
+checkpoints are available.
 
 Qwen2 MoE parity was added with
 `mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit`. The checkpoint is 7.9 GB on disk

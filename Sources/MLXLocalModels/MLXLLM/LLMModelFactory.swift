@@ -235,6 +235,7 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
                 SeedOSSModel($0)
             },
             modelType("afmoe", configuration: AfMoEConfiguration.self) { AfMoEModel($0) },
+            modelType("afm7", configuration: AFM7Configuration.self) { AFM7Model($0) },
             modelType("jamba", "jamba_3b", configuration: JambaConfiguration.self) {
                 JambaModel($0)
             },

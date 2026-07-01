@@ -12,6 +12,7 @@ struct MLXSupportedArchitectureTests {
 
     private static let expectedTypes: Set<String> = [
         "acereason",
+        "afm7",
         "Klear",
         "afmoe",
         "apertus",

@@ -177,6 +177,7 @@ struct MLXRealModelCatalogTests {
 private let kExpectedCatalogArchitectures: Set<String> = [
     "Klear",
     "acereason",
+    "afm7",
     "afmoe",
     "apertus",
     "baichuan_m1",
