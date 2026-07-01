@@ -209,6 +209,7 @@ private let kExpectedCatalogArchitectures: Set<String> = [
     "qwen3_5_text",
     "qwen3_moe",
     "qwen3_next",
+    "rwkv7",
     "smollm3",
     "stablelm",
     "starcoder2"
@@ -244,6 +245,7 @@ private let kExpectedMainCatalogArchitectures: Set<String> = [
     "qwen2",
     "qwen2_moe",
     "qwen3",
+    "rwkv7",
     "smollm3",
     "stablelm",
     "starcoder2"
@@ -291,6 +293,7 @@ private let kExpectedRelevantCatalogArchitectures: Set<String> = [
     "qwen3_5",
     "qwen3_5_moe",
     "qwen3_moe",
+    "rwkv7",
     "smollm3",
     "stablelm",
     "starcoder2"

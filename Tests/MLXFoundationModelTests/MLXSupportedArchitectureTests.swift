@@ -86,6 +86,7 @@ struct MLXSupportedArchitectureTests {
         "qwen3_5_text",
         "qwen3_moe",
         "qwen3_next",
+        "rwkv7",
         "smollm3",
         "stablelm",
         "starcoder2"

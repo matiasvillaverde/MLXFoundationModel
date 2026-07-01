@@ -820,6 +820,19 @@
     "tags": ["main", "relevant", "parity", "small", "stress"]
   },
   {
+    "id": "rwkv7-g1d-0.1b",
+    "displayName": "RWKV7 Goose 0.1B",
+    "architecture": "rwkv7",
+    "repository": "chinoll/rwkv7-g1d-0.1b",
+    "relativePath": "rwkv7-g1d-0.1b",
+    "prompt": "Write one short sentence about recurrent language models.",
+    "expectedTokens": ["model", "language", "text"],
+    "maxTokens": 12,
+    "minimumMemoryGB": 8,
+    "minimumDiskGB": 1,
+    "tags": ["main", "relevant", "parity", "small", "stress"]
+  },
+  {
     "id": "openelm-270m-instruct",
     "displayName": "OpenELM 270M Instruct",
     "architecture": "openelm",

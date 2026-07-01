@@ -21,7 +21,8 @@ struct LLMModelFactoryTests {
             "glm_moe_dsa",
             "cohere2",
             "phixtral",
-            "phi-msft"
+            "phi-msft",
+            "rwkv7"
         ]))
     }
 

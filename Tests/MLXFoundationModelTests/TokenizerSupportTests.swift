@@ -39,6 +39,14 @@ struct TokenizerSupportTests {
         #expect(rewriter.rewrite(config).tokenizerClass?.string() == "PreTrainedTokenizer")
     }
 
+    @Test("default registry rewrites RWKV7 tokenizer class")
+    func defaultRegistryRewritesRWKV7TokenizerClass() {
+        let rewriter = TokenizerConfigurationRewriter(registry: TokenizerReplacementRegistry())
+        let config = Config(["tokenizer_class": Config("Rwkv7Tokenizer")])
+
+        #expect(rewriter.rewrite(config).tokenizerClass?.string() == "PreTrainedTokenizer")
+    }
+
     @Test("loads Phi-3-small tiktoken tokenizer without tokenizer JSON")
     func loadsPhi3SmallTiktokenTokenizer() async throws {
         let directory = try Self.makePhi3SmallTokenizerFixture()
