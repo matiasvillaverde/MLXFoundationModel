@@ -713,6 +713,19 @@
     "tags": ["relevant", "latest"]
   },
   {
+    "id": "glm-edge-1.5b-chat",
+    "displayName": "GLM Edge 1.5B Chat",
+    "architecture": "glm",
+    "repository": "zai-org/glm-edge-1.5b-chat",
+    "relativePath": "glm-edge-1.5b-chat",
+    "prompt": "Write one short sentence about efficient local language models.",
+    "expectedTokens": ["local", "model", "models"],
+    "maxTokens": 12,
+    "minimumMemoryGB": 16,
+    "minimumDiskGB": 4,
+    "tags": ["main", "relevant", "parity", "stress"]
+  },
+  {
     "id": "glm4-moe",
     "displayName": "GLM4 MoE",
     "architecture": "glm4_moe",
