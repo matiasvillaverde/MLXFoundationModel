@@ -133,7 +133,6 @@ struct MLXLMParityTests {
         "dbrx",
         "ernie4_5_moe",
         "exaone_moe",
-        "glm",
         "hunyuan",
         "hunyuan_v1_dense",
         "iquestloopcoder",

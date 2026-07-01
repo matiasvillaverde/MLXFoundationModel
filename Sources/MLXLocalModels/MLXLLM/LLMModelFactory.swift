@@ -121,6 +121,7 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
                 MiMoV2FlashModel($0)
             },
             modelType("minimax", configuration: MiniMaxConfiguration.self) { MiniMaxModel($0) },
+            modelType("glm", configuration: GLMConfiguration.self) { GLMModel($0) },
             modelType("glm4", configuration: GLM4Configuration.self) { GLM4Model($0) },
             modelType("glm4_moe", configuration: GLM4MoEConfiguration.self) {
                 GLM4MoEModel($0)
@@ -441,6 +442,11 @@ internal class LLMRegistry: AbstractModelRegistry, @unchecked Sendable {
         defaultPrompt: "Why is the sky blue?"
     )
 
+    public static let glmEdgeOnePoint5BChat = ModelConfiguration(
+        id: "zai-org/glm-edge-1.5b-chat",
+        defaultPrompt: "Write one short sentence about efficient local language models."
+    )
+
     public static let acereason7b4bit = ModelConfiguration(
         id: "mlx-community/AceReason-Nemotron-7B-4bit",
         defaultPrompt: ""
@@ -516,6 +522,7 @@ internal class LLMRegistry: AbstractModelRegistry, @unchecked Sendable {
             deepseekR1Four4bit,
             deepseekV2LiteChat4bit,
             mimo7bSft4bit,
+            glmEdgeOnePoint5BChat,
             glm4Nine9b4bit,
             acereason7b4bit,
             bitnetB1Point58Two2b4t4bit,
