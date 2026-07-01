@@ -40,6 +40,8 @@ struct MLXRealModelCatalogTests {
         let gemma3nE2BBF16 = try #require(models.first { $0.id == "gemma-3n-e2b-it-lm-bf16" })
         let teleChat3 = try #require(models.first { $0.id == "telechat3-36b-thinking-4bit" })
         let kimiK25 = try #require(models.first { $0.id == "kimi-k2.5-3bit" })
+        let longcatFlash = try #require(models.first { $0.id == "longcat-flash-chat-4bit" })
+        let longcatLite = try #require(models.first { $0.id == "longcat-flash-lite-4bit" })
 
         #expect(gptOSS.minimumMemoryGB == 48)
         #expect(gptOSS.minimumDiskGB == 14)
@@ -55,6 +57,10 @@ struct MLXRealModelCatalogTests {
         #expect(teleChat3.minimumDiskGB == 24)
         #expect(kimiK25.minimumMemoryGB == 512)
         #expect(kimiK25.minimumDiskGB == 420)
+        #expect(longcatFlash.minimumMemoryGB == 384)
+        #expect(longcatFlash.minimumDiskGB == 300)
+        #expect(longcatLite.minimumMemoryGB == 48)
+        #expect(longcatLite.minimumDiskGB == 40)
     }
 
     @Test("large downloadable catalog entries declare resource requirements")
@@ -205,6 +211,8 @@ private let kExpectedCatalogArchitectures: Set<String> = [
     "llama",
     "llama4",
     "llama4_text",
+    "longcat_flash",
+    "longcat_flash_ngram",
     "mamba",
     "mamba2",
     "mellum",

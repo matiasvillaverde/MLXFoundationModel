@@ -116,6 +116,12 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
             modelType("kimi_k25", configuration: KimiK25Configuration.self) {
                 KimiK25Model($0)
             },
+            modelType("longcat_flash", configuration: LongcatFlashConfiguration.self) {
+                LongcatFlashModel($0)
+            },
+            modelType("longcat_flash_ngram", configuration: LongcatFlashConfiguration.self) {
+                LongcatFlashModel($0)
+            },
             modelType("youtu", "youtu_llm", configuration: YoutuLLMConfiguration.self) {
                 YoutuLLMModel($0)
             },

@@ -64,6 +64,8 @@ struct MLXSupportedArchitectureTests {
         "llama",
         "llama4",
         "llama4_text",
+        "longcat_flash",
+        "longcat_flash_ngram",
         "mamba",
         "mamba2",
         "mellum",

@@ -720,6 +720,32 @@
     "tags": ["relevant", "latest", "large", "parity"]
   },
   {
+    "id": "longcat-flash-chat-4bit",
+    "displayName": "LongCat Flash Chat 4-bit",
+    "architecture": "longcat_flash",
+    "repository": "mlx-community/LongCat-Flash-Chat-4bit",
+    "relativePath": "LongCat-Flash-Chat-4bit",
+    "prompt": "Write one short sentence about tool-using reasoning models.",
+    "expectedTokens": ["tool", "reasoning", "model"],
+    "maxTokens": 12,
+    "minimumMemoryGB": 384,
+    "minimumDiskGB": 300,
+    "tags": ["relevant", "latest", "large", "parity"]
+  },
+  {
+    "id": "longcat-flash-lite-4bit",
+    "displayName": "LongCat Flash Lite 4-bit",
+    "architecture": "longcat_flash_ngram",
+    "repository": "mlx-community/LongCat-Flash-Lite-4bit",
+    "relativePath": "LongCat-Flash-Lite-4bit",
+    "prompt": "Write one short sentence about efficient n-gram language models.",
+    "expectedTokens": ["efficient", "model", "language"],
+    "maxTokens": 12,
+    "minimumMemoryGB": 48,
+    "minimumDiskGB": 40,
+    "tags": ["relevant", "latest", "large", "parity"]
+  },
+  {
     "id": "deepseek-moe-16b-chat-4bit",
     "displayName": "DeepSeek MoE 16B Chat 4-bit",
     "architecture": "deepseek",

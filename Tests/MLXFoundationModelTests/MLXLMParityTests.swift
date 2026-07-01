@@ -129,8 +129,6 @@ struct MLXLMParityTests {
         "bailing_moe_linear",
         "iquestloopcoder",
         "kimi_linear",
-        "longcat_flash",
-        "longcat_flash_ngram",
         "nemotron-nas",
         "recurrent_gemma",
         "step3p5"
