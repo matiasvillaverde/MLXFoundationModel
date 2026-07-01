@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 118 | Safe area for normal refactors. |
+| Files with no source-port marker | 121 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -39,9 +39,11 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/Common/Phi3SmallTiktokenTokenizer.swift` | Phi-3-small tiktoken vocabulary loading, byte-pair encoding, special-token handling, and chat-template rendering. |
 | `Sources/MLXLocalModels/Common/QwenTiktokenTokenizer.swift` | Qwen tiktoken vocabulary loading, byte-level BPE, special-token handling, and default chat rendering. |
 | `Sources/MLXLocalModels/Common/SentencePieceModelTokenizer.swift` | SentencePiece model-file parsing, duplicate-piece tolerant BPE lookup, byte fallback, special-token splitting, and InternLM-style chat rendering. |
+| `Sources/MLXLocalModels/Common/RWKV7Tokenizer.swift` | RWKV7 longest-match byte tokenizer loading, special-token handling, grammar-vocabulary fallback, and UTF-8 decode recovery. |
 | `Sources/MLXLocalModels/MLXLLM/LLMModel.swift` | Default text-model prefill chunking and adaptive prefill integration. |
 | `Sources/MLXLocalModels/MLXLLM/LLMModelFactory.swift` | LLM type registration, alias grouping, model load progress, generation-token resolution, and trampoline factory. |
 | `Sources/MLXLocalModels/MLXLLM/Cohere2.swift` | Cohere2 grouped attention, hybrid sliding/full attention schedule, mixed cache planning, tied output head, greedy-token fast path, stale rotary cleanup, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/RWKV7.swift` | RWKV7 time-mixing, channel-mixing, recurrent WKV state updates, Metal recurrence dispatch, tied-head fallback, greedy-token fast path, and cache planning. |
 | `Sources/MLXLocalModels/MLXLLM/GPT2.swift` | GPT-2 learned position embeddings, cache-aware position IDs, pre-norm attention and MLP blocks, raw Transformers sanitizer, tied output head, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/GPTBigCode.swift` | GPT-BigCode learned position embeddings, multi-query packed attention, raw Transformers sanitizer, tied/untied output heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/GPTNeoX.swift` | GPT-NeoX partial-RoPE packed attention, parallel and sequential residual blocks, raw Transformers sanitizer, tied/untied output heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
@@ -110,6 +112,7 @@ Current independence pass:
 - Replaced model factory dispatch with focused coverage for chat-template tokenization, rendered/cache prompt encoding, factory fallback, final-error propagation, and missing-factory errors.
 - Replaced tokenizer support with focused coverage for tokenizer-class rewriting, registry updates, streaming deltas, newline resets, and incomplete Unicode boundaries.
 - Added SentencePiece model-file tokenizer fallback with duplicate-piece tolerant lookup, bounded special-token splitting, grammar-vocabulary fallback, and focused synthetic fixture coverage.
+- Added RWKV7 longest-match byte tokenizer support with grammar-vocabulary fallback and focused synthetic fixture coverage.
 - Replaced LoRA data loading with focused coverage for lookup precedence, JSONL parsing, text lines, missing files, and unsupported file types.
 - Replaced LoRA layer adapters with focused coverage for dense/quantized conversion, adapter-only training, no-op initialization, fusion, and quantized mode preservation.
 - Replaced LoRA training helpers with focused coverage for shifted causal batches, prediction-length masking, weighted evaluation, adapter conversion/fusion, and quantized dequantize fusion.
@@ -166,6 +169,7 @@ Current independence pass:
 - Added Mamba with selective state-space recurrence, depthwise convolution cache updates, alias-compatible config decoding, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 - Added Mamba2 with gated state-space recurrence, derived intermediate sizing for compact configs, JSON5 checkpoint profile loading, CPU-safe SSM fallback, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 - Added Helium with grouped attention, traditional RoPE, SwiGLU feed-forward blocks, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
+- Added RWKV7 with project-owned time-mixing, channel-mixing, recurrent WKV cache updates, a Metal recurrence path, greedy-token fast path, focused architecture/tokenizer coverage, and real Goose 0.1B validation.
 
 Previous performance pass:
 
@@ -206,15 +210,15 @@ make test-all-architectures
 ## E2E Result
 
 The current all-architecture sweep passed for every model selected by the memory
-gate. The test runner selected 75 local models and skipped 9 oversized models on
+gate. The test runner selected 76 local models and skipped 9 oversized models on
 this 32 GB host. Each selected model ran serialized generation, rendered session
 requests, and token-level grammar constraint checks.
 
-A follow-up serialized `main` sweep on 2026-07-01 selected 39 downloadable
+A follow-up serialized `main` sweep on 2026-07-01 selected 40 downloadable
 models, including Cohere2, DeepSeek, DeepSeek V2, EXAONE 3.5, GraniteMoE,
 Helium, Hunyuan V1 Dense, InternLM3, Jamba, Mamba, Mamba2, Mixtral, Phixtral,
-Qwen, and GLM, and passed generation, rendered session, token grammar, and
-configured stress checks.
+Qwen, RWKV7, and GLM, and passed generation, rendered session, token grammar,
+and configured stress checks.
 
 The current sweep adds 32 GB-friendly checkpoints for `qwen3_moe`, `mistral`,
 `gpt_oss`, `qwen3_5_moe`, and `nemotron_h`. These entries also run the stress
@@ -252,6 +256,11 @@ Cohere2 parity was added with `Siarhei/tiny-aya-global-4bit`. The checkpoint is
 1.8 GB on disk and passed targeted release generation, rendered session
 requests, token grammar constraints, stress generation, and the serialized
 `main` architecture sweep on this host.
+
+RWKV7 parity was added with `chinoll/rwkv7-g1d-0.1b`. The checkpoint is
+375 MB on disk and passed targeted release generation, rendered session
+requests, token grammar constraints, stress generation, the serialized `main`
+architecture sweep, and the release `all` architecture sweep on this host.
 
 MiniCPM3 parity was added with `mlx-community/MiniCPM3-4B-4bit`. The checkpoint
 is 2.2 GB on disk and passed targeted real-model generation, rendered session
@@ -495,6 +504,25 @@ Best stress iterations from the same runs:
 | `cohere2` | `cohere2-tiny-aya-global-4bit` release targeted | 28 | 0.8007 | 0.2961 | 0.5046 | 55.48 | 34.97 |
 | `cohere2` | `cohere2-tiny-aya-global-4bit` debug main | 28 | 1.0836 | 0.3005 | 0.7830 | 35.76 | 25.84 |
 | `cohere2` | `cohere2-tiny-aya-global-4bit` release all | 28 | 0.7971 | 0.2951 | 0.5020 | 55.78 | 35.13 |
+
+## RWKV7 Parity Check
+
+These rows come from the targeted release RWKV7 run and the serialized debug
+`main` and release `all` sweeps on 2026-07-01.
+
+| Architecture | Model | Generated | Prompt | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `rwkv7` | `rwkv7-g1d-0.1b` release targeted | 4 | 9 | 0.4956 | 0.4546 | 0.0409 | 97.71 | 8.07 |
+| `rwkv7` | `rwkv7-g1d-0.1b` debug main | 4 | 9 | 0.1138 | 0.0370 | 0.0769 | 52.04 | 35.14 |
+| `rwkv7` | `rwkv7-g1d-0.1b` release all | 4 | 9 | 0.0379 | 0.0199 | 0.0180 | 222.30 | 105.44 |
+
+Best stress iterations from the same runs:
+
+| Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `rwkv7` | `rwkv7-g1d-0.1b` release targeted | 32 | 0.1023 | 0.0059 | 0.0964 | 332.02 | 312.80 |
+| `rwkv7` | `rwkv7-g1d-0.1b` debug main | 32 | 0.6170 | 0.0249 | 0.5922 | 54.04 | 51.86 |
+| `rwkv7` | `rwkv7-g1d-0.1b` release all | 32 | 0.1113 | 0.0059 | 0.1053 | 303.77 | 287.61 |
 
 ## MiniCPM3 Parity Check
 

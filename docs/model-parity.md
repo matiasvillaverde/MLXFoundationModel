@@ -53,7 +53,6 @@ MoE and recent family gaps:
 Legacy and compatibility gaps:
 
 - `recurrent_gemma`
-- `rwkv7`
 - `solar_open`
 - `plamo`, `plamo2`
 - `mellum`
