@@ -35,9 +35,7 @@ Highest priority:
 
 - `kimi_linear`
 
-MoE and recent family gaps:
-
-- `bailing_moe_linear`
+MoE and recent family gaps: none.
 
 Legacy and compatibility gaps: none.
 

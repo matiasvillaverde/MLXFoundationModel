@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 143 | Safe area for normal refactors. |
+| Files with no source-port marker | 144 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -58,6 +58,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/Hunyuan.swift` | Hunyuan dense and sparse MoE blocks, dynamic-alpha RoPE, optional CLA key/value sharing, q/k RMSNorm, `switch_mlp` expert packing, tied-head cleanup, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Helium.swift` | Helium grouped attention, traditional RoPE planning, SwiGLU feed-forward blocks, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/BailingMoe.swift` | Bailing MoE attention layout, sparse routing plan, grouped expert selection, expert packing, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/BailingMoeLinear.swift` | Bailing MoE Linear global attention, recurrent GLA linear attention, grouped RMSNorm gating, dense/sparse MoE scheduling, mixed KV/recurrent cache planning, checkpoint sanitizing, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Mistral3Text.swift` | Mistral 3 attention layout, Llama 4 position scaling, full/sliding layer scheduling, cache planning, VLM weight unwrapping, greedy-token fast path, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/MiniCPM.swift` | MiniCPM attention layout, residual/embedding/logit scaling plans, stable checkpoint keys, tied-head sanitizing, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/MiniCPM3.swift` | MiniCPM3 MLA attention layout, LongRoPE runtime frequencies, residual/embedding/logit scaling, tied-head sanitizing, greedy-token fast path, cache dimensions, and LoRA target discovery. |
@@ -176,6 +177,7 @@ Current independence pass:
 - Replaced MiniMax with explicit attention and sparse-routing plans, stable `model.*` checkpoint keys, expert packing, tied-head handling, greedy-token fast path, and focused config/layout/forward/sanitizer coverage.
 - Replaced OLMoE with explicit attention and sparse-routing plans, stable `model.*` checkpoint keys, expert packing, tied-head handling, greedy-token fast path, and focused config/layout/routing/forward/sanitizer coverage.
 - Replaced Bailing MoE with explicit attention, layer, routing, and expert-packing plans; fixed grouped routing edge cases; added tied-head handling, greedy-token fast path, cache creation, LoRA target discovery, and focused config/routing/forward/sanitizer coverage.
+- Added Bailing MoE Linear with mixed global attention and recurrent GLA layers, grouped RMSNorm gating, dense/sparse MoE scheduling, mixed cache creation, checkpoint sanitizing, focused architecture coverage, and a registry-only catalog entry until an exact checkpoint is available.
 - Replaced MiMo v2 Flash with explicit full/sliding attention and layer-schedule plans, safer grouped routing, attention-sink handling, expert packing, per-layer cache/KV-head planning, greedy-token fast path, and focused config/layout/routing/cache/forward/sanitizer coverage.
 - Replaced GLM4 MoE with explicit attention, layer, and grouped-routing plans, safer correction-bias routing, expert packing, tied-head cleanup, greedy-token fast path, and focused config/layout/routing/cache/forward/sanitizer coverage.
 - Replaced AfMoE with explicit full/sliding attention, layer, routing, and expert-packing plans; fixed grouped routing edge cases; added mixed cache creation, tied-head cleanup, greedy-token fast path, LoRA target discovery, and focused config/layout/routing/cache/forward/sanitizer coverage.
@@ -291,17 +293,19 @@ its published index omits attention tensors. The `llama4` wrapper alias remains
 registry-only until a small complete wrapper checkpoint is available.
 
 `glm4_moe`, `solar_open`, `glm4_moe_lite`, pure `nemotron`, `nemotron-nas`,
-`afm7`, and `recurrent_gemma` are still registry-only in the catalog, and no
+`afm7`, `recurrent_gemma`, and `bailing_moe_linear` are still registry-only in
+the catalog, and no
 exact `glm4-moe`, `solar-open`, `glm4-moe-lite`, `nemotron`, `nemotron-nas`,
-`afm7`, or `recurrent-gemma` checkpoint directory is present locally. Solar Open
+`afm7`, `recurrent-gemma`, or `bailing-moe-linear` checkpoint directory is
+present locally. Solar Open
 uses the same GLM4 MoE implementation path that mlx-lm exposes for
 `solar_open`. The smallest published MLX Solar Open checkpoint found during
 this pass was `mlx-community/Solar-Open-100B-4bit`; `hf download --dry-run`
 reported twelve weight shards of about 57 GB total, so it is intentionally left
 out of the 32 GB E2E sweep. Current small Nemotron MLX search hits are
 `nemotron_h` or `llama` configs, and Hugging Face model search returned no exact
-`nemotron-nas`, `afm7`, or `recurrent_gemma` MLX checkpoint, so these stay
-registry-only until fit checkpoints are available.
+`nemotron-nas`, `afm7`, `recurrent_gemma`, or `bailing_moe_linear` MLX
+checkpoint, so these stay registry-only until fit checkpoints are available.
 
 Step3.5 parity was added with an oversized catalog entry for
 `mlx-community/Step-3.5-Flash-4bit`. `hf download --dry-run` reported 32 files

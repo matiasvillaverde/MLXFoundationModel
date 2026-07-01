@@ -218,6 +218,9 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
             modelType("bailing_moe", configuration: BailingMoeConfiguration.self) {
                 BailingMoeModel($0)
             },
+            modelType("bailing_moe_linear", configuration: BailingMoeLinearConfiguration.self) {
+                BailingMoeLinearModel($0)
+            },
             modelType("stablelm", configuration: StableLMConfiguration.self) {
                 StableLMModel($0)
             },

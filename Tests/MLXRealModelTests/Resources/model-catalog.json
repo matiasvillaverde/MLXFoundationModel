@@ -1350,6 +1350,17 @@
     "tags": ["registry-only"]
   },
   {
+    "id": "bailing-moe-linear",
+    "displayName": "Bailing MoE Linear",
+    "architecture": "bailing_moe_linear",
+    "repository": null,
+    "relativePath": "bailing-moe-linear",
+    "prompt": "Write one short sentence about linear expert models.",
+    "expectedTokens": ["linear", "expert", "model"],
+    "maxTokens": 12,
+    "tags": ["registry-only"]
+  },
+  {
     "id": "nanochat",
     "displayName": "NanoChat",
     "architecture": "nanochat",

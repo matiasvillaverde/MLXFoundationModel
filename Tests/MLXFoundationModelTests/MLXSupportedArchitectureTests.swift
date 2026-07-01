@@ -18,6 +18,7 @@ struct MLXSupportedArchitectureTests {
         "apertus",
         "baichuan_m1",
         "bailing_moe",
+        "bailing_moe_linear",
         "bitnet",
         "cohere",
         "cohere2",
