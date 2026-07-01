@@ -1147,6 +1147,19 @@
     "tags": ["relevant", "latest"]
   },
   {
+    "id": "plamo-2-1b",
+    "displayName": "PLaMo 2 1B",
+    "architecture": "plamo2",
+    "repository": "mlx-community/plamo-2-1b",
+    "relativePath": "plamo-2-1b",
+    "prompt": "Open models on Apple silicon are",
+    "expectedTokens": ["open", "apple", "model"],
+    "maxTokens": 16,
+    "minimumMemoryGB": 16,
+    "minimumDiskGB": 7,
+    "tags": ["main", "relevant", "small-fit", "parity", "stress"]
+  },
+  {
     "id": "bailing-moe",
     "displayName": "Bailing MoE",
     "architecture": "bailing_moe",

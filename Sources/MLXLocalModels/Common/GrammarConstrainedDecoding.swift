@@ -901,6 +901,14 @@ private enum TokenizerVocabularyParser {
             )
         }
 
+        let plamoJSONLURL = modelDirectory.appendingPathComponent(PlamoTokenizer.vocabFilename)
+        if FileManager.default.fileExists(atPath: plamoJSONLURL.path) {
+            return LoadedVocabulary(
+                vocabulary: try encodedPlamoVocabulary(from: plamoJSONLURL),
+                tokenizerJSON: #"{"model":{"type":"BPE","vocab":{}},"decoder":{"type":"Raw"}}"#
+            )
+        }
+
         let sentencePieceURL = modelDirectory.appendingPathComponent(
             SentencePieceModelTokenizer.modelFilename
         )
@@ -942,6 +950,11 @@ private enum TokenizerVocabularyParser {
 
     private static func encodedRWKV7Vocabulary(from vocabURL: URL) throws -> [String] {
         let entries = try RWKV7Tokenizer.vocabularyEntries(from: vocabURL)
+        return try compactVocabulary(from: entries)
+    }
+
+    private static func encodedPlamoVocabulary(from vocabURL: URL) throws -> [String] {
+        let entries = try PlamoTokenizer.vocabularyEntries(from: vocabURL)
         return try compactVocabulary(from: entries)
     }
 

@@ -56,6 +56,15 @@ private struct TokenizerConfigLoader {
                     tokenizer: tokenizer
                 )
             }
+            if let tokenizer = try PlamoTokenizer.load(
+                from: configuration.modelDirectory(hub: hub)
+            ) {
+                return TokenizerConfigFiles(
+                    tokenizerConfig: Config(["tokenizer_class": Config("PlamoTokenizer")]),
+                    tokenizerData: nil,
+                    tokenizer: tokenizer
+                )
+            }
 
             let tokenizerConfig = try await source.requiredTokenizerConfig()
             let tokenizerData = try await source.tokenizerData

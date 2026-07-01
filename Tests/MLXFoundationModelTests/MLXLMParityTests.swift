@@ -141,7 +141,6 @@ struct MLXLMParityTests {
         "longcat_flash_ngram",
         "nemotron-nas",
         "plamo",
-        "plamo2",
         "recurrent_gemma",
         "step3p5",
         "telechat3",

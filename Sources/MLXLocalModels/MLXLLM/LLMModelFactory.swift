@@ -177,6 +177,7 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
             modelType("olmoe", configuration: OlmoEConfiguration.self) { OlmoEModel($0) },
             modelType("olmo2", configuration: Olmo2Configuration.self) { Olmo2Model($0) },
             modelType("olmo3", configuration: Olmo3Configuration.self) { Olmo3Model($0) },
+            modelType("plamo2", configuration: Plamo2Configuration.self) { Plamo2Model($0) },
             modelType("bailing_moe", configuration: BailingMoeConfiguration.self) {
                 BailingMoeModel($0)
             },

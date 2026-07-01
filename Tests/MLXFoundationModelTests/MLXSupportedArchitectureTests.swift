@@ -76,6 +76,7 @@ struct MLXSupportedArchitectureTests {
         "olmo3",
         "olmoe",
         "openelm",
+        "plamo2",
         "phi",
         "phi3",
         "phixtral",
