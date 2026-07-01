@@ -129,7 +129,6 @@ struct MLXLMParityTests {
         "Klear",
         "afm7",
         "bailing_moe_linear",
-        "cohere2",
         "dbrx",
         "ernie4_5_moe",
         "exaone_moe",
