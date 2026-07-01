@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 130 | Safe area for normal refactors. |
+| Files with no source-port marker | 132 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -38,6 +38,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/Common/Tokenizer.swift` | Tokenizer loading, tokenizer-class rewriting, replacement registry, and streaming detokenization. |
 | `Sources/MLXLocalModels/Common/Phi3SmallTiktokenTokenizer.swift` | Phi-3-small tiktoken vocabulary loading, byte-pair encoding, special-token handling, and chat-template rendering. |
 | `Sources/MLXLocalModels/Common/QwenTiktokenTokenizer.swift` | Qwen tiktoken vocabulary loading, byte-level BPE, special-token handling, and default chat rendering. |
+| `Sources/MLXLocalModels/Common/HunyuanTiktokenTokenizer.swift` | Hunyuan `hy.tiktoken` vocabulary loading, byte-level BPE, special-token handling, grammar-vocabulary export, and chat rendering. |
 | `Sources/MLXLocalModels/Common/SentencePieceModelTokenizer.swift` | SentencePiece model-file parsing, duplicate-piece tolerant BPE lookup, byte fallback, special-token splitting, and InternLM-style chat rendering. |
 | `Sources/MLXLocalModels/Common/RWKV7Tokenizer.swift` | RWKV7 longest-match byte tokenizer loading, special-token handling, grammar-vocabulary fallback, and UTF-8 decode recovery. |
 | `Sources/MLXLocalModels/Common/PlamoTokenizer.swift` | Plamo JSONL vocabulary loading, longest-match encoding, byte fallback, special-token handling, and grammar-vocabulary export. |
@@ -51,6 +52,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/StableLM.swift` | StableLM partial-RoPE attention, optional per-head q/k LayerNorm, sequential and parallel residual blocks, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/GLM.swift` | GLM grouped-query attention, traditional RoPE, fused SwiGLU feed-forward blocks, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/HunyuanV1Dense.swift` | Hunyuan V1 Dense grouped-query attention, dynamic-alpha RoPE, q/k RMSNorm, tied-head cleanup, greedy-token fast path, cache dimensions, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/Hunyuan.swift` | Hunyuan dense and sparse MoE blocks, dynamic-alpha RoPE, optional CLA key/value sharing, q/k RMSNorm, `switch_mlp` expert packing, tied-head cleanup, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Helium.swift` | Helium grouped attention, traditional RoPE planning, SwiGLU feed-forward blocks, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/BailingMoe.swift` | Bailing MoE attention layout, sparse routing plan, grouped expert selection, expert packing, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Mistral3Text.swift` | Mistral 3 attention layout, Llama 4 position scaling, full/sliding layer scheduling, cache planning, VLM weight unwrapping, greedy-token fast path, and LoRA target discovery. |
@@ -187,6 +189,7 @@ Current independence pass:
 - Added TeleChat3 with grouped attention, TeleChat3 YaRN RoPE scaling, SwiGLU feed-forward blocks, tied-head cleanup, greedy-token fast path, focused architecture coverage, and an oversized real-model catalog entry.
 - Added EXAONE MoE with mixed sliding/full attention, dense/sparse MLP scheduling, grouped sparse routing, expert packing, mixed cache planning, greedy-token fast path, focused architecture coverage, and a fit-on-32GB architecture checkpoint entry.
 - Added Klear with grouped attention, q/k RMSNorm, sparse expert routing, shared experts, quantized checkpoint sidecar handling, focused architecture coverage, and a 32 GB-host real-model catalog entry.
+- Added Hunyuan with dense and sparse MoE paths, Hunyuan `hy.tiktoken` tokenizer support, grammar-vocabulary export, focused architecture/tokenizer coverage, and a 32 GB-host 7B real-model catalog entry.
 
 Previous performance pass:
 
@@ -238,6 +241,12 @@ The latest `main` sweep adds the 32 GB-host `klear` checkpoint and keeps the
 `mistral`, `gpt_oss`, `qwen3_5_moe`, and `nemotron_h`. These entries also run
 the stress test, which preloads one session and repeats generation on that same
 session.
+
+A targeted release Hunyuan run on 2026-07-01 added `hunyuan` coverage with
+`mlx-community/Hunyuan-7B-Instruct-4bit`. It passed generation, rendered
+session requests, token-level grammar constraints, and stress generation on the
+same 32 GB host. A full `main` sweep has not yet been rerun with the new
+47-model catalog.
 
 `glm4_moe`, `solar_open`, `glm4_moe_lite`, and pure `nemotron` are still
 registry-only in the catalog, and no exact `glm4-moe`, `solar-open`,
@@ -900,6 +909,26 @@ Best stress iterations from the same runs:
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `granitemoe` | `granite-3.1-1b-a400m-instruct` release targeted | 32 | 0.1844 | 0.0204 | 0.1641 | 195.02 | 173.49 |
 | `granitemoe` | `granite-3.1-1b-a400m-instruct` debug main | 32 | 0.8046 | 0.0346 | 0.7699 | 41.56 | 39.77 |
+
+## Hunyuan Parity Check
+
+These rows come from targeted release Hunyuan runs on 2026-07-01. The
+checkpoint is `mlx-community/Hunyuan-7B-Instruct-4bit`, uses `hy.tiktoken`,
+and passed generation, session-style request rendering, token-level grammar
+constraints, and repeated generation on a MacBook Pro Mac14,5 with an Apple M2
+Max and 32 GB unified memory.
+
+| Architecture | Model | Generated | Prompt | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `hunyuan` | `hunyuan-7b-instruct-4bit` release targeted | 2 | 13 | 0.1396 | 0.0743 | 0.0653 | 30.61 | 14.32 |
+| `hunyuan` | `hunyuan-7b-instruct-4bit` release targeted | 4 | 13 | 0.1621 | 0.0703 | 0.0918 | 43.57 | 24.67 |
+
+Best stress iterations from the same runs:
+
+| Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `hunyuan` | `hunyuan-7b-instruct-4bit` release targeted | 8 | 0.2179 | 0.0748 | 0.1431 | 55.92 | 36.71 |
+| `hunyuan` | `hunyuan-7b-instruct-4bit` release targeted | 19 | 0.3828 | 0.0764 | 0.3063 | 62.02 | 49.64 |
 
 ## Small-Fit Stress Baseline
 

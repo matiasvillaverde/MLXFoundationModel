@@ -792,6 +792,19 @@
     "tags": ["main", "relevant", "parity", "stress"]
   },
   {
+    "id": "hunyuan-7b-instruct-4bit",
+    "displayName": "Hunyuan 7B Instruct 4-bit",
+    "architecture": "hunyuan",
+    "repository": "mlx-community/Hunyuan-7B-Instruct-4bit",
+    "relativePath": "Hunyuan-7B-Instruct-4bit",
+    "prompt": "Write one short sentence about local language assistants.",
+    "expectedTokens": ["local", "assistant", "model"],
+    "maxTokens": 12,
+    "minimumMemoryGB": 16,
+    "minimumDiskGB": 6,
+    "tags": ["main", "relevant", "parity", "stress"]
+  },
+  {
     "id": "glm4-moe",
     "displayName": "GLM4 MoE",
     "architecture": "glm4_moe",

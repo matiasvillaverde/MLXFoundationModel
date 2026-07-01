@@ -3,17 +3,6 @@ import Foundation
 
 enum MLXRealModelEnvironment {
     private static let environment = ProcessInfo.processInfo.environment
-    private static let oneGiB: Int64 = 1_073_741_824
-    private static let modelLoadOverheadMultiplier = 2.5
-    private static let largeHostReserveGB = 8
-    private static let smallHostReserveGB = 4
-    private static let tildeSlashPrefixLength = 2
-    private static let modelArtifactExtensions: Set<String> = [
-        "bin",
-        "mlx",
-        "npz",
-        "safetensors"
-    ]
 
     static var isEnabled: Bool {
         environment["MLX_RUN_REAL_MODEL_TESTS"] == "1"
@@ -25,30 +14,58 @@ enum MLXRealModelEnvironment {
 
     static var modelRoot: URL {
         if let path = environment["MLX_TEST_MODELS_DIR"], !path.isEmpty {
-            return URL(fileURLWithPath: expandTilde(in: path), isDirectory: true)
+            return URL(
+                fileURLWithPath: MLXRealModelEnvironmentSupport.expandTilde(in: path),
+                isDirectory: true
+            )
         }
         return URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
             .appendingPathComponent(".models", isDirectory: true)
     }
 
     static var architectureGenerationTokenLimit: Int {
-        integerValue(for: "MLX_REAL_MODEL_GENERATION_TOKENS", defaultValue: 2, minimumValue: 1)
+        MLXRealModelEnvironmentSupport.integerValue(
+            environment: environment,
+            for: "MLX_REAL_MODEL_GENERATION_TOKENS",
+            defaultValue: 2,
+            minimumValue: 1
+        )
     }
 
     static var architectureGenerationTimeoutSeconds: Int {
-        integerValue(for: "MLX_REAL_MODEL_GENERATION_TIMEOUT_SECONDS", defaultValue: 120, minimumValue: 1)
+        MLXRealModelEnvironmentSupport.integerValue(
+            environment: environment,
+            for: "MLX_REAL_MODEL_GENERATION_TIMEOUT_SECONDS",
+            defaultValue: 120,
+            minimumValue: 1
+        )
     }
 
     static var stressIterationCount: Int {
-        integerValue(for: "MLX_REAL_MODEL_STRESS_ITERATIONS", defaultValue: 3, minimumValue: 1)
+        MLXRealModelEnvironmentSupport.integerValue(
+            environment: environment,
+            for: "MLX_REAL_MODEL_STRESS_ITERATIONS",
+            defaultValue: 3,
+            minimumValue: 1
+        )
     }
 
     static var stressGenerationTokenLimit: Int {
-        integerValue(for: "MLX_REAL_MODEL_STRESS_TOKENS", defaultValue: 32, minimumValue: 1)
+        MLXRealModelEnvironmentSupport.integerValue(
+            environment: environment,
+            for: "MLX_REAL_MODEL_STRESS_TOKENS",
+            defaultValue: 32,
+            minimumValue: 1
+        )
     }
 
     static var stressTimeoutSeconds: Int {
-        integerValue(for: "MLX_REAL_MODEL_STRESS_TIMEOUT_SECONDS", defaultValue: 240, minimumValue: 1)
+        MLXRealModelEnvironmentSupport.integerValue(
+            environment: environment,
+            for: "MLX_REAL_MODEL_STRESS_TIMEOUT_SECONDS",
+            defaultValue: 240,
+            minimumValue: 1
+        )
     }
 
     static func runtimePreferences(for model: MLXRealModelCatalog.Model) -> ModelRuntimePreferences {
@@ -62,8 +79,13 @@ enum MLXRealModelEnvironment {
         for model: MLXRealModelCatalog.Model
     ) -> MLXMemoryGuardConfiguration {
         MLXMemoryGuardConfiguration(
-            tier: memoryGuardTier(for: model),
-            hardLimitFraction: memoryGuardHardLimitFraction
+            tier: MLXRealModelEnvironmentSupport.memoryGuardTier(
+                environment: environment,
+                model: model
+            ),
+            hardLimitFraction: MLXRealModelEnvironmentSupport.memoryGuardHardLimitFraction(
+                environment: environment
+            )
         )
     }
 
@@ -98,7 +120,7 @@ enum MLXRealModelEnvironment {
             canRunWithinHostMemory(
                 model,
                 estimatedModelLoadBytes: estimatedModelLoadBytes(for: model),
-                hostMemoryGB: hostMemoryGB
+                hostMemoryGB: MLXRealModelEnvironmentSupport.hostMemoryGB(environment: environment)
             )
         }
     }
@@ -112,7 +134,7 @@ enum MLXRealModelEnvironment {
         return canRunWithinHostMemory(
             model,
             estimatedModelLoadBytes: estimatedModelLoadBytes(for: model),
-            hostMemoryGB: hostMemoryGB
+            hostMemoryGB: MLXRealModelEnvironmentSupport.hostMemoryGB(environment: environment)
         )
     }
 
@@ -127,13 +149,16 @@ enum MLXRealModelEnvironment {
         guard let estimatedModelLoadBytes else {
             return true
         }
-        return estimatedRuntimeBytes(forModelLoadBytes: estimatedModelLoadBytes) <=
-            hostModelBudgetBytes(hostMemoryGB: hostMemoryGB)
+        return MLXRealModelEnvironmentSupport.estimatedRuntimeBytes(
+            forModelLoadBytes: estimatedModelLoadBytes
+        ) <= MLXRealModelEnvironmentSupport.hostModelBudgetBytes(hostMemoryGB: hostMemoryGB)
     }
 
     static func estimatedRuntimeMemoryGB(forModelLoadBytes bytes: Int64) -> Int {
-        let runtimeBytes = estimatedRuntimeBytes(forModelLoadBytes: bytes)
-        return Int((Double(runtimeBytes) / Double(oneGiB)).rounded(.up))
+        let runtimeBytes = MLXRealModelEnvironmentSupport.estimatedRuntimeBytes(
+            forModelLoadBytes: bytes
+        )
+        return Int((Double(runtimeBytes) / Double(MLXRealModelEnvironmentSupport.oneGiB)).rounded(.up))
     }
 
     private static var selectedModelIDs: Set<String> {
@@ -183,7 +208,8 @@ enum MLXRealModelEnvironment {
         let hasSentencePieceTokenizer = fileManager.fileExists(atPath: "\(path)/tokenizer.model")
         let hasTiktokenTokenizer = [
             "cl100k_base.tiktoken",
-            "qwen.tiktoken"
+            "qwen.tiktoken",
+            "hy.tiktoken"
         ].contains { fileManager.fileExists(atPath: "\(path)/\($0)") }
         let hasTokenizer = hasTokenizerJSON || hasJSONLTokenizer
             || hasSentencePieceTokenizer || hasTiktokenTokenizer
@@ -211,7 +237,7 @@ enum MLXRealModelEnvironment {
 
         var byteCount: Int64 = 0
         for case let fileURL as URL in enumerator {
-            guard let bytes = modelArtifactByteCount(for: fileURL) else {
+            guard let bytes = MLXRealModelEnvironmentSupport.modelArtifactByteCount(for: fileURL) else {
                 continue
             }
             byteCount += bytes
@@ -240,82 +266,5 @@ enum MLXRealModelEnvironment {
         default:
             return "MLX_ASSUME_YES=1 MLX_MODEL_FILTER='\(scope)' scripts/download-test-models.sh"
         }
-    }
-
-    private static var hostMemoryGB: Int {
-        if let value = environment["MLX_HOST_MEMORY_GB"], let integer = Int(value) {
-            return integer
-        }
-        return max(1, Int(ProcessInfo.processInfo.physicalMemory / 1_073_741_824))
-    }
-
-    private static func memoryGuardTier(for model: MLXRealModelCatalog.Model) -> MLXMemoryGuardTier {
-        if let value = environment["MLX_REAL_MODEL_MEMORY_GUARD_TIER"],
-           let tier = MLXMemoryGuardTier(rawValue: value) {
-            return tier
-        }
-        if let value = model.memoryGuardTier,
-           let tier = MLXMemoryGuardTier(rawValue: value) {
-            return tier
-        }
-        return .balanced
-    }
-
-    private static var memoryGuardHardLimitFraction: Double {
-        guard let value = environment["MLX_REAL_MODEL_MEMORY_GUARD_HARD_LIMIT_FRACTION"],
-              let fraction = Double(value)
-        else {
-            return 0.95
-        }
-        return fraction
-    }
-
-    private static func estimatedRuntimeBytes(forModelLoadBytes bytes: Int64) -> Int64 {
-        guard bytes > 0 else {
-            return 0
-        }
-        return Int64((Double(bytes) * modelLoadOverheadMultiplier).rounded(.up))
-    }
-
-    private static func hostModelBudgetBytes(hostMemoryGB: Int) -> Int64 {
-        let reserve = hostMemoryGB < 24 ? smallHostReserveGB : largeHostReserveGB
-        return Int64(max(1, hostMemoryGB - reserve)) * oneGiB
-    }
-
-    private static func modelArtifactByteCount(for url: URL) -> Int64? {
-        guard modelArtifactExtensions.contains(url.pathExtension.lowercased()),
-            let values = try? url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]),
-            values.isRegularFile == true,
-            let fileSize = values.fileSize,
-            fileSize > 0
-        else {
-            return nil
-        }
-        return Int64(fileSize)
-    }
-
-    private static func expandTilde(in path: String) -> String {
-        if path == "~" {
-            return NSHomeDirectory()
-        }
-        if path.hasPrefix("~/") {
-            let suffix = String(path.dropFirst(tildeSlashPrefixLength))
-            return URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(suffix).path
-        }
-        return path
-    }
-
-    private static func integerValue(
-        for key: String,
-        defaultValue: Int,
-        minimumValue: Int
-    ) -> Int {
-        guard
-            let value = environment[key],
-            let integer = Int(value)
-        else {
-            return defaultValue
-        }
-        return max(integer, minimumValue)
     }
 }

@@ -154,6 +154,9 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
             modelType("hunyuan_v1_dense", configuration: HunyuanV1DenseConfiguration.self) {
                 HunyuanV1DenseModel($0)
             },
+            modelType("hunyuan", configuration: HunyuanConfiguration.self) {
+                HunyuanModel($0)
+            },
             modelType("lfm2", configuration: LFM2Configuration.self) { LFM2Model($0) },
             modelType("mamba", configuration: MambaConfiguration.self) { MambaModel($0) },
             modelType("mamba2", configuration: Mamba2Configuration.self) { Mamba2Model($0) },

@@ -51,6 +51,8 @@ struct MLXSupportedArchitectureTests {
         "granitemoe",
         "granitemoehybrid",
         "helium",
+        "hunyuan",
+        "hunyuan_v1_dense",
         "internlm2",
         "jamba",
         "jamba_3b",

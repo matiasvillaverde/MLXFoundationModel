@@ -41,7 +41,6 @@ Highest priority:
 
 MoE and recent family gaps:
 
-- `hunyuan`
 - `bailing_moe_linear`
 - `afm7`
 - `nemotron-nas`

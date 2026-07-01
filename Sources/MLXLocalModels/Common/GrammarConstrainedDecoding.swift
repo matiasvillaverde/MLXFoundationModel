@@ -901,6 +901,16 @@ private enum TokenizerVocabularyParser {
             )
         }
 
+        let hunyuanTiktokenURL = modelDirectory.appendingPathComponent(
+            HunyuanTiktokenTokenizer.vocabFilename
+        )
+        if FileManager.default.fileExists(atPath: hunyuanTiktokenURL.path) {
+            return LoadedVocabulary(
+                vocabulary: try encodedHunyuanTiktokenVocabulary(from: hunyuanTiktokenURL),
+                tokenizerJSON: #"{"model":{"type":"BPE","vocab":{}},"decoder":{"type":"Raw"}}"#
+            )
+        }
+
         let plamoJSONLURL = modelDirectory.appendingPathComponent(PlamoTokenizer.vocabFilename)
         if FileManager.default.fileExists(atPath: plamoJSONLURL.path) {
             return LoadedVocabulary(
@@ -945,6 +955,11 @@ private enum TokenizerVocabularyParser {
 
     private static func encodedQwenTiktokenVocabulary(from vocabURL: URL) throws -> [String] {
         let entries = try QwenTiktokenTokenizer.vocabularyEntries(from: vocabURL)
+        return try compactVocabulary(from: entries)
+    }
+
+    private static func encodedHunyuanTiktokenVocabulary(from vocabURL: URL) throws -> [String] {
+        let entries = try HunyuanTiktokenTokenizer.vocabularyEntries(from: vocabURL)
         return try compactVocabulary(from: entries)
     }
 

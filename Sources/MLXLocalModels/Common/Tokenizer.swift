@@ -85,6 +85,17 @@ private struct TokenizerConfigLoader {
                     tokenizer: tokenizer
                 )
             }
+            if let tokenizer = try HunyuanTiktokenTokenizer.load(
+                from: configuration.modelDirectory(hub: hub)
+            ) {
+                return TokenizerConfigFiles(
+                    tokenizerConfig: Config([
+                        "tokenizer_class": Config("HunyuanTiktokenTokenizer")
+                    ]),
+                    tokenizerData: nil,
+                    tokenizer: tokenizer
+                )
+            }
             if let tokenizer = try SentencePieceModelTokenizer.load(
                 from: configuration.modelDirectory(hub: hub)
             ) {
