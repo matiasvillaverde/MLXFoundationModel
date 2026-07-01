@@ -38,6 +38,7 @@ struct MLXRealModelCatalogTests {
         let qwen3Next = try #require(models.first { $0.id == "qwen3-next" })
         let qwen35MoE = try #require(models.first { $0.id == "qwen3.5-moe" })
         let gemma3nE2BBF16 = try #require(models.first { $0.id == "gemma-3n-e2b-it-lm-bf16" })
+        let teleChat3 = try #require(models.first { $0.id == "telechat3-36b-thinking-4bit" })
 
         #expect(gptOSS.minimumMemoryGB == 48)
         #expect(gptOSS.minimumDiskGB == 14)
@@ -49,6 +50,8 @@ struct MLXRealModelCatalogTests {
         #expect(qwen35MoE.minimumDiskGB == 28)
         #expect(gemma3nE2BBF16.minimumMemoryGB == 48)
         #expect(gemma3nE2BBF16.minimumDiskGB == 8)
+        #expect(teleChat3.minimumMemoryGB == 48)
+        #expect(teleChat3.minimumDiskGB == 24)
     }
 
     @Test("large downloadable catalog entries declare resource requirements")
@@ -218,7 +221,8 @@ private let kExpectedCatalogArchitectures: Set<String> = [
     "solar_open",
     "smollm3",
     "stablelm",
-    "starcoder2"
+    "starcoder2",
+    "telechat3"
 ]
 
 private let kExpectedMainCatalogArchitectures: Set<String> = [

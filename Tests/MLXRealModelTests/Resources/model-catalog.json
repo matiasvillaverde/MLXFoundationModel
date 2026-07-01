@@ -1276,6 +1276,19 @@
     "tags": ["registry-only"]
   },
   {
+    "id": "telechat3-36b-thinking-4bit",
+    "displayName": "TeleChat3 36B Thinking 4-bit",
+    "architecture": "telechat3",
+    "repository": "mlx-community/TeleChat3-36B-Thinking-4bit",
+    "relativePath": "TeleChat3-36B-Thinking-4bit",
+    "prompt": "Write one short sentence about local inference.",
+    "expectedTokens": ["local", "inference", "model"],
+    "maxTokens": 8,
+    "minimumMemoryGB": 48,
+    "minimumDiskGB": 24,
+    "tags": ["parity", "large"]
+  },
+  {
     "id": "apertus",
     "displayName": "Apertus",
     "architecture": "apertus",
