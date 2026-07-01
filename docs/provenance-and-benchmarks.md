@@ -208,11 +208,11 @@ gate. The test runner selected 52 downloadable models and skipped 9 oversized
 models on this 32 GB host. Each selected model ran serialized generation,
 rendered session requests, and token-level grammar constraint checks.
 
-A follow-up serialized `main` sweep on 2026-07-01 selected 37 downloadable
+A follow-up serialized `main` sweep on 2026-07-01 selected 38 downloadable
 models, including DeepSeek, DeepSeek V2, EXAONE 3.5, GraniteMoE, Helium,
-Hunyuan V1 Dense, InternLM3, Jamba, Mamba, Mamba2, Mixtral, Qwen, and GLM, and
-passed generation, rendered session, token grammar, and configured stress
-checks.
+Hunyuan V1 Dense, InternLM3, Jamba, Mamba, Mamba2, Mixtral, Phixtral, Qwen, and
+GLM, and passed generation, rendered session, token grammar, and configured
+stress checks.
 
 The current sweep adds 32 GB-friendly checkpoints for `qwen3_moe`, `mistral`,
 `gpt_oss`, `qwen3_5_moe`, and `nemotron_h`. These entries also run the stress
@@ -238,6 +238,11 @@ sweep on this host.
 
 Hunyuan V1 Dense parity was added with `tencent/Hunyuan-MT-7B`. The checkpoint
 is 15 GB on disk and passed targeted release generation, rendered session
+requests, token grammar constraints, stress generation, and the serialized
+`main` architecture sweep on this host.
+
+Phixtral parity was added with `mlabonne/phixtral-2x2_8`. The checkpoint is
+8.3 GB on disk and passed targeted release generation, rendered session
 requests, token grammar constraints, stress generation, and the serialized
 `main` architecture sweep on this host.
 
@@ -447,6 +452,23 @@ Best stress iterations from the same runs:
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `hunyuan_v1_dense` | `hunyuan-mt-7b` targeted | 32 | 1.5269 | 0.1150 | 1.4119 | 22.66 | 20.96 |
 | `hunyuan_v1_dense` | `hunyuan-mt-7b` main | 32 | 1.5290 | 0.1149 | 1.4142 | 22.63 | 20.93 |
+
+## Phixtral Parity Check
+
+These rows come from the targeted release Phixtral run and the serialized debug
+`main` sweep on 2026-07-01.
+
+| Architecture | Model | Generated | Prompt | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `phixtral` | `phixtral-2x2_8` release targeted | 4 | 23 | 0.5923 | 0.4387 | 0.1536 | 26.04 | 6.75 |
+| `phixtral` | `phixtral-2x2_8` debug main | 4 | 23 | 0.5458 | 0.2573 | 0.2885 | 13.86 | 7.33 |
+
+Best stress iterations from the same runs:
+
+| Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `phixtral` | `phixtral-2x2_8` release targeted | 32 | 0.9589 | 0.0962 | 0.8627 | 37.09 | 33.37 |
+| `phixtral` | `phixtral-2x2_8` debug main | 32 | 1.2686 | 0.1056 | 1.1630 | 27.52 | 25.23 |
 
 ## MiniCPM3 Parity Check
 

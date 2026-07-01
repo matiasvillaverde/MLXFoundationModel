@@ -57,7 +57,6 @@ Legacy and compatibility gaps:
 - `rwkv7`
 - `solar_open`
 - `plamo`, `plamo2`
-- `phixtral`
 - `mellum`
 - `iquestloopcoder`
 - `telechat3`
