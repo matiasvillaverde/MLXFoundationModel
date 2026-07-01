@@ -250,30 +250,16 @@ private enum GLM4MoELiteExpertProjection: String, CaseIterable {
     case up = "up_proj"
 }
 
-internal struct GLM4MoELiteKVProjectionSplitPlan: Equatable, Sendable {
-    internal let headCount: Int
-    internal let qkNopeHeadDim: Int
-    internal let valueHeadDim: Int
-    internal let kvLoraRank: Int
+internal typealias GLM4MoELiteKVProjectionSplitPlan = MLAKVProjectionSplitPlan
 
+extension MLAKVProjectionSplitPlan {
     internal init(_ config: GLM4MoELiteConfiguration) {
-        self.headCount = config.attentionHeads
-        self.qkNopeHeadDim = config.qkNopeHeadDim
-        self.valueHeadDim = config.vHeadDim
-        self.kvLoraRank = config.kvLoraRank
-    }
-
-    internal var combinedHeadDim: Int {
-        qkNopeHeadDim + valueHeadDim
-    }
-
-    internal func split(weight: MLXArray) -> (embedQ: MLXArray, unembedOut: MLXArray) {
-        let reshaped = weight.reshaped(headCount, combinedHeadDim, -1)
-        let embedQ = contiguous(
-            reshaped[0..., ..<qkNopeHeadDim, 0...].swappedAxes(-1, -2)
+        self.init(
+            headCount: config.attentionHeads,
+            keyHeadDimensions: config.qkNopeHeadDim,
+            valueHeadDimensions: config.vHeadDim,
+            latentDimensions: config.kvLoraRank
         )
-        let unembedOut = contiguous(reshaped[0..., qkNopeHeadDim..., 0...])
-        return (embedQ, unembedOut)
     }
 }
 
@@ -351,8 +337,8 @@ internal struct GLM4MoELiteSanitizerPlan: Equatable, Sendable {
                 weights[weightKey] = projection
                 return
             }
-            inferredBits = (projection.dim(-1) * 32) / kvProjection.kvLoraRank
-            inferredGroupSize = kvProjection.kvLoraRank / scales.dim(-1)
+            inferredBits = (projection.dim(-1) * 32) / kvProjection.latentDimensions
+            inferredGroupSize = kvProjection.latentDimensions / scales.dim(-1)
             projection = dequantized(
                 projection,
                 scales: scales,
@@ -399,111 +385,9 @@ internal struct GLM4MoELiteSanitizerPlan: Equatable, Sendable {
 
 // MARK: - Multi-head projections
 
-internal protocol GLM4MoELiteHeadProjection {
-    func project(_ x: MLXArray, transposedWeight: Bool) -> MLXArray
-}
-
-internal final class GLM4MoELiteHeadLinear: Module, Quantizable, GLM4MoELiteHeadProjection {
-    let inputDims: Int
-    let outputDims: Int
-    let headCount: Int
-
-    @ParameterInfo(key: "weight") var weight: MLXArray
-
-    init(inputDims: Int, outputDims: Int, headCount: Int) {
-        self.inputDims = inputDims
-        self.outputDims = outputDims
-        self.headCount = headCount
-
-        let scale = sqrt(1.0 / Float(inputDims))
-        _weight.wrappedValue = MLXRandom.uniform(
-            low: -scale,
-            high: scale,
-            [headCount, outputDims, inputDims]
-        )
-        super.init()
-    }
-
-    func project(_ x: MLXArray, transposedWeight: Bool = true) -> MLXArray {
-        if transposedWeight {
-            return x.matmul(weight.swappedAxes(-1, -2))
-        }
-        return x.matmul(weight)
-    }
-
-    internal func toQuantized(groupSize: Int, bits: Int, mode: QuantizationMode) -> Module {
-        GLM4MoELiteQuantizedHeadLinear(
-            weight: weight,
-            groupSize: groupSize,
-            bits: bits,
-            mode: mode
-        )
-    }
-}
-
-internal final class GLM4MoELiteQuantizedHeadLinear: Module, Quantized, GLM4MoELiteHeadProjection {
-    internal let groupSize: Int
-    internal let bits: Int
-    internal let mode: QuantizationMode
-
-    @ParameterInfo(key: "weight") var weight: MLXArray
-    @ParameterInfo(key: "scales") var scales: MLXArray
-    @ParameterInfo(key: "biases") var biases: MLXArray?
-
-    init(
-        weight: MLXArray,
-        groupSize: Int,
-        bits: Int,
-        mode: QuantizationMode = .affine
-    ) {
-        self.groupSize = groupSize
-        self.bits = bits
-        self.mode = mode
-
-        let (quantizedWeight, scales, biases) = MLX.quantized(
-            weight, groupSize: groupSize, bits: bits, mode: mode
-        )
-        _weight.wrappedValue = quantizedWeight
-        _scales.wrappedValue = scales
-        _biases.wrappedValue = biases
-
-        super.init()
-        self.freeze()
-    }
-
-    init(
-        weight: MLXArray,
-        scales: MLXArray,
-        biases: MLXArray?,
-        groupSize: Int,
-        bits: Int,
-        mode: QuantizationMode = .affine
-    ) {
-        self.groupSize = groupSize
-        self.bits = bits
-        self.mode = mode
-
-        _weight.wrappedValue = weight
-        _scales.wrappedValue = scales
-        _biases.wrappedValue = biases
-
-        super.init()
-        self.freeze()
-    }
-
-    func project(_ x: MLXArray, transposedWeight: Bool = true) -> MLXArray {
-        return quantizedMM(
-            x,
-            weight,
-            scales: scales,
-            biases: biases,
-            transpose: transposedWeight,
-            groupSize: groupSize,
-            bits: bits,
-            mode: mode
-        )
-    }
-}
+internal typealias GLM4MoELiteHeadProjection = HeadProjection
+internal typealias GLM4MoELiteHeadLinear = HeadLinear
+internal typealias GLM4MoELiteQuantizedHeadLinear = QuantizedHeadLinear
 
 // MARK: - GLM DSA Indexer Schedule
 

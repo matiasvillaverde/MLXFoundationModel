@@ -57,6 +57,7 @@ struct MLXSupportedArchitectureTests {
         "internlm2",
         "jamba",
         "jamba_3b",
+        "kimi_k25",
         "lfm2",
         "lfm2_moe",
         "lille-130m",

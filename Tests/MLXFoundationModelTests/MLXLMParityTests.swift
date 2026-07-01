@@ -128,7 +128,6 @@ struct MLXLMParityTests {
         "afm7",
         "bailing_moe_linear",
         "iquestloopcoder",
-        "kimi_k25",
         "kimi_linear",
         "longcat_flash",
         "longcat_flash_ngram",

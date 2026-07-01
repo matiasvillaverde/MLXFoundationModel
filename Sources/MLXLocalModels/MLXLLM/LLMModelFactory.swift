@@ -113,6 +113,9 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
             modelType("deepseek_v3", configuration: DeepseekV3Configuration.self) {
                 DeepseekV3Model($0)
             },
+            modelType("kimi_k25", configuration: KimiK25Configuration.self) {
+                KimiK25Model($0)
+            },
             modelType("youtu", "youtu_llm", configuration: YoutuLLMConfiguration.self) {
                 YoutuLLMModel($0)
             },

@@ -33,7 +33,7 @@ Snapshot: `ml-explore/mlx-lm` model modules on 2026-07-01.
 
 Highest priority:
 
-- `kimi_linear`, `kimi_k25`
+- `kimi_linear`
 - `longcat_flash`, `longcat_flash_ngram`
 - `step3p5`
 

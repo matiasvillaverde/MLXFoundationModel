@@ -707,6 +707,19 @@
     "tags": ["relevant", "latest", "large"]
   },
   {
+    "id": "kimi-k2.5-3bit",
+    "displayName": "Kimi K2.5 3-bit",
+    "architecture": "kimi_k25",
+    "repository": "mlx-community/Kimi-K2.5-3bit",
+    "relativePath": "Kimi-K2.5-3bit",
+    "prompt": "Write one short sentence about tool-using language models.",
+    "expectedTokens": ["tool", "model", "language"],
+    "maxTokens": 12,
+    "minimumMemoryGB": 512,
+    "minimumDiskGB": 420,
+    "tags": ["relevant", "latest", "large", "parity"]
+  },
+  {
     "id": "deepseek-moe-16b-chat-4bit",
     "displayName": "DeepSeek MoE 16B Chat 4-bit",
     "architecture": "deepseek",

@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 134 | Safe area for normal refactors. |
+| Files with no source-port marker | 137 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -44,6 +44,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/Common/PlamoTokenizer.swift` | Plamo JSONL vocabulary loading, longest-match encoding, byte fallback, special-token handling, and grammar-vocabulary export. |
 | `Sources/MLXLocalModels/MLXLLM/LLMModel.swift` | Default text-model prefill chunking and adaptive prefill integration. |
 | `Sources/MLXLocalModels/MLXLLM/LLMModelFactory.swift` | LLM type registration, alias grouping, model load progress, generation-token resolution, and trampoline factory. |
+| `Sources/MLXLocalModels/MLXLLM/HeadLinear.swift` | Shared head-wise dense and quantized projections plus MLA KV projection splitting. |
 | `Sources/MLXLocalModels/MLXLLM/Cohere2.swift` | Cohere2 grouped attention, hybrid sliding/full attention schedule, mixed cache planning, tied output head, greedy-token fast path, stale rotary cleanup, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/RWKV7.swift` | RWKV7 time-mixing, channel-mixing, recurrent WKV state updates, Metal recurrence dispatch, tied-head fallback, greedy-token fast path, and cache planning. |
 | `Sources/MLXLocalModels/MLXLLM/GPT2.swift` | GPT-2 learned position embeddings, cache-aware position IDs, pre-norm attention and MLP blocks, raw Transformers sanitizer, tied output head, greedy-token fast path, cache dimensions, and LoRA target discovery. |
@@ -67,7 +68,8 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/Gemma2.swift` | Gemma2 soft-capped attention, grouped KV expansion, decoder block, backbone, greedy-token fast path, config defaults, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Internlm2.swift` | InternLM2 packed attention, dynamic RoPE planning, decoder blocks, greedy-token fast path, config defaults, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/InternLM3.swift` | InternLM3 grouped-query attention, dynamic RoPE planning, checkpoint-compatible module keys, tied-head cleanup, greedy-token fast path, cache dimensions, and LoRA target discovery. |
-| `Sources/MLXLocalModels/MLXLLM/DeepseekV3.swift` | DeepSeek V2/V3 and Youtu MLA attention layout, YaRN and nested-RoPE config planning, grouped MoE routing, tied/untied heads, checkpoint key normalization, cache dimensions, greedy-token fast path, sanitizer packing, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/DeepseekV3.swift` | DeepSeek V2/V3 and Youtu MLA attention layout, split `embed_q`/`unembed_out` decode path, YaRN and nested-RoPE config planning, grouped MoE routing, tied/untied heads, checkpoint key normalization, cache dimensions, greedy-token fast path, sanitizer packing, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/KimiK25.swift` | Kimi K2.5 wrapper configuration, language-model weight unwrapping, multimodal sidecar cleanup, DeepSeek V3 text-stack delegation, cache dimensions, greedy-token fast path, and LoRA target preservation. |
 | `Sources/MLXLocalModels/MLXLLM/Deepseek.swift` | DeepSeek MoE attention layout, top-k expert routing, shared experts, packed expert checkpoint remapping, tied-head cleanup, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Dbrx.swift` | DBRX packed QKV attention, RoPE planning, no-bias LayerNorm, SwitchGLU MoE routing, fused expert checkpoint packing, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Mixtral.swift` | Mixtral grouped-query attention, top-k sparse routing, expert tensor packing, tied-head cleanup, greedy-token fast path, cache dimensions, and LoRA target discovery. |
@@ -194,6 +196,7 @@ Current independence pass:
 - Added EXAONE MoE with mixed sliding/full attention, dense/sparse MLP scheduling, grouped sparse routing, expert packing, mixed cache planning, greedy-token fast path, focused architecture coverage, and a fit-on-32GB architecture checkpoint entry.
 - Added Klear with grouped attention, q/k RMSNorm, sparse expert routing, shared experts, quantized checkpoint sidecar handling, focused architecture coverage, and a 32 GB-host real-model catalog entry.
 - Added Hunyuan with dense and sparse MoE paths, Hunyuan `hy.tiktoken` tokenizer support, grammar-vocabulary export, focused architecture/tokenizer coverage, and a 32 GB-host 7B real-model catalog entry.
+- Added Kimi K2.5 with a wrapper around the DeepSeek V3 text stack, shared head-wise MLA projections, language-model namespace sanitizing, focused architecture coverage, and an oversized real-model catalog entry.
 
 Previous performance pass:
 
@@ -318,6 +321,13 @@ index reports 26.2 GB of weights, so the catalog requires 64 GB RAM and 27 GB
 disk. On this 32 GB host it is correctly skipped by the real-model runner; the
 serialized release `all` architecture sweep still passed for the 86 selected
 models.
+
+Kimi K2.5 parity was added with a focused Swift wrapper over the DeepSeek V3 text
+stack and the current split MLA `embed_q`/`unembed_out` weight layout.
+`mlx-community/Kimi-K2.5-3bit` is cataloged as oversized: its safetensors index
+reports 449,313,304,576 bytes of weights across 91 shards, so the catalog
+requires 512 GB RAM and 420 GiB disk. On this 32 GB host it is expected to be
+skipped by the real-model runner before load.
 
 TeleChat3 parity was added with `mlx-community/TeleChat3-36B-Thinking-4bit`.
 The checkpoint is 19 GB on disk and is cataloged with a 48 GB memory

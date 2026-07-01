@@ -39,6 +39,7 @@ struct MLXRealModelCatalogTests {
         let qwen35MoE = try #require(models.first { $0.id == "qwen3.5-moe" })
         let gemma3nE2BBF16 = try #require(models.first { $0.id == "gemma-3n-e2b-it-lm-bf16" })
         let teleChat3 = try #require(models.first { $0.id == "telechat3-36b-thinking-4bit" })
+        let kimiK25 = try #require(models.first { $0.id == "kimi-k2.5-3bit" })
 
         #expect(gptOSS.minimumMemoryGB == 48)
         #expect(gptOSS.minimumDiskGB == 14)
@@ -52,6 +53,8 @@ struct MLXRealModelCatalogTests {
         #expect(gemma3nE2BBF16.minimumDiskGB == 8)
         #expect(teleChat3.minimumMemoryGB == 48)
         #expect(teleChat3.minimumDiskGB == 24)
+        #expect(kimiK25.minimumMemoryGB == 512)
+        #expect(kimiK25.minimumDiskGB == 420)
     }
 
     @Test("large downloadable catalog entries declare resource requirements")
@@ -195,6 +198,7 @@ private let kExpectedCatalogArchitectures: Set<String> = [
     "internlm2",
     "jamba",
     "jamba_3b",
+    "kimi_k25",
     "lfm2",
     "lfm2_moe",
     "lille-130m",
@@ -318,6 +322,7 @@ private let kExpectedRelevantCatalogArchitectures: Set<String> = [
     "hunyuan",
     "hunyuan_v1_dense",
     "jamba",
+    "kimi_k25",
     "lfm2",
     "lfm2_moe",
     "llama",

@@ -494,7 +494,8 @@ private final class DeepseekV3SelfAttention: Module {
     @ModuleInfo(key: "q_b_proj") private var qBProj: Linear?
     @ModuleInfo(key: "kv_a_proj_with_mqa") private var kvAProjWithMqa: Linear
     @ModuleInfo(key: "kv_a_layernorm") private var kvALayerNorm: RMSNorm
-    @ModuleInfo(key: "kv_b_proj") private var kvBProj: Linear
+    @ModuleInfo(key: "embed_q") private var embedQ: Module
+    @ModuleInfo(key: "unembed_out") private var unembedOut: Module
     @ModuleInfo(key: "o_proj") private var oProj: Linear
 
     init(config: DeepseekV3Configuration) {
@@ -532,10 +533,15 @@ private final class DeepseekV3SelfAttention: Module {
             dimensions: layout.kvLoraRank,
             eps: config.rmsNormEps
         )
-        self._kvBProj.wrappedValue = Linear(
-            layout.kvLoraRank,
-            layout.keyValueProjectionSize,
-            bias: false
+        self._embedQ.wrappedValue = HeadLinear(
+            inputDims: layout.nopeHeadSize,
+            outputDims: layout.kvLoraRank,
+            headCount: layout.attentionHeads
+        )
+        self._unembedOut.wrappedValue = HeadLinear(
+            inputDims: layout.kvLoraRank,
+            outputDims: layout.valueHeadSize,
+            headCount: layout.attentionHeads
         )
         self._oProj.wrappedValue = Linear(
             layout.outputProjectionSize,
@@ -567,42 +573,105 @@ private final class DeepseekV3SelfAttention: Module {
 
         let compressedKeyValues = kvAProjWithMqa(input)
         let compressedParts = split(compressedKeyValues, indices: [layout.kvLoraRank], axis: -1)
-        let latentKeyValues = compressedParts[0]
+        let rawLatentKeyValues = compressedParts[0]
         var keyRope = compressedParts[1]
             .reshaped(batchSize, sequenceLength, 1, layout.ropeHeadSize)
             .transposed(0, 2, 1, 3)
 
-        let projectedKeyValues = kvBProj(kvALayerNorm(latentKeyValues))
-            .reshaped(batchSize, sequenceLength, layout.attentionHeads, -1)
-            .transposed(0, 2, 1, 3)
-        let keyValueParts = split(projectedKeyValues, indices: [layout.nopeHeadSize], axis: -1)
+        var latentKeyValues = expandedDimensions(kvALayerNorm(rawLatentKeyValues), axis: 1)
 
         let offset = cache?.offset ?? 0
         queryRope = rope(queryRope, offset: offset)
         keyRope = rope(keyRope, offset: offset)
 
-        let keys = concatenated(
-            [
-                keyValueParts[0],
-                repeated(keyRope, count: layout.attentionHeads, axis: 1),
-            ],
-            axis: -1
-        )
-        let values = keyValueParts[1]
-        let finalQueries = concatenated([queryParts[0], queryRope], axis: -1)
+        if let cache {
+            let updated = updateCacheReturningMaterializedKV(
+                keys: latentKeyValues,
+                values: keyRope,
+                cache: cache
+            )
+            latentKeyValues = updated.keys
+            keyRope = updated.values
+        }
 
-        let output = attentionWithCacheUpdate(
-            queries: finalQueries,
-            keys: keys,
-            values: values,
-            cache: cache,
-            scale: attentionScale,
-            mask: mask
-        )
-        .transposed(0, 2, 1, 3)
-        .reshaped(batchSize, sequenceLength, -1)
+        let ropeScores = (queryRope * attentionScale).matmul(keyRope.swappedAxes(-1, -2))
+        let additiveMask = Self.attentionMask(scores: ropeScores, baseMask: mask)
+
+        let attended: MLXArray
+        if sequenceLength == 1 {
+            let projectedQueries = projectHead(embedQ, queryParts[0])
+            attended = projectHead(
+                unembedOut,
+                MLXFast.scaledDotProductAttention(
+                    queries: projectedQueries,
+                    keys: latentKeyValues,
+                    values: latentKeyValues,
+                    scale: attentionScale,
+                    mask: additiveMask
+                )
+            )
+        } else {
+            attended = MLXFast.scaledDotProductAttention(
+                queries: queryParts[0],
+                keys: projectHead(embedQ, latentKeyValues, transposedWeight: false),
+                values: projectHead(unembedOut, latentKeyValues),
+                scale: attentionScale,
+                mask: additiveMask
+            )
+        }
+        let output = attended
+            .transposed(0, 2, 1, 3)
+            .reshaped(batchSize, sequenceLength, -1)
 
         return oProj(output)
+    }
+
+    private func projectHead(
+        _ module: Module,
+        _ input: MLXArray,
+        transposedWeight: Bool = true
+    ) -> MLXArray {
+        guard let projection = module as? HeadProjection else {
+            preconditionFailure("Unsupported DeepSeek V3 MLA projection module: \(type(of: module))")
+        }
+        return projection.project(input, transposedWeight: transposedWeight)
+    }
+
+    private static func attentionMask(
+        scores: MLXArray,
+        baseMask: MLXFast.ScaledDotProductAttentionMaskMode
+    ) -> MLXFast.ScaledDotProductAttentionMaskMode {
+        switch baseMask {
+        case .none:
+            return .array(scores)
+        case .causal:
+            let queryLength = scores.dim(-2)
+            let keyLength = scores.dim(-1)
+            let queryPositions = MLXArray(0 ..< queryLength) + MLXArray(keyLength - queryLength)
+            let keyPositions = MLXArray(0 ..< keyLength)
+            let causalMask = greaterEqual(
+                expandedDimensions(queryPositions, axis: -1),
+                expandedDimensions(keyPositions, axis: -2)
+            )
+            return .array(MLX.where(
+                causalMask,
+                scores,
+                attentionMaskFillValue(dtype: scores.dtype)
+            ))
+        case .array(let mask):
+            return .array(applying(mask: mask, to: scores))
+        case .arrays(let masks):
+            return .array(masks.reduce(scores) { currentScores, mask in
+                applying(mask: mask, to: currentScores)
+            })
+        }
+    }
+
+    private static func applying(mask: MLXArray, to scores: MLXArray) -> MLXArray {
+        if mask.dtype == .bool {
+            return MLX.where(mask, scores, attentionMaskFillValue(dtype: scores.dtype))
+        }
+        return scores + mask
     }
 }
 
@@ -890,6 +959,10 @@ internal final class DeepseekV3Model: Module, LLMModel, KVCacheDimensionProvider
                     sanitized["\(prefix).switch_mlp.\(projection).\(key)"] = stacked(expertWeights)
                 }
             }
+            splitKVProjection(
+                prefix: "model.layers.\(layerIndex).self_attn",
+                into: &sanitized
+            )
         }
 
         return sanitized.filter { key, _ in
@@ -912,6 +985,67 @@ internal final class DeepseekV3Model: Module, LLMModel, KVCacheDimensionProvider
             return lmHead(hiddenStates)
         }
         return model.embedTokens.asLinear(hiddenStates)
+    }
+
+    private func splitKVProjection(prefix: String, into weights: inout [String: MLXArray]) {
+        let weightKey = "\(prefix).kv_b_proj.weight"
+        guard var projection = weights.removeValue(forKey: weightKey) else {
+            return
+        }
+
+        let scalesKey = "\(prefix).kv_b_proj.scales"
+        let biasesKey = "\(prefix).kv_b_proj.biases"
+        let isQuantized = weights[scalesKey] != nil
+        var inferredBits = 0
+        var inferredGroupSize = 0
+
+        if isQuantized {
+            guard
+                let scales = weights.removeValue(forKey: scalesKey),
+                let biases = weights.removeValue(forKey: biasesKey)
+            else {
+                weights[weightKey] = projection
+                return
+            }
+            inferredBits = (projection.dim(-1) * 32) / config.kvLoraRank
+            inferredGroupSize = config.kvLoraRank / scales.dim(-1)
+            projection = dequantized(
+                projection,
+                scales: scales,
+                biases: biases,
+                groupSize: inferredGroupSize,
+                bits: inferredBits
+            )
+        }
+
+        var split = MLAKVProjectionSplitPlan(
+            headCount: config.numAttentionHeads,
+            keyHeadDimensions: config.qkNopeHeadDim,
+            valueHeadDimensions: config.vHeadDim,
+            latentDimensions: config.kvLoraRank
+        )
+        .split(weight: projection)
+
+        if isQuantized {
+            let (embedQ, embedQScales, embedQBiases) = MLX.quantized(
+                split.embedQ,
+                groupSize: inferredGroupSize,
+                bits: inferredBits
+            )
+            let (unembedOut, unembedOutScales, unembedOutBiases) = MLX.quantized(
+                split.unembedOut,
+                groupSize: inferredGroupSize,
+                bits: inferredBits
+            )
+            weights["\(prefix).embed_q.scales"] = embedQScales
+            weights["\(prefix).embed_q.biases"] = embedQBiases
+            weights["\(prefix).unembed_out.scales"] = unembedOutScales
+            weights["\(prefix).unembed_out.biases"] = unembedOutBiases
+            split = (embedQ, unembedOut)
+        }
+
+        weights["\(prefix).embed_q.weight"] = split.embedQ
+        weights["\(prefix).unembed_out.weight"] = split.unembedOut
     }
 
     private static func isExtraPredictorLayer(_ key: String, layerCount: Int) -> Bool {
