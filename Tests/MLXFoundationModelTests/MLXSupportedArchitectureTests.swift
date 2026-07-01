@@ -27,6 +27,7 @@ struct MLXSupportedArchitectureTests {
         "ernie4_5_moe",
         "exaone",
         "exaone4",
+        "exaone_moe",
         "falcon_h1",
         "gemma",
         "gemma2",

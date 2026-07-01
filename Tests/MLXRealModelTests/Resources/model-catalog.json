@@ -595,6 +595,19 @@
     "tags": ["main", "relevant", "small", "parity", "stress"]
   },
   {
+    "id": "exaone-moe-dummy-7b-a1b",
+    "displayName": "EXAONE MoE Dummy 7B-A1B",
+    "architecture": "exaone_moe",
+    "repository": "nuxlear/EXAONE-MoE-Dummy-7B-A1B",
+    "relativePath": "EXAONE-MoE-Dummy-7B-A1B",
+    "prompt": "Write one short sentence about sparse expert models.",
+    "expectedTokens": ["sparse", "expert", "model"],
+    "maxTokens": 8,
+    "minimumMemoryGB": 24,
+    "minimumDiskGB": 14,
+    "tags": ["main", "relevant", "small-fit", "parity", "stress"]
+  },
+  {
     "id": "ernie-4.5-0.3b-bf16",
     "displayName": "ERNIE 4.5 0.3B BF16",
     "architecture": "ernie4_5",

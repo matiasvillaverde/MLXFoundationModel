@@ -162,6 +162,9 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
             },
             modelType("exaone", configuration: ExaoneConfiguration.self) { ExaoneModel($0) },
             modelType("exaone4", configuration: Exaone4Configuration.self) { Exaone4Model($0) },
+            modelType("exaone_moe", configuration: ExaoneMoEConfiguration.self) {
+                ExaoneMoEModel($0)
+            },
             modelType("gpt_oss", configuration: GPTOSSConfiguration.self) { GPTOSSModel($0) },
             modelType("gpt2", configuration: GPT2Configuration.self) { GPT2Model($0) },
             modelType("gpt_bigcode", configuration: GPTBigCodeConfiguration.self) {

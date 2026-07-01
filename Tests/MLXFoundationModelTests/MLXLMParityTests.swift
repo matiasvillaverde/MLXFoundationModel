@@ -130,7 +130,6 @@ struct MLXLMParityTests {
         "afm7",
         "bailing_moe_linear",
         "dbrx",
-        "exaone_moe",
         "hunyuan",
         "iquestloopcoder",
         "kimi_k25",
