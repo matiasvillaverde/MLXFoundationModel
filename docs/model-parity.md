@@ -41,7 +41,6 @@ Highest priority:
 
 MoE and recent family gaps:
 
-- `Klear`
 - `hunyuan`
 - `bailing_moe_linear`
 - `afm7`

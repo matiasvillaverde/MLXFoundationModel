@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 129 | Safe area for normal refactors. |
+| Files with no source-port marker | 130 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -80,6 +80,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/Llama.swift` | Llama/Mistral attention layout, linear/dynamic/Llama 3 RoPE planning, decoder block, backbone, tied/untied output heads, greedy-token fast path, config validation, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Exaone.swift` | EXAONE 3.x grouped-query attention, llama3 RoPE scaling, SwiGLU feed-forward blocks, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/ExaoneMoE.swift` | EXAONE MoE mixed sliding/full attention, dense/sparse MLP layer planning, grouped expert routing, expert packing, mixed cache planning, tied/untied heads, greedy-token fast path, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/Klear.swift` | Klear grouped-query attention, q/k RMSNorm, dense and sparse MoE layers, bias-assisted top-k routing, shared experts, tied-head cleanup, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Phi3.swift` | Phi3 packed QKV attention, RoPE/LongRoPE planning, decoder block, backbone, tied/untied output heads, greedy-token fast path, config defaults, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Phi3Small.swift` | Phi-3-small packed QKV attention, block-sparse attention planning, MuP scaling, GeGELU feed-forward blocks, tied output head, dummy-token suppression, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Phi.swift` | Phi attention layout, decoder block, backbone, greedy-token fast path, configuration defaults, and LoRA target discovery. |
@@ -185,6 +186,7 @@ Current independence pass:
 - Added PLaMo 2 with hybrid Mamba/attention blocks, JSONL tokenizer support, grammar-vocabulary export, mixed-cache planning, checkpoint sanitizing, focused architecture/tokenizer coverage, and real PLaMo 2 1B validation.
 - Added TeleChat3 with grouped attention, TeleChat3 YaRN RoPE scaling, SwiGLU feed-forward blocks, tied-head cleanup, greedy-token fast path, focused architecture coverage, and an oversized real-model catalog entry.
 - Added EXAONE MoE with mixed sliding/full attention, dense/sparse MLP scheduling, grouped sparse routing, expert packing, mixed cache planning, greedy-token fast path, focused architecture coverage, and a fit-on-32GB architecture checkpoint entry.
+- Added Klear with grouped attention, q/k RMSNorm, sparse expert routing, shared experts, quantized checkpoint sidecar handling, focused architecture coverage, and a 32 GB-host real-model catalog entry.
 
 Previous performance pass:
 
@@ -225,14 +227,14 @@ oversized models on this 32 GB host. Each selected model ran serialized
 generation, rendered session requests, and token-level grammar constraint
 checks.
 
-A serialized release `main` sweep on 2026-07-01 selected 45 downloadable
+A serialized release `main` sweep on 2026-07-01 selected 46 downloadable
 models, including Cohere2, DeepSeek, DeepSeek V2, ERNIE 4.5 MoE, EXAONE 3.5,
-EXAONE MoE, GraniteMoE, Helium, Hunyuan V1 Dense, InternLM3, Jamba, Mamba,
+EXAONE MoE, GraniteMoE, Helium, Hunyuan V1 Dense, InternLM3, Jamba, Klear, Mamba,
 Mamba2, Mixtral, PLaMo 2, Phixtral, Qwen, RWKV7, Seed OSS, and GLM, and passed
 generation, rendered session, token grammar, and configured stress checks.
 
-The latest `main` sweep adds the 32 GB-friendly `exaone_moe` checkpoint and
-keeps the 32 GB-friendly coverage for `plamo2`, `ernie4_5_moe`, `qwen3_moe`,
+The latest `main` sweep adds the 32 GB-host `klear` checkpoint and keeps the
+32 GB-friendly coverage for `exaone_moe`, `plamo2`, `ernie4_5_moe`, `qwen3_moe`,
 `mistral`, `gpt_oss`, `qwen3_5_moe`, and `nemotron_h`. These entries also run
 the stress test, which preloads one session and repeats generation on that same
 session.
@@ -352,6 +354,13 @@ public architecture checkpoint, not a quality language model. The checkpoint is
 13 GB on disk and passed targeted release generation, rendered session
 requests, token grammar constraints, 32-token stress generation, and the
 serialized release `main` architecture sweep on this host.
+
+Klear parity was added with `mlx-community/Klear-46B-A2.5B-Instruct-3bit`.
+The checkpoint is 19 GB on disk and passed targeted release generation,
+rendered session requests, token grammar constraints, stress generation, and
+the serialized release `main` architecture sweep on this 32 GB host. Its catalog
+entry disables the load preflight guard because macOS reported a lower live
+available-memory ceiling than the serialized run could actually use.
 
 StableLM parity was added with `mlx-community/stablelm-2-zephyr-1_6b-4bit`.
 The checkpoint is 1.1 GB on disk and passed targeted real-model generation,
@@ -481,6 +490,24 @@ stress row:
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `exaone_moe` | `exaone-moe-dummy-7b-a1b` release targeted | 32 | 0.2973 | 0.0560 | 0.2412 | 132.66 | 107.65 |
 | `exaone_moe` | `exaone-moe-dummy-7b-a1b` release main | 32 | 0.8723 | 0.6008 | 0.2715 | 117.84 | 36.68 |
+
+## Klear Parity Check
+
+These rows come from targeted and serialized release `main` Klear runs on
+2026-07-01. The stress prompt allowed 32 tokens; this checkpoint stopped after
+22 generated tokens in both recorded stress runs.
+
+| Architecture | Model | Generated | Prompt | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `Klear` | `klear-46b-a2.5b-instruct-3bit` release targeted | 2 | 35 | 7.3016 | 6.0136 | 1.2880 | 1.55 | 0.27 |
+| `Klear` | `klear-46b-a2.5b-instruct-3bit` release main | 2 | 35 | 8.6608 | 7.3324 | 1.3284 | 1.51 | 0.23 |
+
+Best stress iterations from the same runs:
+
+| Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `Klear` | `klear-46b-a2.5b-instruct-3bit` release targeted | 22 | 7.4204 | 5.9152 | 1.5052 | 14.62 | 2.96 |
+| `Klear` | `klear-46b-a2.5b-instruct-3bit` release main | 22 | 7.7702 | 5.0987 | 2.6715 | 8.24 | 2.83 |
 
 ## Qwen Parity Check
 
