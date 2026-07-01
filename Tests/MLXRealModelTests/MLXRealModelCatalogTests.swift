@@ -219,6 +219,7 @@ private let kExpectedCatalogArchitectures: Set<String> = [
     "olmo3",
     "olmoe",
     "openelm",
+    "plamo",
     "plamo2",
     "phi",
     "phi3",

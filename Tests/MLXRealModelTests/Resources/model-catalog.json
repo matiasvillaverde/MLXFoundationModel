@@ -1237,6 +1237,19 @@
     "tags": ["relevant", "latest"]
   },
   {
+    "id": "plamo-13b",
+    "displayName": "PLaMo 13B",
+    "architecture": "plamo",
+    "repository": "pfnet/plamo-13b",
+    "relativePath": "plamo-13b",
+    "prompt": "Write one short sentence about open Japanese language models.",
+    "expectedTokens": ["Japanese", "language", "model"],
+    "maxTokens": 12,
+    "minimumMemoryGB": 64,
+    "minimumDiskGB": 27,
+    "tags": ["legacy", "large", "parity"]
+  },
+  {
     "id": "plamo-2-1b",
     "displayName": "PLaMo 2 1B",
     "architecture": "plamo2",

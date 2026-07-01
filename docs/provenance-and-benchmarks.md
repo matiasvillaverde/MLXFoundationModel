@@ -188,6 +188,7 @@ Current independence pass:
 - Added Mamba2 with gated state-space recurrence, derived intermediate sizing for compact configs, JSON5 checkpoint profile loading, CPU-safe SSM fallback, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 - Added Helium with grouped attention, traditional RoPE, SwiGLU feed-forward blocks, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 - Added RWKV7 with project-owned time-mixing, channel-mixing, recurrent WKV cache updates, a Metal recurrence path, greedy-token fast path, focused architecture/tokenizer coverage, and real Goose 0.1B validation.
+- Added legacy PLaMo with shared-head attention, checkpoint-compatible `model.layers.layers.*` keys, shared-KV cache expansion, tied-head cleanup, greedy-token fast path, focused architecture coverage, and an oversized PLaMo 13B catalog entry.
 - Added PLaMo 2 with hybrid Mamba/attention blocks, JSONL tokenizer support, grammar-vocabulary export, mixed-cache planning, checkpoint sanitizing, focused architecture/tokenizer coverage, and real PLaMo 2 1B validation.
 - Added TeleChat3 with grouped attention, TeleChat3 YaRN RoPE scaling, SwiGLU feed-forward blocks, tied-head cleanup, greedy-token fast path, focused architecture coverage, and an oversized real-model catalog entry.
 - Added EXAONE MoE with mixed sliding/full attention, dense/sparse MLP scheduling, grouped sparse routing, expert packing, mixed cache planning, greedy-token fast path, focused architecture coverage, and a fit-on-32GB architecture checkpoint entry.
@@ -310,6 +311,13 @@ PLaMo 2 parity was added with `mlx-community/plamo-2-1b`. The checkpoint is
 requests, token grammar constraints, stress generation, the serialized release
 `main` architecture sweep, and the serialized release `all` architecture sweep
 on this host.
+
+Legacy PLaMo parity was added with a focused Swift architecture implementation.
+`pfnet/plamo-13b` is cataloged as an oversized BF16 checkpoint: its safetensors
+index reports 26.2 GB of weights, so the catalog requires 64 GB RAM and 27 GB
+disk. On this 32 GB host it is correctly skipped by the real-model runner; the
+serialized release `all` architecture sweep still passed for the 86 selected
+models.
 
 TeleChat3 parity was added with `mlx-community/TeleChat3-36B-Thinking-4bit`.
 The checkpoint is 19 GB on disk and is cataloged with a 48 GB memory
