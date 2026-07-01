@@ -42,6 +42,9 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
                 Phi3SmallModel($0)
             },
             modelType("phimoe", configuration: PhiMoEConfiguration.self) { PhiMoEModel($0) },
+            modelType("phixtral", "phi-msft", configuration: PhixtralConfiguration.self) {
+                PhixtralModel($0)
+            },
             modelType("gemma", configuration: GemmaConfiguration.self) { GemmaModel($0) },
             modelType("gemma2", configuration: Gemma2Configuration.self) { Gemma2Model($0) },
             modelType("gemma3", "gemma3_text", configuration: Gemma3TextConfiguration.self) {

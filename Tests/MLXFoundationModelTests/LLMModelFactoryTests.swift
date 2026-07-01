@@ -18,7 +18,9 @@ struct LLMModelFactoryTests {
             "gemma4_assistant",
             "gemma4_unified_assistant",
             "glm4_moe_lite",
-            "glm_moe_dsa"
+            "glm_moe_dsa",
+            "phixtral",
+            "phi-msft"
         ]))
     }
 

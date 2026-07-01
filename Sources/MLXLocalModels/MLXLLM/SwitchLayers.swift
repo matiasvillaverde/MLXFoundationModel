@@ -123,6 +123,68 @@ internal final class SwitchGLU: Module {
     }
 }
 
+// MARK: - SwitchMLP
+
+internal final class SwitchMLP: Module {
+    @ModuleInfo(key: "fc1") private var upProjection: SwitchLinear
+    @ModuleInfo(key: "fc2") private var downProjection: SwitchLinear
+
+    let inputDims: Int
+    let hiddenDims: Int
+    let numExperts: Int
+    let activation: (MLXArray) -> MLXArray
+
+    init(
+        inputDims: Int,
+        hiddenDims: Int,
+        numExperts: Int,
+        activation: @escaping (MLXArray) -> MLXArray = GELU(approximation: .precise).callAsFunction,
+        bias: Bool = false
+    ) {
+        self.inputDims = inputDims
+        self.hiddenDims = hiddenDims
+        self.numExperts = numExperts
+        self.activation = activation
+
+        self._upProjection.wrappedValue = SwitchLinear(
+            inputDims: inputDims,
+            outputDims: hiddenDims,
+            numExperts: numExperts,
+            bias: bias
+        )
+        self._downProjection.wrappedValue = SwitchLinear(
+            inputDims: hiddenDims,
+            outputDims: inputDims,
+            numExperts: numExperts,
+            bias: bias
+        )
+
+        super.init()
+    }
+
+    func callAsFunction(_ x: MLXArray, _ indices: MLXArray) -> MLXArray {
+        let routedInput = MLX.expandedDimensions(x, axes: [-2, -3])
+
+        let sortedDispatch = SwitchExpertDispatch.shouldSort(expertIndices: indices)
+        let permutation = sortedDispatch
+            ? SwitchExpertPermutation(input: routedInput, expertIndices: indices)
+            : nil
+
+        let expertInput = permutation?.sortedInput ?? routedInput
+        let expertIndices = permutation?.sortedExpertIndices ?? indices
+        let expertOutput = downProjection(
+            activation(upProjection(expertInput, expertIndices, sortedIndices: sortedDispatch)),
+            expertIndices,
+            sortedIndices: sortedDispatch
+        )
+
+        return MLX.squeezed(
+            permutation?.restore(expertOutput) ?? expertOutput,
+            axis: -2
+        )
+    }
+}
+
 internal class SwitchLinear: Module, Quantizable {
     @ModuleInfo(key: "weight") var weight: MLXArray
     @ModuleInfo(key: "bias") var bias: MLXArray?
