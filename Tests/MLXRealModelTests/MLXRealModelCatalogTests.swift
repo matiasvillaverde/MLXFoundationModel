@@ -237,6 +237,7 @@ private let kExpectedCatalogArchitectures: Set<String> = [
     "mistral3",
     "nanochat",
     "nemotron",
+    "nemotron-nas",
     "nemotron_h",
     "olmo",
     "olmo2",

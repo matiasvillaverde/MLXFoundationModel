@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 139 | Safe area for normal refactors. |
+| Files with no source-port marker | 140 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -83,6 +83,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/SeedOSS.swift` | Seed OSS grouped-query attention, default RoPE scaling, SwiGLU feed-forward blocks, tied/untied heads, greedy-token fast path, cache dimensions, sanitizer cleanup, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Nemotron.swift` | Nemotron LayerNorm1P, partial-RoPE grouped-query attention, squared-ReLU feed-forward blocks, tied/untied heads, greedy-token fast path, cache dimensions, sanitizer cleanup, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/NemotronH.swift` | Nemotron H typed block scheduling, attention and Mamba layout planning, squared-ReLU dense and routed feed-forward paths, grouped expert routing, mixed cache planning, tied/untied heads, greedy-token fast path, SSM mask use, sanitizer packing, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/NemotronNAS.swift` | Nemotron-NAS heterogeneous layer plans, no-op and linear replacement subblocks, grouped-query attention, tied-head cleanup, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/GLM4MoELite.swift` | GLM4 MoE Lite and GLM DSA attention planning, grouped routing, DSA cache layout, multi-head projection quantization, tied/untied heads, greedy-token fast path, sanitizer packing, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Llama.swift` | Llama/Mistral attention layout, linear/dynamic/Llama 3 RoPE planning, decoder block, backbone, tied/untied output heads, greedy-token fast path, config validation, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Llama4.swift` | Llama 4 text and wrapper config decoding, per-layer RoPE flags, no-scale q/k RMSNorm, dense and top-1 MoE feed-forward blocks, fused expert packing, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
@@ -180,6 +181,7 @@ Current independence pass:
 - Added Mellum with full/sliding attention scheduling, YaRN/default per-layer RoPE selection, q/k RMSNorm, sparse MoE routing, sidecar-aware expert packing, mixed cache planning, greedy-token fast path, LoRA target discovery, and focused config/layout/cache/forward/sanitizer coverage.
 - Added Nemotron with checkpoint-compatible LayerNorm1P, partial-RoPE grouped attention, squared-ReLU MLP blocks, tied-head cleanup, greedy-token fast path, LoRA target discovery, and focused config/layout/norm/cache/forward/sanitizer coverage.
 - Replaced Nemotron H with typed block, cache, attention, Mamba, MoE, and sanitizer plans; fixed array-form `time_step_limit` decoding; added grouped routing, tied-head cleanup, greedy-token fast path, LoRA target discovery, and focused config/layout/routing/cache/forward/sanitizer coverage.
+- Added Nemotron-NAS with heterogeneous no-op, linear-replacement, attention, and feed-forward subblocks, focused config/layout/cache/forward/sanitizer coverage, and a registry-only catalog entry until an exact checkpoint is available.
 - Replaced GLM4 MoE Lite with explicit attention, DSA, layer, routing, projection, and sanitizer plans; registered layers through `@ModuleInfo`; added tied-head cleanup, greedy-token fast path, LoRA target discovery, and focused schedule/layout/routing/cache/sanitizer coverage.
 - Added Seed OSS with grouped-query attention, default RoPE handling, SwiGLU feed-forward blocks, tied-head cleanup, greedy-token fast path, LoRA target discovery, focused config/layout/cache/forward/sanitizer coverage, and a fit-on-32GB 2-bit real-model catalog entry.
 - Added GPT-2 with learned position embeddings, cache-aware position IDs, raw Transformers and MLX-prefixed sanitizer paths, tied output head, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
@@ -282,16 +284,17 @@ in the E2E harness. `samairtimer/MobileLLM-R1-360M-4bit` was not used because
 its published index omits attention tensors. The `llama4` wrapper alias remains
 registry-only until a small complete wrapper checkpoint is available.
 
-`glm4_moe`, `solar_open`, `glm4_moe_lite`, and pure `nemotron` are still
-registry-only in the catalog, and no exact `glm4-moe`, `solar-open`,
-`glm4-moe-lite`, or `nemotron` checkpoint directory is present locally. Solar
+`glm4_moe`, `solar_open`, `glm4_moe_lite`, pure `nemotron`, and `nemotron-nas`
+are still registry-only in the catalog, and no exact `glm4-moe`, `solar-open`,
+`glm4-moe-lite`, `nemotron`, or `nemotron-nas` checkpoint directory is present locally. Solar
 Open uses the same GLM4 MoE implementation path that mlx-lm exposes for
 `solar_open`. The smallest published MLX Solar Open checkpoint found during
 this pass was `mlx-community/Solar-Open-100B-4bit`; `hf download --dry-run`
 reported twelve weight shards of about 57 GB total, so it is intentionally left
 out of the 32 GB E2E sweep. Current small Nemotron MLX search hits are
-`nemotron_h` or `llama` configs, so pure `nemotron` stays registry-only until a
-fit checkpoint is available.
+`nemotron_h` or `llama` configs, and Hugging Face model search returned no exact
+`nemotron-nas` MLX checkpoint, so these stay registry-only until fit checkpoints
+are available.
 
 Qwen2 MoE parity was added with
 `mlx-community/Qwen1.5-MoE-A2.7B-Chat-4bit`. The checkpoint is 7.9 GB on disk

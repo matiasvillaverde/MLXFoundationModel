@@ -227,6 +227,9 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
             modelType("nemotron", configuration: NemotronConfiguration.self) {
                 NemotronModel($0)
             },
+            modelType("nemotron-nas", configuration: NemotronNASConfiguration.self) {
+                NemotronNASModel($0)
+            },
             modelType("mellum", configuration: MellumConfiguration.self) { MellumModel($0) },
             modelType("seed_oss", configuration: SeedOSSConfiguration.self) {
                 SeedOSSModel($0)

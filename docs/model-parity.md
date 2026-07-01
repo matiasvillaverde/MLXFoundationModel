@@ -40,7 +40,6 @@ MoE and recent family gaps:
 
 - `bailing_moe_linear`
 - `afm7`
-- `nemotron-nas`
 
 Legacy and compatibility gaps:
 

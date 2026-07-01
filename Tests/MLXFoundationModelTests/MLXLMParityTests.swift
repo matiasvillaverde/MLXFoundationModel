@@ -128,7 +128,6 @@ struct MLXLMParityTests {
         "afm7",
         "bailing_moe_linear",
         "kimi_linear",
-        "nemotron-nas",
         "recurrent_gemma",
         "step3p5"
     ]

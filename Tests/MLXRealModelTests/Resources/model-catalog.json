@@ -1348,6 +1348,17 @@
     "tags": ["registry-only"]
   },
   {
+    "id": "nemotron-nas",
+    "displayName": "Nemotron-NAS",
+    "architecture": "nemotron-nas",
+    "repository": null,
+    "relativePath": "nemotron-nas",
+    "prompt": "Write one short sentence about searched decoder architectures.",
+    "expectedTokens": ["architecture", "decoder", "model"],
+    "maxTokens": 12,
+    "tags": ["registry-only"]
+  },
+  {
     "id": "mellum2-12b-a2.5b-instruct-4bit",
     "displayName": "Mellum2 12B-A2.5B Instruct 4-bit",
     "architecture": "mellum",
