@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 115 | Safe area for normal refactors. |
+| Files with no source-port marker | 116 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -45,6 +45,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/GPTBigCode.swift` | GPT-BigCode learned position embeddings, multi-query packed attention, raw Transformers sanitizer, tied/untied output heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/GPTNeoX.swift` | GPT-NeoX partial-RoPE packed attention, parallel and sequential residual blocks, raw Transformers sanitizer, tied/untied output heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/StableLM.swift` | StableLM partial-RoPE attention, optional per-head q/k LayerNorm, sequential and parallel residual blocks, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/GLM.swift` | GLM grouped-query attention, traditional RoPE, fused SwiGLU feed-forward blocks, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Helium.swift` | Helium grouped attention, traditional RoPE planning, SwiGLU feed-forward blocks, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/BailingMoe.swift` | Bailing MoE attention layout, sparse routing plan, grouped expert selection, expert packing, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Mistral3Text.swift` | Mistral 3 attention layout, Llama 4 position scaling, full/sliding layer scheduling, cache planning, VLM weight unwrapping, greedy-token fast path, and LoRA target discovery. |
@@ -156,6 +157,7 @@ Current independence pass:
 - Added GPT-BigCode with learned position embeddings, multi-query packed attention, raw Transformers key mapping, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 - Added GPT-NeoX with partial-RoPE packed attention, raw Transformers Pythia key mapping, parallel and sequential residual paths, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 - Added StableLM with partial-RoPE attention, optional per-head q/k LayerNorm matching upstream checkpoint keys, sequential and parallel residual paths, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
+- Added GLM with grouped-query attention, traditional RoPE, fused SwiGLU feed-forward blocks, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 - Added OLMo with affine-free LayerNorm, RoPE attention, HF and legacy mlx-lm config decoding, packed QKV/SwiGLU weight splitting, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 - Added Mamba with selective state-space recurrence, depthwise convolution cache updates, alias-compatible config decoding, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 - Added Mamba2 with gated state-space recurrence, derived intermediate sizing for compact configs, JSON5 checkpoint profile loading, CPU-safe SSM fallback, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
@@ -204,10 +206,10 @@ gate. The test runner selected 52 downloadable models and skipped 9 oversized
 models on this 32 GB host. Each selected model ran serialized generation,
 rendered session requests, and token-level grammar constraint checks.
 
-A follow-up serialized `main` sweep on 2026-07-01 selected 35 downloadable
+A follow-up serialized `main` sweep on 2026-07-01 selected 36 downloadable
 models, including DeepSeek, DeepSeek V2, EXAONE 3.5, GraniteMoE, Helium,
-InternLM3, Jamba, Mamba, Mamba2, Mixtral, and Qwen, and passed generation, rendered
-session, token grammar, and configured stress checks.
+InternLM3, Jamba, Mamba, Mamba2, Mixtral, Qwen, and GLM, and passed generation,
+rendered session, token grammar, and configured stress checks.
 
 The current sweep adds 32 GB-friendly checkpoints for `qwen3_moe`, `mistral`,
 `gpt_oss`, `qwen3_5_moe`, and `nemotron_h`. These entries also run the stress
@@ -225,6 +227,11 @@ Qwen parity was added with `Qwen/Qwen-1_8B`. The checkpoint is 3.4 GB on disk
 and passed targeted release generation, rendered session requests, token grammar
 constraints, stress generation, and the serialized `main` architecture sweep on
 this host.
+
+GLM parity was added with `zai-org/glm-edge-1.5b-chat`. The checkpoint is 3.0 GB
+on disk and passed targeted release generation, rendered session requests, token
+grammar constraints, stress generation, and the serialized `main` architecture
+sweep on this host.
 
 MiniCPM3 parity was added with `mlx-community/MiniCPM3-4B-4bit`. The checkpoint
 is 2.2 GB on disk and passed targeted real-model generation, rendered session
@@ -398,6 +405,23 @@ Best stress iterations from the same runs:
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `qwen` | `qwen-1.8b` release targeted | 32 | 0.3389 | 0.0226 | 0.3163 | 101.17 | 94.41 |
 | `qwen` | `qwen-1.8b` debug main | 32 | 0.4424 | 0.0260 | 0.4164 | 76.86 | 72.33 |
+
+## GLM Parity Check
+
+These rows come from the targeted release GLM run and the serialized release
+`main` sweep on 2026-07-01.
+
+| Architecture | Model | Generated | Prompt | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `glm` | `glm-edge-1.5b-chat` targeted | 4 | 14 | 0.0921 | 0.0429 | 0.0492 | 81.37 | 43.44 |
+| `glm` | `glm-edge-1.5b-chat` main | 4 | 14 | 0.0886 | 0.0394 | 0.0493 | 81.19 | 45.13 |
+
+Best stress iterations from the same runs:
+
+| Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `glm` | `glm-edge-1.5b-chat` targeted | 32 | 0.3393 | 0.0238 | 0.3154 | 101.44 | 94.32 |
+| `glm` | `glm-edge-1.5b-chat` main | 32 | 0.3375 | 0.0234 | 0.3141 | 101.88 | 94.81 |
 
 ## MiniCPM3 Parity Check
 
