@@ -89,6 +89,7 @@ struct MLXSupportedArchitectureTests {
         "qwen3_moe",
         "qwen3_next",
         "rwkv7",
+        "seed_oss",
         "solar_open",
         "smollm3",
         "stablelm",

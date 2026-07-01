@@ -144,7 +144,6 @@ struct MLXLMParityTests {
         "plamo",
         "plamo2",
         "recurrent_gemma",
-        "seed_oss",
         "step3p5",
         "telechat3",
         "youtu_llm"

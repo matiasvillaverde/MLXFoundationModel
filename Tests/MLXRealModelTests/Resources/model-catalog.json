@@ -844,6 +844,19 @@
     "tags": ["main", "relevant", "parity", "small", "stress"]
   },
   {
+    "id": "seed-oss-36b-instruct-2bit",
+    "displayName": "Seed-OSS 36B Instruct 2-bit",
+    "architecture": "seed_oss",
+    "repository": "Open4bits/Seed-OSS-36B-Instruct-mlx-2Bit",
+    "relativePath": "Seed-OSS-36B-Instruct-mlx-2Bit",
+    "prompt": "Write one short sentence about agentic open models.",
+    "expectedTokens": ["open", "model", "agent"],
+    "maxTokens": 18,
+    "minimumMemoryGB": 32,
+    "minimumDiskGB": 12,
+    "tags": ["main", "relevant", "small-fit", "parity", "stress"]
+  },
+  {
     "id": "openelm-270m-instruct",
     "displayName": "OpenELM 270M Instruct",
     "architecture": "openelm",

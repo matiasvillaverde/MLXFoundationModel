@@ -160,6 +160,8 @@ internal struct TokenizerConfigurationRewriter: Sendable {
     }
 
     internal func rewrite(_ tokenizerConfig: Config, tokenizerData: Config?) -> Config {
+        let tokenizerConfig = normalizingChatTemplate(in: tokenizerConfig)
+
         if let tokenizerData,
            tokenizerConfig.tokenizerClass?.string() == "PreTrainedTokenizerFast",
            tokenizerData.model.type.string() == "Unigram" {
@@ -182,6 +184,85 @@ internal struct TokenizerConfigurationRewriter: Sendable {
         }
         dictionary["tokenizer_class"] = Config(replacement)
         return Config(dictionary)
+    }
+
+    private func normalizingChatTemplate(in tokenizerConfig: Config) -> Config {
+        guard var dictionary = tokenizerConfig.dictionary(),
+              let template = dictionary["chat_template"]?.string() else {
+            return tokenizerConfig
+        }
+
+        let normalizedTemplate = ChatTemplateNormalizer.normalize(template)
+        guard normalizedTemplate != template else {
+            return tokenizerConfig
+        }
+
+        dictionary["chat_template"] = Config(normalizedTemplate)
+        return Config(dictionary)
+    }
+}
+
+internal enum ChatTemplateNormalizer {
+    internal static func normalize(_ template: String) -> String {
+        guard template.contains("budget_reflections_v05") else {
+            return template
+        }
+
+        let lines = template.components(separatedBy: .newlines)
+        var rewritten: [String] = []
+        var isRewritingBudgetTable = false
+
+        for line in lines {
+            if line.contains("set budget_reflections_v05 = {") {
+                rewritten.append(line.replacingOccurrences(of: "= {", with: "= ["))
+                isRewritingBudgetTable = true
+                continue
+            }
+
+            if isRewritingBudgetTable {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed == "} -%}" {
+                    rewritten.append(line.replacingOccurrences(of: "} -%}", with: "] -%}"))
+                    isRewritingBudgetTable = false
+                    continue
+                }
+                if let pair = budgetReflectionPair(from: line) {
+                    rewritten.append(pair)
+                    continue
+                }
+            }
+
+            rewritten.append(line)
+        }
+
+        var normalized = rewritten.joined(separator: "\n")
+        normalized = normalized.replacingOccurrences(
+            of: "budget_reflections_v05 | dictsort",
+            with: "budget_reflections_v05"
+        )
+        normalized = normalized.replacingOccurrences(
+            of: "budget_reflections_v05[16384]",
+            with: "1024"
+        )
+        return normalized
+    }
+
+    private static func budgetReflectionPair(from line: String) -> String? {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        let hasTrailingComma = trimmed.last == ","
+
+        let body = hasTrailingComma ? trimmed.dropLast() : trimmed[...]
+        let parts = body.split(separator: ":", maxSplits: 1).map {
+            $0.trimmingCharacters(in: .whitespaces)
+        }
+        guard parts.count == 2,
+              Int(parts[0]) != nil,
+              Int(parts[1]) != nil else {
+            return nil
+        }
+
+        let indentation = String(line.prefix { $0 == " " || $0 == "\t" })
+        return "\(indentation)[\(parts[0]), \(parts[1])]\(hasTrailingComma ? "," : "")"
     }
 }
 
