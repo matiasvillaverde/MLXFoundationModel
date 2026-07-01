@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 122 | Safe area for normal refactors. |
+| Files with no source-port marker | 123 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -72,6 +72,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/Qwen3Next.swift` | Qwen3Next layer scheduling, gated full attention, gated-delta linear attention, MoE routing, expert packing, mixed cache planning, tied/untied heads, greedy-token fast path, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/GraniteMoeHybrid.swift` | Granite MoE Hybrid typed layer scheduling, attention and Mamba layout planning, MoE routing, shared/dense feed-forward remapping, mixed cache planning, tied/untied heads, greedy-token fast path, SSM mask use, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Mellum.swift` | Mellum full/sliding attention scheduling, per-layer RoPE selection, q/k RMSNorm, sparse MoE routing, expert packing, mixed cache planning, tied/untied heads, greedy-token fast path, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/SeedOSS.swift` | Seed OSS grouped-query attention, default RoPE scaling, SwiGLU feed-forward blocks, tied/untied heads, greedy-token fast path, cache dimensions, sanitizer cleanup, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Nemotron.swift` | Nemotron LayerNorm1P, partial-RoPE grouped-query attention, squared-ReLU feed-forward blocks, tied/untied heads, greedy-token fast path, cache dimensions, sanitizer cleanup, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/NemotronH.swift` | Nemotron H typed block scheduling, attention and Mamba layout planning, squared-ReLU dense and routed feed-forward paths, grouped expert routing, mixed cache planning, tied/untied heads, greedy-token fast path, SSM mask use, sanitizer packing, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/GLM4MoELite.swift` | GLM4 MoE Lite and GLM DSA attention planning, grouped routing, DSA cache layout, multi-head projection quantization, tied/untied heads, greedy-token fast path, sanitizer packing, and LoRA target discovery. |
@@ -164,6 +165,7 @@ Current independence pass:
 - Added Nemotron with checkpoint-compatible LayerNorm1P, partial-RoPE grouped attention, squared-ReLU MLP blocks, tied-head cleanup, greedy-token fast path, LoRA target discovery, and focused config/layout/norm/cache/forward/sanitizer coverage.
 - Replaced Nemotron H with typed block, cache, attention, Mamba, MoE, and sanitizer plans; fixed array-form `time_step_limit` decoding; added grouped routing, tied-head cleanup, greedy-token fast path, LoRA target discovery, and focused config/layout/routing/cache/forward/sanitizer coverage.
 - Replaced GLM4 MoE Lite with explicit attention, DSA, layer, routing, projection, and sanitizer plans; registered layers through `@ModuleInfo`; added tied-head cleanup, greedy-token fast path, LoRA target discovery, and focused schedule/layout/routing/cache/sanitizer coverage.
+- Added Seed OSS with grouped-query attention, default RoPE handling, SwiGLU feed-forward blocks, tied-head cleanup, greedy-token fast path, LoRA target discovery, focused config/layout/cache/forward/sanitizer coverage, and a fit-on-32GB 2-bit real-model catalog entry.
 - Added GPT-2 with learned position embeddings, cache-aware position IDs, raw Transformers and MLX-prefixed sanitizer paths, tied output head, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 - Added GPT-BigCode with learned position embeddings, multi-query packed attention, raw Transformers key mapping, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
 - Added GPT-NeoX with partial-RoPE packed attention, raw Transformers Pythia key mapping, parallel and sequential residual paths, tied-head cleanup, greedy-token fast path, and focused config/layout/cache/forward/sanitizer coverage.
@@ -214,15 +216,15 @@ make test-all-architectures
 ## E2E Result
 
 The current all-architecture sweep passed for every model selected by the memory
-gate. The test runner selected 76 local models and skipped 9 oversized models on
+gate. The test runner selected 78 local models and skipped 9 oversized models on
 this 32 GB host. Each selected model ran serialized generation, rendered session
 requests, and token-level grammar constraint checks.
 
-A follow-up serialized `main` sweep on 2026-07-01 selected 40 downloadable
+A follow-up serialized `main` sweep on 2026-07-01 selected 42 downloadable
 models, including Cohere2, DeepSeek, DeepSeek V2, EXAONE 3.5, GraniteMoE,
 Helium, Hunyuan V1 Dense, InternLM3, Jamba, Mamba, Mamba2, Mixtral, Phixtral,
-Qwen, RWKV7, and GLM, and passed generation, rendered session, token grammar,
-and configured stress checks.
+Qwen, RWKV7, Seed OSS, and GLM, and passed generation, rendered session, token
+grammar, and configured stress checks.
 
 The current sweep adds 32 GB-friendly checkpoints for `qwen3_moe`, `mistral`,
 `gpt_oss`, `qwen3_5_moe`, and `nemotron_h`. These entries also run the stress
@@ -355,6 +357,12 @@ InternLM3 parity was added with `mlx-community/internlm3-8b-instruct-4bit`.
 The checkpoint is 4.6 GB on disk and passed targeted release real-model
 generation, rendered session requests, token grammar constraints, and stress
 generation on this host.
+
+Seed OSS parity was added with
+`Open4bits/Seed-OSS-36B-Instruct-mlx-2Bit`. The checkpoint is 11 GB on disk and
+passed targeted release generation, rendered session requests, token grammar
+constraints, stress generation, the serialized `main` architecture sweep, and
+the serialized `all` architecture sweep on this host.
 
 The selected `deepseek-r1-distill-qwen-7b-4bit` checkpoint is a Qwen-distilled
 model; its local `config.json` declares `model_type: qwen2`. The full
@@ -730,6 +738,23 @@ Best decode stress iteration from the same run:
 | Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `internlm3` | `internlm3-8b-instruct-4bit` | 32 | 0.6669 | 0.1146 | 0.5523 | 57.94 | 47.98 |
+
+## Seed OSS Parity Check
+
+These rows come from the targeted release Seed OSS run and the serialized debug
+`all` sweep on 2026-07-01.
+
+| Architecture | Model | Generated | Prompt | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `seed_oss` | `seed-oss-36b-instruct-2bit` release targeted | 4 | 18 | 2.1351 | 1.7696 | 0.3655 | 10.94 | 1.87 |
+| `seed_oss` | `seed-oss-36b-instruct-2bit` debug all | 2 | 18 | 1.1444 | 0.9221 | 0.2223 | 8.99 | 1.75 |
+
+Best stress iterations from the same runs:
+
+| Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `seed_oss` | `seed-oss-36b-instruct-2bit` release targeted | 32 | 3.5508 | 1.5092 | 2.0416 | 15.67 | 9.01 |
+| `seed_oss` | `seed-oss-36b-instruct-2bit` debug all | 32 | 3.3109 | 1.1842 | 2.1267 | 15.05 | 9.66 |
 
 ## Mixtral Parity Check
 
