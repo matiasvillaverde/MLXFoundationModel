@@ -12,7 +12,7 @@ Audit of `Sources/MLXLocalModels/Common` and `Sources/MLXLocalModels/MLXLLM`:
 | --- | ---: | --- |
 | Apple source-level notices | 0 | No Apple source notices remain in the audited paths. |
 | Explicit source-port markers | 0 | Counted from real provenance markers, not ordinary comments that say "based on". |
-| Files with no source-port marker | 123 | Safe area for normal refactors. |
+| Files with no source-port marker | 124 | Safe area for normal refactors. |
 
 Replaced in the current independence pass:
 
@@ -86,6 +86,7 @@ Replaced in the current independence pass:
 | `Sources/MLXLocalModels/MLXLLM/Granite.swift` | Granite attention layout, RoPE scaling plan, residual/embedding/logit scaling, tied/untied heads, greedy-token fast path, config defaults, stable checkpoint keys, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/GraniteMoE.swift` | GraniteMoE attention layout, RoPE scaling plan, top-k expert routing, packed checkpoint remapping, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Ernie4_5.swift` | ERNIE 4.5 attention layout, explicit head-dimension override support, tied/untied heads, greedy-token fast path, config defaults, stable checkpoint keys, and LoRA target discovery. |
+| `Sources/MLXLocalModels/MLXLLM/Ernie4_5MoE.swift` | ERNIE 4.5 MoE dense/sparse layer scheduling, top-k routing, shared experts, expert packing, tied/untied heads, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Olmo2.swift` | OLMo2 attention layout, q/k normalization, checkpoint-compatible `model.*` keys, tied-head sanitizing, greedy-token fast path, cache dimensions, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Olmo3.swift` | OLMo3 sliding/full layer schedule, attention layout, q/k norm, YaRN-vs-sliding RoPE selection, cache layout, tied/untied heads, greedy-token fast path, sanitizer, config defaults, and LoRA target discovery. |
 | `Sources/MLXLocalModels/MLXLLM/Qwen35.swift` | Qwen3.5 text config decoding, explicit layer schedule, attention and linear-attention layouts, cache planning, native MTP gating, tied/untied heads, greedy-token fast path, sanitizer, and LoRA target discovery. |
@@ -114,6 +115,7 @@ Current independence pass:
 - Replaced model container ownership with focused coverage for context updates, perform forwarding, legacy overload compatibility, and prompt-cache mutation.
 - Replaced model factory dispatch with focused coverage for chat-template tokenization, rendered/cache prompt encoding, factory fallback, final-error propagation, and missing-factory errors.
 - Replaced tokenizer support with focused coverage for tokenizer-class rewriting, registry updates, streaming deltas, newline resets, and incomplete Unicode boundaries.
+- Added ERNIE 4.5 MoE coverage with dense/sparse layer scheduling, top-k routing, shared experts, expert packing, tokenizer-class rewriting, cache dimensions, greedy-token fast path, and real-model validation.
 - Added SentencePiece model-file tokenizer fallback with duplicate-piece tolerant lookup, bounded special-token splitting, grammar-vocabulary fallback, and focused synthetic fixture coverage.
 - Added RWKV7 longest-match byte tokenizer support with grammar-vocabulary fallback and focused synthetic fixture coverage.
 - Replaced LoRA data loading with focused coverage for lookup precedence, JSONL parsing, text lines, missing files, and unsupported file types.
@@ -204,31 +206,26 @@ Command:
 
 ```sh
 MLX_TEST_MODELS_DIR="$PWD/.build/test-models" \
-MLX_HOST_MEMORY_GB=32 \
-MLX_REAL_MODEL_GENERATION_TOKENS=8 \
-MLX_REAL_MODEL_GENERATION_TIMEOUT_SECONDS=240 \
-MLX_REAL_MODEL_TIMEOUT_SECONDS=1200 \
-MLX_REAL_MODEL_FEATURE_TIMEOUT_SECONDS=900 \
-CONFIGURATION=release \
 make test-all-architectures
 ```
 
 ## E2E Result
 
 The current all-architecture sweep passed for every model selected by the memory
-gate. The test runner selected 78 local models and skipped 9 oversized models on
+gate. The test runner selected 79 local models and skipped 9 oversized models on
 this 32 GB host. Each selected model ran serialized generation, rendered session
 requests, and token-level grammar constraint checks.
 
-A follow-up serialized `main` sweep on 2026-07-01 selected 42 downloadable
-models, including Cohere2, DeepSeek, DeepSeek V2, EXAONE 3.5, GraniteMoE,
-Helium, Hunyuan V1 Dense, InternLM3, Jamba, Mamba, Mamba2, Mixtral, Phixtral,
-Qwen, RWKV7, Seed OSS, and GLM, and passed generation, rendered session, token
-grammar, and configured stress checks.
+A follow-up serialized `main` sweep on 2026-07-01 selected 43 downloadable
+models, including Cohere2, DeepSeek, DeepSeek V2, ERNIE 4.5 MoE, EXAONE 3.5,
+GraniteMoE, Helium, Hunyuan V1 Dense, InternLM3, Jamba, Mamba, Mamba2, Mixtral,
+Phixtral, Qwen, RWKV7, Seed OSS, and GLM, and passed generation, rendered
+session, token grammar, and configured stress checks.
 
-The current sweep adds 32 GB-friendly checkpoints for `qwen3_moe`, `mistral`,
-`gpt_oss`, `qwen3_5_moe`, and `nemotron_h`. These entries also run the stress
-test, which preloads one session and repeats generation on that same session.
+The current sweep adds a 32 GB-friendly `ernie4_5_moe` checkpoint and keeps the
+32 GB-friendly coverage for `qwen3_moe`, `mistral`, `gpt_oss`, `qwen3_5_moe`,
+and `nemotron_h`. These entries also run the stress test, which preloads one
+session and repeats generation on that same session.
 
 `glm4_moe`, `solar_open`, `glm4_moe_lite`, and pure `nemotron` are still
 registry-only in the catalog, and no exact `glm4-moe`, `solar-open`,
@@ -738,6 +735,27 @@ Best decode stress iteration from the same run:
 | Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `internlm3` | `internlm3-8b-instruct-4bit` | 32 | 0.6669 | 0.1146 | 0.5523 | 57.94 | 47.98 |
+
+## ERNIE 4.5 MoE Parity Check
+
+These rows come from the targeted release ERNIE 4.5 MoE run and serialized
+debug `main` and `all` sweeps on 2026-07-01. The 4-bit checkpoint is 11 GB on
+disk and passed generation, session-style request rendering, token-level grammar
+constraints, and repeated generation on a 32 GiB host.
+
+| Architecture | Model | Generated | Prompt | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `ernie4_5_moe` | `ernie-4.5-21b-a3b-pt-4bit` release targeted | 4 | 10 | 2.0714 | 1.6733 | 0.3981 | 10.05 | 1.93 |
+| `ernie4_5_moe` | `ernie-4.5-21b-a3b-pt-4bit` debug main | 2 | 10 | 0.8273 | 0.7537 | 0.0735 | 27.20 | 2.42 |
+| `ernie4_5_moe` | `ernie-4.5-21b-a3b-pt-4bit` debug all | 2 | 10 | 0.9390 | 0.8683 | 0.0708 | 28.26 | 2.13 |
+
+Best stress iterations from the same runs:
+
+| Architecture | Model | Generated | Total s | Prompt s | Decode s | Decode tok/s | E2E tok/s |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `ernie4_5_moe` | `ernie-4.5-21b-a3b-pt-4bit` release targeted | 16 | 0.3056 | 0.1187 | 0.1868 | 85.64 | 52.36 |
+| `ernie4_5_moe` | `ernie-4.5-21b-a3b-pt-4bit` debug main | 32 | 1.0021 | 0.1351 | 0.8669 | 36.91 | 31.93 |
+| `ernie4_5_moe` | `ernie-4.5-21b-a3b-pt-4bit` debug all | 32 | 1.0000 | 0.1346 | 0.8653 | 36.98 | 32.00 |
 
 ## Seed OSS Parity Check
 

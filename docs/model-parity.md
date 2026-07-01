@@ -42,7 +42,6 @@ Highest priority:
 MoE and recent family gaps:
 
 - `Klear`
-- `ernie4_5_moe`
 - `exaone_moe`
 - `hunyuan`
 - `bailing_moe_linear`
