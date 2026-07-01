@@ -141,6 +141,9 @@ internal class LLMTypeRegistry: ModelTypeRegistry, @unchecked Sendable {
             modelType("smollm3", configuration: SmolLM3Configuration.self) { SmolLM3Model($0) },
             modelType("ernie4_5", configuration: Ernie45Configuration.self) { Ernie45Model($0) },
             modelType("helium", configuration: HeliumConfiguration.self) { HeliumModel($0) },
+            modelType("hunyuan_v1_dense", configuration: HunyuanV1DenseConfiguration.self) {
+                HunyuanV1DenseModel($0)
+            },
             modelType("lfm2", configuration: LFM2Configuration.self) { LFM2Model($0) },
             modelType("mamba", configuration: MambaConfiguration.self) { MambaModel($0) },
             modelType("mamba2", configuration: Mamba2Configuration.self) { Mamba2Model($0) },
@@ -447,6 +450,11 @@ internal class LLMRegistry: AbstractModelRegistry, @unchecked Sendable {
         defaultPrompt: "Write one short sentence about efficient local language models."
     )
 
+    public static let hunyuanMTSeven7BBf16 = ModelConfiguration(
+        id: "tencent/Hunyuan-MT-7B",
+        defaultPrompt: "Translate to German: Local language models are useful."
+    )
+
     public static let acereason7b4bit = ModelConfiguration(
         id: "mlx-community/AceReason-Nemotron-7B-4bit",
         defaultPrompt: ""
@@ -524,6 +532,7 @@ internal class LLMRegistry: AbstractModelRegistry, @unchecked Sendable {
             mimo7bSft4bit,
             glmEdgeOnePoint5BChat,
             glm4Nine9b4bit,
+            hunyuanMTSeven7BBf16,
             acereason7b4bit,
             bitnetB1Point58Two2b4t4bit,
             smollm3Three3b4bit,

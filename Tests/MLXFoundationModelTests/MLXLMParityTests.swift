@@ -134,7 +134,6 @@ struct MLXLMParityTests {
         "ernie4_5_moe",
         "exaone_moe",
         "hunyuan",
-        "hunyuan_v1_dense",
         "iquestloopcoder",
         "kimi_k25",
         "kimi_linear",
