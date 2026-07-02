@@ -96,7 +96,9 @@ responsive. Override the default 10-second storage preflight with
 
 Real-model runs print `BENCH` lines with prompt, decode, generated-token e2e,
 and total-token throughput: `prompt_tps`, `decode_tps`, `e2e_tps`, and
-`total_tps`.
+`total_tps`. They also print matching `BENCH_JSON` lines with stable
+machine-readable keys for benchmark comparisons. Stress runs print `STRESS`
+and `STRESS_JSON` lines.
 
 The serialized runner also writes its model labels, skip/pass/fail lines, and
 Swift test output to `.build/benchmarks/real-models-<timestamp>.log` by default.

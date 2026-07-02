@@ -264,6 +264,7 @@ struct MLXRealModelGenerationTests {
         }
 
         print(summary.benchmarkLine(model: model))
+        print(summary.benchmarkJSONLine(model: model))
     }
 
     private static func requestSummaryEvent(

@@ -138,5 +138,6 @@ struct MLXRealModelStressTests {
         }
 
         print(summary.stressLine(model: model, iteration: iteration))
+        print(summary.stressJSONLine(model: model, iteration: iteration))
     }
 }
