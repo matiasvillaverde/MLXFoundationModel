@@ -64,6 +64,9 @@ BASE_REQUIRED_FEATURES = (
 )
 ATTENTION_REQUIRED_FEATURES = ("runtime_kv_cache",)
 NATIVE_TOOL_REQUIRED_FEATURES = (
+    "tool_call_rendering",
+    "tool_stream_translation",
+    "tool_schema_normalization",
     "native_tool_constraints",
     "native_tool_stream_translation",
 )

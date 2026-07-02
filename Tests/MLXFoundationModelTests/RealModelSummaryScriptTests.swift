@@ -17,7 +17,7 @@ struct RealModelSummaryScriptTests {
 
         #expect(coverage["passed"] as? Bool == true)
         #expect(benchmarkCoverage["passed"] as? Bool == true)
-        #expect(rows.count == 18)
+        #expect(rows.count == 21)
     }
 
     @Test("marks coverage failed when a required feature is missing")

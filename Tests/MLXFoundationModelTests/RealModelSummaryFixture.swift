@@ -74,6 +74,9 @@ enum RealModelSummaryFixture {
             "json_schema_constraints",
             "finite_choice_constraints",
             "token_grammar_constraints",
+            "tool_call_rendering",
+            "tool_stream_translation",
+            "tool_schema_normalization",
             "native_tool_constraints",
             "native_tool_stream_translation",
             "runtime_kv_cache",
@@ -83,6 +86,9 @@ enum RealModelSummaryFixture {
     }
 
     private static let nativeToolFeatureKeys = [
+        "tool_call_rendering",
+        "tool_stream_translation",
+        "tool_schema_normalization",
         "native_tool_constraints",
         "native_tool_stream_translation"
     ]

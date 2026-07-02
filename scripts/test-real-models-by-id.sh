@@ -406,6 +406,9 @@ fi
 if [[ -n "$MEMORY_GUARD_HARD_LIMIT_FRACTION" ]]; then
   COMMON_ENV+=(MLX_REAL_MODEL_MEMORY_GUARD_HARD_LIMIT_FRACTION="$MEMORY_GUARD_HARD_LIMIT_FRACTION")
 fi
+NATIVE_TOOL_FEATURE_KEYS="tool_call_rendering,tool_stream_translation"
+NATIVE_TOOL_FEATURE_KEYS+=",tool_schema_normalization,native_tool_constraints"
+NATIVE_TOOL_FEATURE_KEYS+=",native_tool_stream_translation"
 FAILURES=()
 LAST_TEST_STATUS=0
 SWIFT_TEST_INVOCATION_COUNT=0
@@ -842,7 +845,7 @@ for MODEL in "${MODELS[@]}"; do
       "$MODEL_TIMEOUT_SECONDS" \
       "MLXRealModelTests.MLXRealModelToolCallingTests/selectedNativeToolModelsEmitConstrainedTypedToolCalls" \
       "$ID" \
-      "native_tool_constraints,native_tool_stream_translation"
+      "$NATIVE_TOOL_FEATURE_KEYS"
   fi
 
   if [[ "$TAGS" == *"stress"* ]]; then
