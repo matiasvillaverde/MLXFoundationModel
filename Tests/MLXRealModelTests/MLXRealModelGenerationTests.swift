@@ -201,41 +201,10 @@ struct MLXRealModelGenerationTests {
         result: MLXRealModelHarness.GenerationResult
     ) {
         guard let metrics = result.metrics,
-              let usage = metrics.usage,
-              let timing = metrics.timing,
-              usage.generatedTokens > 0 else {
+              let summary = MLXRealModelBenchmarkSummary(metrics: metrics) else {
             return
         }
 
-        let totalSeconds = seconds(timing.totalTime)
-        let promptSeconds = timing.promptProcessingTime.map(seconds) ?? 0
-        let decodeSeconds = max(totalSeconds - promptSeconds, 0)
-        let generated = Double(usage.generatedTokens)
-        let promptTokens = usage.promptTokens ?? 0
-        let decodeTPS = decodeSeconds > 0 ? generated / decodeSeconds : 0
-        let endToEndTPS = totalSeconds > 0 ? generated / totalSeconds : 0
-
-        print(
-            String(
-                format: """
-                BENCH model=%@ architecture=%@ generated=%d prompt=%d \
-                total_s=%.4f prompt_s=%.4f decode_s=%.4f decode_tps=%.2f e2e_tps=%.2f
-                """,
-                model.id,
-                model.architecture,
-                usage.generatedTokens,
-                promptTokens,
-                totalSeconds,
-                promptSeconds,
-                decodeSeconds,
-                decodeTPS,
-                endToEndTPS
-            )
-        )
-    }
-
-    private static func seconds(_ duration: Duration) -> Double {
-        let components = duration.components
-        return Double(components.seconds) + Double(components.attoseconds) / 1e18
+        print(summary.benchmarkLine(model: model))
     }
 }

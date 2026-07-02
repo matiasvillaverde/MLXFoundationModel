@@ -91,3 +91,7 @@ uses short generations by default, and skips oversized models unless
 The real-model and profiling scripts fail fast when the model volume is not
 responsive. Override the default 10-second storage preflight with
 `MLX_MODEL_STORAGE_TIMEOUT_SECONDS` when testing slow external disks.
+
+Real-model runs print `BENCH` lines with prompt, decode, generated-token e2e,
+and total-token throughput: `prompt_tps`, `decode_tps`, `e2e_tps`, and
+`total_tps`.
