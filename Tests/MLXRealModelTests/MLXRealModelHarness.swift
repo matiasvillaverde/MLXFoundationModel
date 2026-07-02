@@ -207,6 +207,17 @@ enum MLXRealModelHarness {
         }
     }
 
+    static func decodePathSnapshots(
+        from events: [MLXGenerationDiagnosticEvent]
+    ) -> [MLXDecodePathSnapshot] {
+        events.compactMap { event in
+            guard case .decodePath(let snapshot) = event else {
+                return nil
+            }
+            return snapshot
+        }
+    }
+
     static func verifyGeneratedTokenDiagnostics(
         _ tokens: [MLXGeneratedTokenSnapshot],
         result: GenerationResult
@@ -256,5 +267,4 @@ enum MLXRealModelHarness {
             // Consume preload progress before generation.
         }
     }
-
 }

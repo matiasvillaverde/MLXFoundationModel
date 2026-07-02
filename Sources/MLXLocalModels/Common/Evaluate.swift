@@ -1856,8 +1856,11 @@ internal struct TokenIterator: Sequence, IteratorProtocol {
     /// Evaluate the next token and return the new token (y), updating cache state
     mutating func step(previous: LMInput.Text) -> MLXArray {
         let token: MLXArray
-        if processor == nil,
-            sampler is ArgMaxSampler,
+        let processorActive = processor != nil
+        let argmaxSampler = sampler is ArgMaxSampler
+        let greedyModelAvailable = model is any GreedyTokenModel
+        if !processorActive,
+            argmaxSampler,
             let greedyModel = model as? any GreedyTokenModel {
             let result = greedyModel.greedyToken(
                 previous,
@@ -1866,6 +1869,12 @@ internal struct TokenIterator: Sequence, IteratorProtocol {
             )
             self.state = result.state
             token = result.token
+            recordDecodePath(
+                .greedyToken,
+                processorActive: processorActive,
+                argmaxSampler: argmaxSampler,
+                greedyModelAvailable: greedyModelAvailable
+            )
         } else {
             let result = model(
                 previous[text: .newAxis],
@@ -1874,6 +1883,12 @@ internal struct TokenIterator: Sequence, IteratorProtocol {
             )
             self.state = result.state
             token = convertToToken(logits: result.logits)
+            recordDecodePath(
+                .logits,
+                processorActive: processorActive,
+                argmaxSampler: argmaxSampler,
+                greedyModelAvailable: greedyModelAvailable
+            )
         }
 
         // Apply dynamic cache quantization after each step
@@ -1887,6 +1902,20 @@ internal struct TokenIterator: Sequence, IteratorProtocol {
         MLXGenerationDiagnostics.recordCacheSnapshot(label: "step", cache: cache)
 
         return token
+    }
+
+    private func recordDecodePath(
+        _ path: MLXDecodePathSnapshot.Path,
+        processorActive: Bool,
+        argmaxSampler: Bool,
+        greedyModelAvailable: Bool
+    ) {
+        MLXGenerationDiagnostics.recordDecodePath(MLXDecodePathSnapshot(
+            path: path,
+            processorActive: processorActive,
+            argmaxSampler: argmaxSampler,
+            greedyModelAvailable: greedyModelAvailable
+        ))
     }
 
     mutating internal func next() -> Int? {

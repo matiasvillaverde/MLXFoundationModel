@@ -424,6 +424,12 @@ run_model_feature_test \
 
 run_model_feature_test \
   "qwen3-0.6b-4bit" \
+  "Qwen3 greedy and constrained decode paths" \
+  "$FEATURE_TIMEOUT_SECONDS" \
+  "MLXRealModelTests.MLXRealModelGenerationTests/qwen3ReportsGreedyAndConstrainedDecodePaths"
+
+run_model_feature_test \
+  "qwen3-0.6b-4bit" \
   "Qwen3 tool call rendering" \
   "$FEATURE_TIMEOUT_SECONDS" \
   "MLXRealModelTests.MLXRealModelToolCallingTests/qwen3EmitsParseableToolCall"

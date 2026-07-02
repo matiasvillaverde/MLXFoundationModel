@@ -70,6 +70,17 @@ internal extension MLXObservability {
             recordReasoningBudget(snapshot)
         case .generatedToken:
             break
+        case .decodePath(let snapshot):
+            incrementCounter(
+                "generation.decode_path.steps",
+                category: .generation,
+                attributes: [
+                    "path": snapshot.path.rawValue,
+                    "processor_active": String(snapshot.processorActive),
+                    "argmax_sampler": String(snapshot.argmaxSampler),
+                    "greedy_model": String(snapshot.greedyModelAvailable)
+                ]
+            )
         case .memoryGuard(let snapshot):
             recordMemoryGuard(snapshot)
         case .executionPlan(let snapshot):

@@ -13,6 +13,7 @@ internal enum MLXGenerationDiagnosticEvent: Sendable, Equatable {
     case grammarConstraint(MLXGrammarConstraintSnapshot)
     case reasoningBudget(MLXReasoningBudgetSnapshot)
     case generatedToken(MLXGeneratedTokenSnapshot)
+    case decodePath(MLXDecodePathSnapshot)
     case memoryGuard(MLXMemoryGuardSnapshot)
     case executionPlan(MLXGenerationExecutionPlanSnapshot)
     case admission(MLXGenerationAdmissionSnapshot)
@@ -256,6 +257,18 @@ internal struct MLXGeneratedTokenSnapshot: Sendable, Equatable {
     let tokenID: Int
     let tokenText: String
     let index: Int
+}
+
+internal struct MLXDecodePathSnapshot: Sendable, Equatable {
+    enum Path: String, Sendable {
+        case greedyToken
+        case logits
+    }
+
+    let path: Path
+    let processorActive: Bool
+    let argmaxSampler: Bool
+    let greedyModelAvailable: Bool
 }
 
 internal struct MLXMemoryGuardSnapshot: Sendable, Equatable {
@@ -663,6 +676,13 @@ internal enum MLXGenerationDiagnostics {
             tokenText: tokenText,
             index: index
         )), runID: currentRunID)
+    }
+
+    internal static func recordDecodePath(_ snapshot: MLXDecodePathSnapshot) {
+        guard let currentRunID else {
+            return
+        }
+        store.record(.decodePath(snapshot), runID: currentRunID)
     }
 
     internal static func recordMemoryGuard(_ snapshot: MLXMemoryGuardSnapshot) {
