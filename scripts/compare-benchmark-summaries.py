@@ -34,6 +34,17 @@ class BenchmarkAggregate:
     metrics: dict[str, float]
 
 
+@dataclass(frozen=True)
+class CoverageKey:
+    model: str
+    architecture: str
+    feature: str
+
+    @property
+    def label(self) -> str:
+        return f"{self.model}:{self.architecture}:{self.feature}"
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Compare BENCH_JSON/STRESS_JSON records from two real-model summary files."
@@ -135,6 +146,37 @@ def aggregate_tests(summary: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return tests
 
 
+def aggregate_coverage(summary: dict[str, Any]) -> dict[CoverageKey, dict[str, Any]]:
+    coverage = summary.get("feature_coverage")
+    if not isinstance(coverage, dict):
+        return {}
+    rows = coverage.get("rows", [])
+    if not isinstance(rows, list):
+        return {}
+
+    records: dict[CoverageKey, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        model = optional_string(row.get("model_id"))
+        architecture = optional_string(row.get("architecture"))
+        feature = optional_string(row.get("feature_key"))
+        if model is None or feature is None:
+            continue
+        key = CoverageKey(
+            model=model,
+            architecture=architecture or "unknown",
+            feature=feature,
+        )
+        records[key] = {
+            "status": str(row.get("status", "unknown")),
+            "label": optional_string(row.get("label")),
+            "test_status": optional_string(row.get("test_status")),
+            "duration_seconds": numeric_value(row.get("duration_seconds")),
+        }
+    return records
+
+
 def average_metrics(records: list[dict[str, Any]]) -> dict[str, float]:
     averaged: dict[str, float] = {}
     for metric in DEFAULT_METRICS:
@@ -154,11 +196,19 @@ def numeric_value(value: Any) -> float | None:
     return None
 
 
+def optional_string(value: Any) -> str | None:
+    if isinstance(value, str) and value:
+        return value
+    return None
+
+
 def compare(
     baseline: dict[BenchmarkKey, BenchmarkAggregate],
     current: dict[BenchmarkKey, BenchmarkAggregate],
     baseline_tests: dict[str, dict[str, Any]],
     current_tests: dict[str, dict[str, Any]],
+    baseline_coverage: dict[CoverageKey, dict[str, Any]],
+    current_coverage: dict[CoverageKey, dict[str, Any]],
     metrics: list[str],
     min_ratio: float,
     test_duration_max_ratio: float,
@@ -206,6 +256,18 @@ def compare(
     )
     extra_current_tests = sorted(set(current_tests).difference(baseline_tests))
     failures.extend(test_failures)
+    coverage_rows, coverage_failures = compare_coverage(
+        baseline_coverage,
+        current_coverage,
+    )
+    extra_current_coverage = [
+        key.label
+        for key in sorted(
+            set(current_coverage).difference(baseline_coverage),
+            key=lambda item: item.label,
+        )
+    ]
+    failures.extend(coverage_failures)
     return {
         "schema_version": 1,
         "min_ratio": min_ratio,
@@ -213,8 +275,10 @@ def compare(
         "metrics": metrics,
         "rows": rows,
         "test_rows": test_rows,
+        "coverage_rows": coverage_rows,
         "extra_current": extra_current,
         "extra_current_tests": extra_current_tests,
+        "extra_current_coverage": extra_current_coverage,
         "failure_count": len(failures),
         "passed": not failures,
     }
@@ -261,6 +325,41 @@ def compare_tests(
 
         rows.append(row)
         if row["status"] not in {"passed", "duration_unchecked"}:
+            failures.append(row)
+    return rows, failures
+
+
+def compare_coverage(
+    baseline: dict[CoverageKey, dict[str, Any]],
+    current: dict[CoverageKey, dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    rows: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    for key in sorted(baseline, key=lambda item: item.label):
+        baseline_record = baseline[key]
+        if baseline_record["status"] != "passed":
+            continue
+        current_record = current.get(key)
+        row = {
+            "key": key.label,
+            "model": key.model,
+            "architecture": key.architecture,
+            "feature_key": key.feature,
+            "baseline_status": baseline_record["status"],
+            "current_status": current_record["status"] if current_record else None,
+            "baseline_label": baseline_record["label"],
+            "current_label": current_record["label"] if current_record else None,
+        }
+
+        if current_record is None:
+            row["status"] = "missing_current_coverage"
+        elif current_record["status"] != "passed":
+            row["status"] = "coverage_regressed"
+        else:
+            row["status"] = "passed"
+
+        rows.append(row)
+        if row["status"] != "passed":
             failures.append(row)
     return rows, failures
 
@@ -341,6 +440,21 @@ def print_text_report(report: dict[str, Any]) -> None:
         for label in report["extra_current_tests"]:
             print(f"- {label}")
 
+    if report["coverage_rows"]:
+        print("Feature coverage comparison")
+    for row in report["coverage_rows"]:
+        prefix = "PASS" if row["status"] == "passed" else "FAIL"
+        print(
+            f"{prefix} {row['key']} "
+            f"baseline={row['baseline_status']} current={row['current_status']} "
+            f"status={row['status']}"
+        )
+
+    if report["extra_current_coverage"]:
+        print("Extra current feature coverage:")
+        for key in report["extra_current_coverage"]:
+            print(f"- {key}")
+
 
 def format_number(value: Any) -> str:
     if isinstance(value, (int, float)):
@@ -360,6 +474,8 @@ def main() -> int:
         current,
         aggregate_tests(baseline_summary),
         aggregate_tests(current_summary),
+        aggregate_coverage(baseline_summary),
+        aggregate_coverage(current_summary),
         metrics,
         args.min_ratio,
         args.test_duration_max_ratio,
