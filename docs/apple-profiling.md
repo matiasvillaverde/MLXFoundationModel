@@ -54,8 +54,12 @@ MLX_PROFILE_TEMPLATE='Allocations' scripts/profile-real-model.sh
 ```
 
 The script builds `FoundationModelsPlayground` in release mode, runs one real
-example, captures generated token output, records a `.trace`, and exports a
-trace table of contents when `xctrace export` supports it.
+example, captures generated token output, records a `.trace`, exports a trace
+table of contents when `xctrace export` supports it, and writes a privacy-safe
+`*-run.json` sidecar. The sidecar records model ID, model-path fingerprint,
+template, artifact paths, commit, OS/Xcode/Swift versions, host memory, and
+whether prompt or instruction overrides were used. It does not store prompt
+text, instructions, generated text, or tool payloads.
 
 Use the Foundation Models template when running on a macOS 27 host through the
 Apple provider API. Use Time Profiler, Metal System Trace, File Activity, and
