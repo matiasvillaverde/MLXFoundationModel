@@ -724,6 +724,12 @@ for MODEL in "${MODELS[@]}"; do
     "MLXRealModelTests.MLXRealModelBatchCacheTests/selectedModelsReuseMemoryPromptCacheThroughContinuousBatching" \
     "$ID"
 
+  run_swift_test \
+    "$ID persistent prompt cache restore" \
+    "$MODEL_TIMEOUT_SECONDS" \
+    "MLXRealModelTests.MLXRealModelPersistentPromptCacheTests/selectedModelsRestorePersistentPromptCacheAcrossSessions" \
+    "$ID"
+
   if [[ "$TAGS" != *"native-template-only"* ]]; then
     run_swift_test \
       "$ID session-style request" \

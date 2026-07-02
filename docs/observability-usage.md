@@ -93,8 +93,9 @@ For each selected model, the runner verifies generation, sampling/logits
 controls, stream lifecycle and load-progress events, memory-guard admission,
 redacted request-summary observability, greedy/constrained decode paths,
 rotating/quantized KV cache options for attention models, continuous-batch
-prompt cache reuse, session-style requests when supported, JSON Schema,
-finite-choice, and token-level grammar constraints.
+prompt cache reuse, persistent prompt-cache restore, session-style requests
+when supported, JSON Schema, finite-choice, and token-level grammar
+constraints.
 
 The real-model and profiling scripts fail fast when the model volume is not
 responsive. Override the default 10-second storage preflight with
