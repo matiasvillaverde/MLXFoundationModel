@@ -3,6 +3,33 @@ import MLXFoundationModel
 import Testing
 
 extension MLXRealModelGenerationTests {
+    @Test("selected models report greedy and constrained decode paths")
+    func selectedModelsReportGreedyAndConstrainedDecodePaths() async throws {
+        let models = try MLXRealModelCatalog.load()
+        let selected = MLXRealModelEnvironment.selectedModels(from: models)
+        let missing = selected.filter { !MLXRealModelEnvironment.hasModelFiles(for: $0) }
+
+        #expect(!selected.isEmpty)
+        #expect(
+            missing.isEmpty,
+            Comment(rawValue: MLXRealModelEnvironment.missingModelsMessage(missing))
+        )
+        guard missing.isEmpty else {
+            return
+        }
+
+        var failures: [String] = []
+        for model in selected {
+            do {
+                try await Self.verifyGreedyDecodePath(model: model)
+                try await Self.verifyConstrainedDecodePath(model: model)
+            } catch {
+                failures.append("\(model.id): \(error)")
+            }
+        }
+        #expect(failures.isEmpty, Comment(rawValue: failures.joined(separator: "\n")))
+    }
+
     @Test("Qwen3 reports greedy and constrained decode paths")
     func qwen3ReportsGreedyAndConstrainedDecodePaths() async throws {
         let models = try MLXRealModelCatalog.load()

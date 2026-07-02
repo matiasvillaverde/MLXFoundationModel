@@ -686,6 +686,12 @@ for MODEL in "${MODELS[@]}"; do
     "MLXRealModelTests.MLXRealModelInterfaceTests/selectedModelsReportStreamLifecyclePhaseBoundaries" \
     "$ID"
 
+  run_swift_test \
+    "$ID greedy and constrained decode paths" \
+    "$MODEL_TIMEOUT_SECONDS" \
+    "MLXRealModelTests.MLXRealModelGenerationTests/selectedModelsReportGreedyAndConstrainedDecodePaths" \
+    "$ID"
+
   if [[ "$TAGS" != *"native-template-only"* ]]; then
     run_swift_test \
       "$ID session-style request" \
