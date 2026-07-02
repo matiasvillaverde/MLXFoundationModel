@@ -10,16 +10,59 @@ import Testing
     )
 )
 struct MLXRealModelSamplingTests {
+    @Test("selected catalog models apply sampling and logits controls")
+    func selectedCatalogModelsApplySamplingAndLogitsControls() async throws {
+        let models = try MLXRealModelCatalog.load()
+        let selected = MLXRealModelEnvironment.selectedModels(from: models)
+        let missing = selected.filter { !MLXRealModelEnvironment.hasModelFiles(for: $0) }
+
+        #expect(!selected.isEmpty)
+        #expect(
+            missing.isEmpty,
+            Comment(rawValue: MLXRealModelEnvironment.missingModelsMessage(missing))
+        )
+        guard missing.isEmpty else {
+            return
+        }
+
+        var failures: [String] = []
+        for model in selected {
+            do {
+                try await Self.verifySamplingAndLogitsControls(
+                    model: model,
+                    maxTokens: min(
+                        model.maxTokens,
+                        MLXRealModelEnvironment.architectureGenerationTokenLimit
+                    )
+                )
+            } catch {
+                failures.append("\(model.id): \(error)")
+            }
+        }
+        #expect(failures.isEmpty, Comment(rawValue: failures.joined(separator: "\n")))
+    }
+
     @Test("Qwen3 generation applies sampling and logits controls")
     func qwen3GenerationAppliesSamplingAndLogitsControls() async throws {
         let models = try MLXRealModelCatalog.load()
         guard let model = try MLXRealModelHarness.selectedModel("qwen3-0.6b-4bit", in: models) else {
             return
         }
+        try await Self.verifySamplingAndLogitsControls(model: model, maxTokens: 10)
+    }
+
+    private static func verifySamplingAndLogitsControls(
+        model: MLXRealModelCatalog.Model,
+        maxTokens: Int
+    ) async throws {
         let observed = try await MLXRealModelHarness.runWithDiagnostics(
             model: model,
             sampling: Self.samplingControls,
-            limits: ResourceLimits(maxTokens: 10, maxTime: .seconds(120), reusePromptCache: false)
+            limits: ResourceLimits(
+                maxTokens: maxTokens,
+                maxTime: .seconds(MLXRealModelEnvironment.architectureGenerationTimeoutSeconds),
+                reusePromptCache: false
+            )
         )
         let parameters = try MLXRealModelHarness.parameterSnapshot(from: observed.events)
         let tokenEvents = MLXRealModelHarness.generatedTokenSnapshots(from: observed.events)

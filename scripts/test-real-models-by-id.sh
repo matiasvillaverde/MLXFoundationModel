@@ -674,6 +674,12 @@ for MODEL in "${MODELS[@]}"; do
     continue
   fi
 
+  run_swift_test \
+    "$ID sampling and logits controls" \
+    "$MODEL_TIMEOUT_SECONDS" \
+    "MLXRealModelTests.MLXRealModelSamplingTests/selectedCatalogModelsApplySamplingAndLogitsControls" \
+    "$ID"
+
   if [[ "$TAGS" != *"native-template-only"* ]]; then
     run_swift_test \
       "$ID session-style request" \
