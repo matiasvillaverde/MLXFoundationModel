@@ -3,13 +3,45 @@ import Foundation
 import Testing
 
 extension MLXRealModelGenerationTests {
+    @Test("selected models record redacted request summary observability")
+    func selectedModelsRecordRedactedRequestSummaryObservability() async throws {
+        let models = try MLXRealModelCatalog.load()
+        let selected = MLXRealModelEnvironment.selectedModels(from: models)
+        let missing = selected.filter { !MLXRealModelEnvironment.hasModelFiles(for: $0) }
+
+        #expect(!selected.isEmpty)
+        #expect(
+            missing.isEmpty,
+            Comment(rawValue: MLXRealModelEnvironment.missingModelsMessage(missing))
+        )
+        guard missing.isEmpty else {
+            return
+        }
+
+        var failures: [String] = []
+        for model in selected {
+            do {
+                try await Self.verifyRedactedRequestSummaryObservability(model: model)
+            } catch {
+                failures.append("\(model.id): \(error)")
+            }
+        }
+        #expect(failures.isEmpty, Comment(rawValue: failures.joined(separator: "\n")))
+    }
+
     @Test("Qwen3 records redacted request summary observability")
     func qwen3RecordsRedactedRequestSummaryObservability() async throws {
         let models = try MLXRealModelCatalog.load()
         guard let model = try MLXRealModelHarness.selectedModel("qwen3-0.6b-4bit", in: models) else {
             return
         }
-        let privateMarker = "private-observability-marker-1979"
+        try await Self.verifyRedactedRequestSummaryObservability(model: model)
+    }
+
+    private static func verifyRedactedRequestSummaryObservability(
+        model: MLXRealModelCatalog.Model
+    ) async throws {
+        let privateMarker = "private-observability-marker-\(model.id)"
 
         MLXObservability.reset()
         MLXObservability.configure(MLXObservabilityConfiguration(

@@ -90,10 +90,11 @@ On 32 GB hosts, keep the default runner behavior: it runs one model at a time,
 uses short generations by default, and skips oversized models unless
 `MLX_ALLOW_OVERSIZED_MODELS=1` is set.
 For each selected model, the runner verifies generation, sampling/logits
-controls, stream lifecycle events, memory-guard admission, greedy/constrained
-decode paths, rotating/quantized KV cache options for attention models,
-continuous-batch prompt cache reuse, session-style requests when supported, and
-token-level grammar constraints.
+controls, stream lifecycle and load-progress events, memory-guard admission,
+redacted request-summary observability, greedy/constrained decode paths,
+rotating/quantized KV cache options for attention models, continuous-batch
+prompt cache reuse, session-style requests when supported, and token-level
+grammar constraints.
 
 The real-model and profiling scripts fail fast when the model volume is not
 responsive. Override the default 10-second storage preflight with

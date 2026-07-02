@@ -687,9 +687,21 @@ for MODEL in "${MODELS[@]}"; do
     "$ID"
 
   run_swift_test \
+    "$ID on-demand stream model-load progress" \
+    "$MODEL_TIMEOUT_SECONDS" \
+    "MLXRealModelTests.MLXRealModelInterfaceTests/selectedModelsReportOnDemandStreamModelLoadProgress" \
+    "$ID"
+
+  run_swift_test \
     "$ID memory guard admission decisions" \
     "$MODEL_TIMEOUT_SECONDS" \
     "MLXRealModelTests.MLXRealModelGenerationTests/selectedModelsRecordMemoryGuardAdmissionDecisions" \
+    "$ID"
+
+  run_swift_test \
+    "$ID redacted request summary observability" \
+    "$MODEL_TIMEOUT_SECONDS" \
+    "MLXRealModelTests.MLXRealModelGenerationTests/selectedModelsRecordRedactedRequestSummaryObservability" \
     "$ID"
 
   run_swift_test \
