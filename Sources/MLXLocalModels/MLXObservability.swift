@@ -682,6 +682,19 @@ private final class MLXObservabilityStore: @unchecked Sendable {
             return
         }
         sink = currentSink
+        recordRequestSummaryCountersLocked(summary)
+        recordRequestSummaryHistogramsLocked(summary)
+        retainRequestSummaryLocked(summary, configuration: configuration)
+        let event = Self.requestSummaryEvent(summary)
+        retainEventLocked(event, configuration: configuration)
+        lock.unlock()
+
+        sink?.recordRequest(summary)
+        sink?.record(event)
+        logEvent(event, configuration: configuration)
+    }
+
+    private func recordRequestSummaryCountersLocked(_ summary: MLXRequestSummary) {
         counters["generation.requests", default: 0] += 1
         counters["generation.tokens.prompt", default: 0] += Double(summary.promptTokens)
         counters["generation.tokens.generated", default: 0] += Double(summary.generatedTokens)
@@ -689,6 +702,9 @@ private final class MLXObservabilityStore: @unchecked Sendable {
         if let cachedPromptTokens = summary.cachedPromptTokens {
             counters["prompt_cache.tokens.reused", default: 0] += Double(cachedPromptTokens)
         }
+    }
+
+    private func recordRequestSummaryHistogramsLocked(_ summary: MLXRequestSummary) {
         histograms["generation.duration_seconds", default: MLXHistogramAccumulator()]
             .record(summary.totalDurationSeconds)
         if let timeToFirstTokenSeconds = summary.timeToFirstTokenSeconds {
@@ -698,12 +714,41 @@ private final class MLXObservabilityStore: @unchecked Sendable {
         if let generationTokensPerSecond = summary.generationTokensPerSecond {
             histograms["generation.tokens_per_second", default: MLXHistogramAccumulator()]
                 .record(generationTokensPerSecond)
+            histograms["generation.generation_tokens_per_second", default: MLXHistogramAccumulator()]
+                .record(generationTokensPerSecond)
         }
+        if let promptTokensPerSecond = summary.promptTokensPerSecond {
+            histograms["generation.prompt_tokens_per_second", default: MLXHistogramAccumulator()]
+                .record(promptTokensPerSecond)
+        }
+        if let totalTokensPerSecond = summary.totalTokensPerSecond {
+            histograms["generation.total_tokens_per_second", default: MLXHistogramAccumulator()]
+                .record(totalTokensPerSecond)
+        }
+    }
+
+    private func retainRequestSummaryLocked(
+        _ summary: MLXRequestSummary,
+        configuration: MLXObservabilityConfiguration
+    ) {
         if configuration.keptRecentRequestCount > 0 {
             recentRequests.append(summary)
             trimRequestsLocked(configuration.keptRecentRequestCount)
         }
-        let event = MLXObservabilityEvent(
+    }
+
+    private func retainEventLocked(
+        _ event: MLXObservabilityEvent,
+        configuration: MLXObservabilityConfiguration
+    ) {
+        if configuration.keptRecentEventCount > 0 {
+            recentEvents.append(event)
+            trimEventsLocked(configuration.keptRecentEventCount)
+        }
+    }
+
+    private static func requestSummaryEvent(_ summary: MLXRequestSummary) -> MLXObservabilityEvent {
+        MLXObservabilityEvent(
             name: "generation.request_summary",
             kind: .requestSummary,
             category: .generation,
@@ -714,23 +759,24 @@ private final class MLXObservabilityStore: @unchecked Sendable {
                 "strategy": summary.strategy ?? "unknown",
                 "stop_reason": summary.stopReason
             ],
-            measurements: [
-                "prompt_tokens": Double(summary.promptTokens),
-                "generated_tokens": Double(summary.generatedTokens),
-                "total_tokens": Double(summary.totalTokens),
-                "duration_seconds": summary.totalDurationSeconds,
-                "tokens_per_second": summary.generationTokensPerSecond ?? 0
-            ]
+            measurements: requestSummaryMeasurements(summary)
         )
-        if configuration.keptRecentEventCount > 0 {
-            recentEvents.append(event)
-            trimEventsLocked(configuration.keptRecentEventCount)
-        }
-        lock.unlock()
+    }
 
-        sink?.recordRequest(summary)
-        sink?.record(event)
-        logEvent(event, configuration: configuration)
+    private static func requestSummaryMeasurements(_ summary: MLXRequestSummary) -> [String: Double] {
+        var measurements = [
+            "prompt_tokens": Double(summary.promptTokens),
+            "generated_tokens": Double(summary.generatedTokens),
+            "total_tokens": Double(summary.totalTokens),
+            "duration_seconds": summary.totalDurationSeconds,
+            "tokens_per_second": summary.generationTokensPerSecond ?? 0
+        ]
+        measurements["prompt_processing_seconds"] = summary.promptProcessingSeconds
+        measurements["time_to_first_token_seconds"] = summary.timeToFirstTokenSeconds
+        measurements["prompt_tokens_per_second"] = summary.promptTokensPerSecond
+        measurements["generation_tokens_per_second"] = summary.generationTokensPerSecond
+        measurements["total_tokens_per_second"] = summary.totalTokensPerSecond
+        return measurements
     }
 
     private func trimLocked() {

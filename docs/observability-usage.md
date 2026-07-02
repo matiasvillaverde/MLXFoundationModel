@@ -43,6 +43,17 @@ let histograms = snapshot.histograms
 Request summaries are redacted. Prompt text, generated token text, and tool
 payload content are not exported by the central observability path.
 
+## Core Metrics
+
+Request summaries update these throughput histograms:
+
+- `generation.prompt_tokens_per_second`
+- `generation.generation_tokens_per_second`
+- `generation.total_tokens_per_second`
+
+The older `generation.tokens_per_second` histogram remains as an alias for
+generation-token throughput.
+
 ## Instruments
 
 Run the existing profile target to capture OS signposts alongside Time Profiler

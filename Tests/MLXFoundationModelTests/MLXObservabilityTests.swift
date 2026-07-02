@@ -22,9 +22,14 @@ struct MLXObservabilityTests {
         #expect(snapshot.counters["prompt_cache.tokens.reused"] == 3)
         #expect(snapshot.histograms["generation.duration_seconds"]?.count == 1)
         #expect(snapshot.histograms["generation.tokens_per_second"]?.average == 3.3)
+        #expect(snapshot.histograms["generation.generation_tokens_per_second"]?.average == 3.3)
+        #expect(snapshot.histograms["generation.prompt_tokens_per_second"]?.average == 7)
+        #expect(snapshot.histograms["generation.total_tokens_per_second"]?.average == 6)
         #expect(snapshot.recentRequests == [summary])
         #expect(sink.requests() == [summary])
-        #expect(sink.events().contains { $0.name == "generation.request_summary" })
+        #expect(Self.requestSummaryEvent(from: sink)?.measurements["prompt_tokens_per_second"] == 7)
+        #expect(Self.requestSummaryEvent(from: sink)?.measurements["generation_tokens_per_second"] == 3.3)
+        #expect(Self.requestSummaryEvent(from: sink)?.measurements["total_tokens_per_second"] == 6)
     }
 
     @Test("diagnostic prompt cache plans map to central counters and histograms")
@@ -191,11 +196,20 @@ struct MLXObservabilityTests {
             cachedPromptTokens: 3,
             totalDurationSeconds: 2,
             timeToFirstTokenSeconds: 0.25,
+            promptProcessingSeconds: 1,
+            promptTokensPerSecond: 7,
             generationTokensPerSecond: 3.3,
+            totalTokensPerSecond: 6,
             stopReason: "max_tokens",
             temperature: 0.2,
             topP: 0.9
         )
+    }
+
+    private static func requestSummaryEvent(
+        from sink: RecordingObservabilitySink
+    ) -> MLXObservabilityEvent? {
+        sink.events().first { $0.name == "generation.request_summary" }
     }
 
     private static func makeMetricsData() -> MetricsData {
