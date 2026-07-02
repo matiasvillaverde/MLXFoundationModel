@@ -16,6 +16,8 @@ MODEL_STORAGE_TIMEOUT_SECONDS="${MLX_MODEL_STORAGE_TIMEOUT_SECONDS:-10}"
 MEMORY_GUARD_TIER="${MLX_REAL_MODEL_MEMORY_GUARD_TIER:-}"
 MEMORY_GUARD_HARD_LIMIT_FRACTION="${MLX_REAL_MODEL_MEMORY_GUARD_HARD_LIMIT_FRACTION:-}"
 DRY_RUN="${MLX_REAL_MODEL_DRY_RUN:-0}"
+BENCHMARK_DIR="${MLX_REAL_MODEL_BENCHMARK_DIR:-$ROOT_DIR/.build/benchmarks}"
+BENCHMARK_LOG="${MLX_REAL_MODEL_BENCHMARK_LOG:-$BENCHMARK_DIR/real-models-$(date -u +%Y%m%dT%H%M%SZ).log}"
 
 if ! command -v python3 >/dev/null 2>&1; then
   echo "python3 is required"
@@ -294,6 +296,24 @@ if [[ "$DRY_RUN" == "1" ]]; then
   exit 0
 fi
 
+mkdir -p "$(dirname "$BENCHMARK_LOG")"
+{
+  echo "MLXFoundationModel real-model validation"
+  echo "started_utc: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "catalog: $CATALOG_PATH"
+  echo "models: $MODEL_DIR"
+  echo "scope: $SCOPE"
+  echo "host_ram_gib: $HOST_MEMORY_GB"
+  echo "selected_model_count: ${#MODELS[@]}"
+  echo
+} >"$BENCHMARK_LOG"
+echo "Benchmark log:         $BENCHMARK_LOG"
+echo
+
+log_benchmark_line() {
+  printf '%s\n' "$*" | tee -a "$BENCHMARK_LOG"
+}
+
 SWIFT_TEST_FLAGS=(--configuration "$CONFIGURATION" --no-parallel)
 COMMON_ENV=(
   MLX_RUN_REAL_MODEL_TESTS=1
@@ -327,16 +347,17 @@ run_swift_test() {
     swift_test_flags+=(--skip-build)
   fi
 
-  echo "-> $label"
+  log_benchmark_line "-> $label"
   if run_with_timeout "$timeout_seconds" \
-    env "${environment[@]}" swift test "${swift_test_flags[@]}" --filter "$filter"; then
-    echo "   passed"
+    env "${environment[@]}" swift test "${swift_test_flags[@]}" --filter "$filter" \
+    2>&1 | tee -a "$BENCHMARK_LOG"; then
+    log_benchmark_line "   passed"
     LAST_TEST_STATUS=0
     SWIFT_TEST_INVOCATION_COUNT=$((SWIFT_TEST_INVOCATION_COUNT + 1))
     return 0
   else
     local status=$?
-    echo "   failed with exit status $status"
+    log_benchmark_line "   failed with exit status $status"
     FAILURES+=("$label (exit status $status)")
     LAST_TEST_STATUS="$status"
     SWIFT_TEST_INVOCATION_COUNT=$((SWIFT_TEST_INVOCATION_COUNT + 1))
@@ -370,8 +391,8 @@ run_model_feature_test() {
   if model_is_selected "$model_id"; then
     run_swift_test "$label" "$timeout_seconds" "$filter" "$model_id"
   else
-    echo "-> $label"
-    echo "   skipped: $model_id is not selected for scope '$SCOPE'"
+    log_benchmark_line "-> $label"
+    log_benchmark_line "   skipped: $model_id is not selected for scope '$SCOPE'"
   fi
 }
 
@@ -510,11 +531,11 @@ COUNT=0
 for MODEL in "${MODELS[@]}"; do
   COUNT=$((COUNT + 1))
   IFS=$'\t' read -r ID DISPLAY_NAME ARCHITECTURE TAGS <<<"$MODEL"
-  echo
-  echo "[$COUNT/${#MODELS[@]}] $DISPLAY_NAME"
-  echo "   id:           $ID"
-  echo "   architecture: $ARCHITECTURE"
-  echo "   tags:         $TAGS"
+  log_benchmark_line ""
+  log_benchmark_line "[$COUNT/${#MODELS[@]}] $DISPLAY_NAME"
+  log_benchmark_line "   id:           $ID"
+  log_benchmark_line "   architecture: $ARCHITECTURE"
+  log_benchmark_line "   tags:         $TAGS"
 
   run_swift_test \
     "$ID generation" \
@@ -522,7 +543,7 @@ for MODEL in "${MODELS[@]}"; do
     "MLXRealModelTests.MLXRealModelGenerationTests/selectedCatalogModelsLoadAndGenerate" \
     "$ID"
   if [[ "$LAST_TEST_STATUS" -ne 0 ]]; then
-    echo "   skipping follow-up checks for $ID because generation did not pass"
+    log_benchmark_line "   skipping follow-up checks for $ID because generation did not pass"
     continue
   fi
 
@@ -549,14 +570,14 @@ for MODEL in "${MODELS[@]}"; do
   fi
 done
 
-echo
+log_benchmark_line ""
 if [[ "${#FAILURES[@]}" -eq 0 ]]; then
-  echo "All per-model real validations passed."
+  log_benchmark_line "All per-model real validations passed."
   exit 0
 fi
 
-echo "Real-model validation failures:"
+log_benchmark_line "Real-model validation failures:"
 for FAILURE in "${FAILURES[@]}"; do
-  echo "- $FAILURE"
+  log_benchmark_line "- $FAILURE"
 done
 exit 1
