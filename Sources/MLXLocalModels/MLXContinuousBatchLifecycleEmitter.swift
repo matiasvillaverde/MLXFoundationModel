@@ -24,12 +24,9 @@ internal final class MLXContinuousBatchLifecycleEmitter: @unchecked Sendable {
         to yield: @Sendable (LLMStreamChunk) -> Void
     ) {
         if takePromptEnd() {
-            yield(.lifecycle(.init(
-                phase: .promptProcessing,
-                state: .ended,
-                completedUnitCount: Int64(promptTokenCount),
-                totalUnitCount: Int64(promptTokenCount),
-                cachedUnitCount: Int64(cachedTokenCount)
+            yield(.lifecycle(.promptProcessingEnded(
+                promptTokenCount: promptTokenCount,
+                cachedTokenCount: cachedTokenCount
             )))
         }
     }
@@ -77,6 +74,41 @@ extension AsyncThrowingStream<LLMStreamChunk, Error>.Continuation {
 }
 
 extension StreamLifecycleEvent {
+    internal static func promptProcessingProgress(
+        promptTokenCount: Int,
+        cachedTokenCount: Int
+    ) -> Self {
+        let completedTokenCount = clampedCachedTokenCount(
+            promptTokenCount: promptTokenCount,
+            cachedTokenCount: cachedTokenCount
+        )
+        return Self(
+            phase: .promptProcessing,
+            state: .progress,
+            completedUnitCount: Int64(completedTokenCount),
+            totalUnitCount: Int64(max(0, promptTokenCount)),
+            cachedUnitCount: Int64(completedTokenCount),
+            message: "prompt-planned"
+        )
+    }
+
+    internal static func promptProcessingEnded(
+        promptTokenCount: Int,
+        cachedTokenCount: Int
+    ) -> Self {
+        let totalTokenCount = max(0, promptTokenCount)
+        return Self(
+            phase: .promptProcessing,
+            state: .ended,
+            completedUnitCount: Int64(totalTokenCount),
+            totalUnitCount: Int64(totalTokenCount),
+            cachedUnitCount: Int64(clampedCachedTokenCount(
+                promptTokenCount: promptTokenCount,
+                cachedTokenCount: cachedTokenCount
+            ))
+        )
+    }
+
     internal init(modelLoadProgress progress: Progress, message: String?) {
         let progressMessage = progress.localizedDescription.isEmpty
             ? nil
@@ -88,6 +120,13 @@ extension StreamLifecycleEvent {
             totalUnitCount: progress.totalUnitCount >= 0 ? progress.totalUnitCount : nil,
             message: message ?? progressMessage
         )
+    }
+
+    private static func clampedCachedTokenCount(
+        promptTokenCount: Int,
+        cachedTokenCount: Int
+    ) -> Int {
+        min(max(0, cachedTokenCount), max(0, promptTokenCount))
     }
 }
 

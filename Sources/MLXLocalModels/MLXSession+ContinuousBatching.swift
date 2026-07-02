@@ -126,6 +126,7 @@ extension MLXSession {
             speculativeDecoding: speculativeDecoding,
             promptCacheVariant: promptCacheVariant
         )
+        emitPromptProcessingProgress(genContext: genContext, prepared: prepared)
         defer {
             if let lease = prepared.cachePlan.lease {
                 PromptCachePlanner.release(lease, in: &promptCacheEntries)
@@ -140,7 +141,31 @@ extension MLXSession {
             ),
             promptCacheVariant: promptCacheVariant
         )
-        return MLXContinuousBatchPreparedRequest(
+        return continuousBatchPreparedRequest(
+            completion: completion,
+            genContext: genContext,
+            prefillRequest: prefillRequest,
+            prepared: prepared
+        )
+    }
+
+    nonisolated private func emitPromptProcessingProgress(
+        genContext: GenerationContext,
+        prepared: MLXPreparedGeneration
+    ) {
+        genContext.continuation.yieldLifecycle(.promptProcessingProgress(
+            promptTokenCount: prepared.promptTokenIDs.count,
+            cachedTokenCount: prepared.cachePlan.reusedTokenCount
+        ))
+    }
+
+    nonisolated private func continuousBatchPreparedRequest(
+        completion: MLXContinuousBatchStreamCompletion,
+        genContext: GenerationContext,
+        prefillRequest: MLXContinuousBatchPrefillRequest,
+        prepared: MLXPreparedGeneration
+    ) -> MLXContinuousBatchPreparedRequest {
+        MLXContinuousBatchPreparedRequest(
             completion: completion,
             parameters: genContext.parameters,
             prefillRequest: prefillRequest,

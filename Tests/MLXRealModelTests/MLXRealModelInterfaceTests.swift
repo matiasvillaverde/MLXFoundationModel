@@ -11,6 +11,14 @@ import Testing
     )
 )
 struct MLXRealModelInterfaceTests {
+    private struct LifecycleEventIndexes {
+        let requestStart: Int
+        let promptStart: Int
+        let promptProgress: Int
+        let promptEnd: Int
+        let decodeStart: Int
+    }
+
     @Test("selected models run rendered session-style requests")
     func selectedModelsRunRenderedSessionStyleRequests() async throws {
         let models = try MLXRealModelCatalog.load()
@@ -165,35 +173,49 @@ struct MLXRealModelInterfaceTests {
     private static func verifyLifecycleEvents(
         _ events: [StreamLifecycleEvent]
     ) throws {
-        let requestStart = try #require(Self.index(
-            of: .request,
-            state: .started,
-            in: events
-        ))
-        let promptStart = try #require(Self.index(
-            of: .promptProcessing,
-            state: .started,
-            in: events
-        ))
-        let promptEnd = try #require(Self.index(
-            of: .promptProcessing,
-            state: .ended,
-            in: events
-        ))
-        let decodeStart = try #require(Self.index(
-            of: .decode,
-            state: .started,
-            in: events
-        ))
+        let indexes = try Self.lifecycleEventIndexes(in: events)
+        Self.verifyLifecycleOrdering(indexes)
+        Self.verifyPromptProgressEvent(events[indexes.promptProgress])
+        Self.verifyPromptEndEvent(events[indexes.promptEnd])
+    }
 
-        #expect(requestStart < promptStart)
-        #expect(promptStart < promptEnd)
-        #expect(promptEnd < decodeStart)
+    private static func lifecycleEventIndexes(
+        in events: [StreamLifecycleEvent]
+    ) throws -> LifecycleEventIndexes {
+        LifecycleEventIndexes(
+            requestStart: try Self.requiredIndex(of: .request, state: .started, in: events),
+            promptStart: try Self.requiredIndex(
+                of: .promptProcessing,
+                state: .started,
+                in: events
+            ),
+            promptProgress: try Self.requiredIndex(
+                of: .promptProcessing,
+                state: .progress,
+                in: events
+            ),
+            promptEnd: try Self.requiredIndex(of: .promptProcessing, state: .ended, in: events),
+            decodeStart: try Self.requiredIndex(of: .decode, state: .started, in: events)
+        )
+    }
 
-        let promptEndEvent = events[promptEnd]
-        #expect((promptEndEvent.totalUnitCount ?? 0) > 0)
-        #expect(promptEndEvent.completedUnitCount == promptEndEvent.totalUnitCount)
-        #expect(promptEndEvent.cachedUnitCount == 0)
+    private static func verifyLifecycleOrdering(_ indexes: LifecycleEventIndexes) {
+        #expect(indexes.requestStart < indexes.promptStart)
+        #expect(indexes.promptStart < indexes.promptProgress)
+        #expect(indexes.promptProgress < indexes.promptEnd)
+        #expect(indexes.promptEnd < indexes.decodeStart)
+    }
+
+    private static func verifyPromptProgressEvent(_ event: StreamLifecycleEvent) {
+        #expect((event.totalUnitCount ?? 0) > 0)
+        #expect(event.completedUnitCount == 0)
+        #expect(event.cachedUnitCount == 0)
+    }
+
+    private static func verifyPromptEndEvent(_ event: StreamLifecycleEvent) {
+        #expect((event.totalUnitCount ?? 0) > 0)
+        #expect(event.completedUnitCount == event.totalUnitCount)
+        #expect(event.cachedUnitCount == 0)
     }
 
     private static func verifyModelLoadProgressEvents(
@@ -226,5 +248,13 @@ struct MLXRealModelInterfaceTests {
         events.firstIndex { event in
             event.phase == phase && event.state == state
         }
+    }
+
+    private static func requiredIndex(
+        of phase: StreamLifecyclePhase,
+        state: StreamLifecycleState,
+        in events: [StreamLifecycleEvent]
+    ) throws -> Int {
+        try #require(Self.index(of: phase, state: state, in: events))
     }
 }

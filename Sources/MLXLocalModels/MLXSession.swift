@@ -291,6 +291,10 @@ internal actor MLXSession: LLMSession {
             speculativeDecoding: speculativeDecoding,
             promptCacheVariant: promptCacheVariant
         )
+        genContext.continuation.yieldLifecycle(.promptProcessingProgress(
+            promptTokenCount: prepared.promptTokenIDs.count,
+            cachedTokenCount: prepared.cachePlan.reusedTokenCount
+        ))
         let promptCacheLease = prepared.cachePlan.lease
         defer {
             if let lease = promptCacheLease {
@@ -310,12 +314,9 @@ internal actor MLXSession: LLMSession {
         }
 
         let promptEndTime = genContext.clock.now
-        genContext.continuation.yieldLifecycle(.init(
-            phase: .promptProcessing,
-            state: .ended,
-            completedUnitCount: Int64(prepared.promptTokenIDs.count),
-            totalUnitCount: Int64(prepared.promptTokenIDs.count),
-            cachedUnitCount: Int64(prepared.cachePlan.reusedTokenCount)
+        genContext.continuation.yieldLifecycle(.promptProcessingEnded(
+            promptTokenCount: prepared.promptTokenIDs.count,
+            cachedTokenCount: prepared.cachePlan.reusedTokenCount
         ))
         genContext.continuation.yieldLifecycle(.init(phase: .decode, state: .started))
 
