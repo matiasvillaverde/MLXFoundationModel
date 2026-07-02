@@ -85,6 +85,23 @@ struct MLXObservabilityTests {
         #expect(!publicEvents.contains { $0.name.contains("generated_token") })
     }
 
+    @Test("decode path diagnostics export structural performance metrics")
+    func decodePathDiagnosticsExportStructuralPerformanceMetrics() async throws {
+        let sink = RecordingObservabilitySink()
+        MLXObservability.reset()
+        MLXObservability.configure(Self.testConfiguration, sink: sink)
+        defer { MLXObservability.reset() }
+
+        try await Self.recordDecodePathSamples()
+
+        let snapshot = MLXObservability.snapshot()
+        let events = sink.events().filter { $0.name == "generation.decode_path.steps" }
+        #expect(snapshot.counters["generation.decode_path.steps"] == 2)
+        #expect(events.count == 2)
+        #expect(events.contains(where: Self.isGreedyDecodePathEvent))
+        #expect(events.contains(where: Self.isLogitsDecodePathEvent))
+    }
+
     @Test("disabled observability does not update in-memory metrics")
     func disabledObservabilityDoesNotUpdateMetrics() {
         MLXObservability.reset()
@@ -203,5 +220,41 @@ struct MLXObservabilityTests {
                 grammar: .json()
             )
         )
+    }
+
+    private static func recordDecodePathSamples() async throws {
+        _ = try await MLXGenerationDiagnostics.withRecording {
+            MLXGenerationDiagnostics.recordDecodePath(MLXDecodePathSnapshot(
+                path: .greedyToken,
+                processorActive: false,
+                argmaxSampler: true,
+                greedyModelAvailable: true
+            ))
+            MLXGenerationDiagnostics.recordDecodePath(MLXDecodePathSnapshot(
+                path: .logits,
+                processorActive: true,
+                argmaxSampler: true,
+                greedyModelAvailable: true
+            ))
+        }
+    }
+
+    private static func isGreedyDecodePathEvent(_ event: MLXObservabilityEvent) -> Bool {
+        isDecodePathEvent(event, path: "greedyToken", processorActive: false)
+    }
+
+    private static func isLogitsDecodePathEvent(_ event: MLXObservabilityEvent) -> Bool {
+        isDecodePathEvent(event, path: "logits", processorActive: true)
+    }
+
+    private static func isDecodePathEvent(
+        _ event: MLXObservabilityEvent,
+        path: String,
+        processorActive: Bool
+    ) -> Bool {
+        event.attributes["path"] == path
+            && event.attributes["processor_active"] == String(processorActive)
+            && event.attributes["argmax_sampler"] == "true"
+            && event.attributes["greedy_model"] == "true"
     }
 }
