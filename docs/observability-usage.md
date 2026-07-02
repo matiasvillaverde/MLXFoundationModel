@@ -107,9 +107,10 @@ and total-token throughput: `prompt_tps`, `decode_tps`, `e2e_tps`, and
 machine-readable keys for benchmark comparisons. Stress runs print `STRESS`
 and `STRESS_JSON` lines.
 
-The serialized runner also writes its model labels, skip/pass/fail lines, and
-Swift test output to `.build/benchmarks/real-models-<timestamp>.log` by default.
-It writes a compact parsed summary to
+The serialized runner also writes its model labels, skip/pass/fail lines,
+per-test wall time, and Swift test output to
+`.build/benchmarks/real-models-<timestamp>.log` by default. It writes a compact
+parsed summary with per-test `duration_seconds` fields to
 `.build/benchmarks/real-models-<timestamp>-summary.json`. Override the log with
 `MLX_REAL_MODEL_BENCHMARK_LOG`, the summary with
 `MLX_REAL_MODEL_BENCHMARK_SUMMARY`, or the directory with

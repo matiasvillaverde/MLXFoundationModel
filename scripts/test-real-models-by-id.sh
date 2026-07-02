@@ -359,6 +359,22 @@ def parse_status(line):
     return None
 
 
+def parse_duration(line):
+    stripped = line.strip()
+    if not stripped.startswith("duration_seconds: "):
+        return None
+    value = stripped.removeprefix("duration_seconds: ")
+    try:
+        return float(value)
+    except ValueError:
+        parse_errors.append({
+            "line": line_number,
+            "kind": "duration_seconds",
+            "message": f"Invalid duration_seconds value: {value}",
+        })
+        return None
+
+
 benchmark_records = []
 tests = []
 parse_errors = []
@@ -391,13 +407,20 @@ with open(log_path, "r", encoding="utf-8") as file:
         if line.startswith("-> "):
             if current_test is not None:
                 tests.append(current_test)
-            current_test = {"label": line.removeprefix("-> "), "status": "unknown"}
+            current_test = {
+                "label": line.removeprefix("-> "),
+                "status": "unknown",
+                "duration_seconds": None,
+            }
             continue
 
         if current_test is not None:
             status = parse_status(line)
             if status is not None:
                 current_test.update(status)
+            duration_seconds = parse_duration(line)
+            if duration_seconds is not None:
+                current_test["duration_seconds"] = duration_seconds
 
 if current_test is not None:
     tests.append(current_test)
@@ -468,17 +491,22 @@ run_swift_test() {
     swift_test_flags+=(--skip-build)
   fi
 
+  local started_seconds=$SECONDS
   log_benchmark_line "-> $label"
   if run_with_timeout "$timeout_seconds" \
     env "${environment[@]}" swift test "${swift_test_flags[@]}" --filter "$filter" \
     2>&1 | tee -a "$BENCHMARK_LOG"; then
+    local duration_seconds=$((SECONDS - started_seconds))
     log_benchmark_line "   passed"
+    log_benchmark_line "   duration_seconds: $duration_seconds"
     LAST_TEST_STATUS=0
     SWIFT_TEST_INVOCATION_COUNT=$((SWIFT_TEST_INVOCATION_COUNT + 1))
     return 0
   else
     local status=$?
+    local duration_seconds=$((SECONDS - started_seconds))
     log_benchmark_line "   failed with exit status $status"
+    log_benchmark_line "   duration_seconds: $duration_seconds"
     FAILURES+=("$label (exit status $status)")
     LAST_TEST_STATUS="$status"
     SWIFT_TEST_INVOCATION_COUNT=$((SWIFT_TEST_INVOCATION_COUNT + 1))
@@ -514,6 +542,7 @@ run_model_feature_test() {
   else
     log_benchmark_line "-> $label"
     log_benchmark_line "   skipped: $model_id is not selected for scope '$SCOPE'"
+    log_benchmark_line "   duration_seconds: 0"
   fi
 }
 
