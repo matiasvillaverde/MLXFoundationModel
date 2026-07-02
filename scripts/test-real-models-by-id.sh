@@ -687,6 +687,12 @@ for MODEL in "${MODELS[@]}"; do
     "$ID"
 
   run_swift_test \
+    "$ID memory guard admission decisions" \
+    "$MODEL_TIMEOUT_SECONDS" \
+    "MLXRealModelTests.MLXRealModelGenerationTests/selectedModelsRecordMemoryGuardAdmissionDecisions" \
+    "$ID"
+
+  run_swift_test \
     "$ID greedy and constrained decode paths" \
     "$MODEL_TIMEOUT_SECONDS" \
     "MLXRealModelTests.MLXRealModelGenerationTests/selectedModelsReportGreedyAndConstrainedDecodePaths" \

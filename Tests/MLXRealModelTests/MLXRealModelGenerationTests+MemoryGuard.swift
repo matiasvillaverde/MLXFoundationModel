@@ -2,6 +2,33 @@
 import Testing
 
 extension MLXRealModelGenerationTests {
+    @Test("selected models record memory guard admission decisions")
+    func selectedModelsRecordMemoryGuardAdmissionDecisions() async throws {
+        let models = try MLXRealModelCatalog.load()
+        let selected = MLXRealModelEnvironment.selectedModels(from: models)
+        let missing = selected.filter { !MLXRealModelEnvironment.hasModelFiles(for: $0) }
+
+        #expect(!selected.isEmpty)
+        #expect(
+            missing.isEmpty,
+            Comment(rawValue: MLXRealModelEnvironment.missingModelsMessage(missing))
+        )
+        guard missing.isEmpty else {
+            return
+        }
+
+        var failures: [String] = []
+        for model in selected {
+            do {
+                try await Self.verifyAllowedMemoryGuardGeneration(model: model)
+                try await Self.verifyRejectedMemoryGuardModelLoad(model: model)
+            } catch {
+                failures.append("\(model.id): \(error)")
+            }
+        }
+        #expect(failures.isEmpty, Comment(rawValue: failures.joined(separator: "\n")))
+    }
+
     @Test("Qwen3 records memory guard admission decisions")
     func qwen3RecordsMemoryGuardAdmissionDecisions() async throws {
         let models = try MLXRealModelCatalog.load()
@@ -78,7 +105,7 @@ extension MLXRealModelGenerationTests {
     }
 
     private static var memoryGuardPrompt: String {
-        "/no_think\nReply with one short word about bounded local inference."
+        "Reply with one short word about bounded local inference."
     }
 
     private static func configuration(
