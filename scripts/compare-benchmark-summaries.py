@@ -14,6 +14,7 @@ from typing import Any
 
 
 DEFAULT_METRICS = ("decode_tps", "total_tps", "prompt_tps", "e2e_tps")
+DEFAULT_TEST_DURATION_MAX_RATIO = 1.50
 
 
 @dataclass(frozen=True)
@@ -51,6 +52,15 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.90,
         help="Minimum current/baseline ratio for every selected metric. Defaults to 0.90.",
+    )
+    parser.add_argument(
+        "--test-duration-max-ratio",
+        type=float,
+        default=DEFAULT_TEST_DURATION_MAX_RATIO,
+        help=(
+            "Maximum current/baseline ratio for passed real-model feature-test durations. "
+            f"Defaults to {DEFAULT_TEST_DURATION_MAX_RATIO:.2f}. Use 0 to skip duration checks."
+        ),
     )
     parser.add_argument(
         "--json",
@@ -106,6 +116,25 @@ def aggregate_records(summary: dict[str, Any], path: Path) -> dict[BenchmarkKey,
     }
 
 
+def aggregate_tests(summary: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    records = summary.get("tests", [])
+    if not isinstance(records, list):
+        return {}
+
+    tests: dict[str, dict[str, Any]] = {}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        label = record.get("label")
+        if not isinstance(label, str) or not label:
+            continue
+        tests[label] = {
+            "status": str(record.get("status", "unknown")),
+            "duration_seconds": numeric_value(record.get("duration_seconds")),
+        }
+    return tests
+
+
 def average_metrics(records: list[dict[str, Any]]) -> dict[str, float]:
     averaged: dict[str, float] = {}
     for metric in DEFAULT_METRICS:
@@ -119,11 +148,20 @@ def average_metrics(records: list[dict[str, Any]]) -> dict[str, float]:
     return averaged
 
 
+def numeric_value(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
 def compare(
     baseline: dict[BenchmarkKey, BenchmarkAggregate],
     current: dict[BenchmarkKey, BenchmarkAggregate],
+    baseline_tests: dict[str, dict[str, Any]],
+    current_tests: dict[str, dict[str, Any]],
     metrics: list[str],
     min_ratio: float,
+    test_duration_max_ratio: float,
 ) -> dict[str, Any]:
     rows = []
     failures = []
@@ -161,15 +199,70 @@ def compare(
     extra_current = [
         key.label for key in sorted(set(current).difference(baseline), key=lambda item: item.label)
     ]
+    test_rows, test_failures = compare_tests(
+        baseline_tests,
+        current_tests,
+        test_duration_max_ratio,
+    )
+    extra_current_tests = sorted(set(current_tests).difference(baseline_tests))
+    failures.extend(test_failures)
     return {
         "schema_version": 1,
         "min_ratio": min_ratio,
+        "test_duration_max_ratio": test_duration_max_ratio,
         "metrics": metrics,
         "rows": rows,
+        "test_rows": test_rows,
         "extra_current": extra_current,
+        "extra_current_tests": extra_current_tests,
         "failure_count": len(failures),
         "passed": not failures,
     }
+
+
+def compare_tests(
+    baseline: dict[str, dict[str, Any]],
+    current: dict[str, dict[str, Any]],
+    max_ratio: float,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    rows: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    for label in sorted(baseline):
+        baseline_record = baseline[label]
+        if baseline_record["status"] != "passed":
+            continue
+        current_record = current.get(label)
+        row = {
+            "label": label,
+            "baseline_status": baseline_record["status"],
+            "current_status": current_record["status"] if current_record else None,
+            "baseline_duration_seconds": baseline_record["duration_seconds"],
+            "current_duration_seconds": (
+                current_record["duration_seconds"] if current_record else None
+            ),
+            "duration_ratio": None,
+        }
+
+        if current_record is None:
+            row["status"] = "missing_current_test"
+        elif current_record["status"] != "passed":
+            row["status"] = "test_status_regressed"
+        else:
+            row["duration_ratio"] = ratio(
+                current_record["duration_seconds"],
+                baseline_record["duration_seconds"],
+            )
+            row["status"] = duration_status(
+                row["duration_ratio"],
+                current_record["duration_seconds"],
+                baseline_record["duration_seconds"],
+                max_ratio,
+            )
+
+        rows.append(row)
+        if row["status"] not in {"passed", "duration_unchecked"}:
+            failures.append(row)
+    return rows, failures
 
 
 def ratio(current_value: float | None, baseline_value: float | None) -> float | None:
@@ -183,6 +276,25 @@ def status_for(value: float | None, min_ratio: float) -> str:
         return "missing_metric"
     if value < min_ratio:
         return "regressed"
+    return "passed"
+
+
+def duration_status(
+    ratio_value: float | None,
+    current_value: float | None,
+    baseline_value: float | None,
+    max_ratio: float,
+) -> str:
+    if baseline_value is None:
+        return "duration_unchecked"
+    if current_value is None:
+        return "missing_duration"
+    if max_ratio <= 0 or baseline_value <= 0:
+        return "duration_unchecked"
+    if ratio_value is None:
+        return "missing_duration"
+    if ratio_value > max_ratio:
+        return "duration_regressed"
     return "passed"
 
 
@@ -208,6 +320,27 @@ def print_text_report(report: dict[str, Any]) -> None:
         for key in report["extra_current"]:
             print(f"- {key}")
 
+    if report["test_rows"]:
+        print(
+            "Feature-test duration comparison "
+            f"max_ratio={report['test_duration_max_ratio']:.3f}"
+        )
+    for row in report["test_rows"]:
+        ratio_value = row["duration_ratio"]
+        ratio_text = "n/a" if ratio_value is None else f"{ratio_value:.3f}"
+        baseline = format_number(row["baseline_duration_seconds"])
+        current = format_number(row["current_duration_seconds"])
+        prefix = "PASS" if row["status"] in {"passed", "duration_unchecked"} else "FAIL"
+        print(
+            f"{prefix} {row['label']} duration_seconds "
+            f"baseline={baseline} current={current} ratio={ratio_text} status={row['status']}"
+        )
+
+    if report["extra_current_tests"]:
+        print("Extra current tests:")
+        for label in report["extra_current_tests"]:
+            print(f"- {label}")
+
 
 def format_number(value: Any) -> str:
     if isinstance(value, (int, float)):
@@ -218,9 +351,19 @@ def format_number(value: Any) -> str:
 def main() -> int:
     args = parse_args()
     metrics = args.metrics or list(DEFAULT_METRICS)
-    baseline = aggregate_records(load_summary(args.baseline), args.baseline)
-    current = aggregate_records(load_summary(args.current), args.current)
-    report = compare(baseline, current, metrics, args.min_ratio)
+    baseline_summary = load_summary(args.baseline)
+    current_summary = load_summary(args.current)
+    baseline = aggregate_records(baseline_summary, args.baseline)
+    current = aggregate_records(current_summary, args.current)
+    report = compare(
+        baseline,
+        current,
+        aggregate_tests(baseline_summary),
+        aggregate_tests(current_summary),
+        metrics,
+        args.min_ratio,
+        args.test_duration_max_ratio,
+    )
 
     if args.json:
         json.dump(report, sys.stdout, indent=2, sort_keys=True)
