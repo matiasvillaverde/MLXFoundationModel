@@ -11,13 +11,47 @@ import Testing
     )
 )
 struct MLXRealModelBatchCacheTests {
+    @Test("selected models reuse memory prompt cache through continuous batching")
+    func selectedModelsReuseMemoryPromptCacheThroughContinuousBatching() async throws {
+        let models = try MLXRealModelCatalog.load()
+        let selected = MLXRealModelEnvironment.selectedModels(from: models)
+        let missing = selected.filter { !MLXRealModelEnvironment.hasModelFiles(for: $0) }
+
+        #expect(!selected.isEmpty)
+        #expect(
+            missing.isEmpty,
+            Comment(rawValue: MLXRealModelEnvironment.missingModelsMessage(missing))
+        )
+        guard missing.isEmpty else {
+            return
+        }
+
+        var failures: [String] = []
+        for model in selected {
+            do {
+                try await Self.verifyContinuousBatchCacheReuse(model: model)
+            } catch {
+                failures.append("\(model.id): \(error)")
+            }
+        }
+        #expect(failures.isEmpty, Comment(rawValue: failures.joined(separator: "\n")))
+    }
+
     @Test("Qwen3 reuses memory prompt cache through continuous batching")
     func qwen3ReusesMemoryPromptCacheThroughContinuousBatching() async throws {
         let models = try MLXRealModelCatalog.load()
         guard let model = try MLXRealModelHarness.selectedModel("qwen3-0.6b-4bit", in: models) else {
             return
         }
-        let identity = PromptCacheIdentity(stableFingerprint: "qwen3-continuous-cache-real-e2e-v1")
+        try await Self.verifyContinuousBatchCacheReuse(model: model)
+    }
+
+    private static func verifyContinuousBatchCacheReuse(
+        model: MLXRealModelCatalog.Model
+    ) async throws {
+        let identity = PromptCacheIdentity(
+            stableFingerprint: "\(model.id)-continuous-cache-real-e2e-v2"
+        )
         let session = MLXSession(runtimeCapabilities: .continuousBatching)
 
         do {
@@ -115,8 +149,8 @@ struct MLXRealModelBatchCacheTests {
         Continuous batching should reuse the exact MLX prompt cache while still streaming real \
         Foundation Models style output.
         """
-        let body = Array(repeating: sentence, count: 32).joined(separator: " ")
-        return "/no_think\n\(body)\nReply with one short word."
+        let body = Array(repeating: sentence, count: 8).joined(separator: " ")
+        return "\(body)\nReply with one short word."
     }
 
     private static func preload(
