@@ -95,6 +95,11 @@ struct MLXRealModelPersistentPromptCacheTests {
         #expect(plan.promptTokenCount >= 256, summary)
         #expect(run.result.metrics?.usage?.promptCacheReusedTokenCount == 0, summary)
         #expect(counters.ssdSaves > 0, summary)
+        try MLXRealModelHarness.verifyPromptCacheProgress(
+            run.result,
+            reusedTokenCount: 0,
+            summary: summary
+        )
     }
 
     private static func verifySecondPersistentRun(
@@ -111,6 +116,11 @@ struct MLXRealModelPersistentPromptCacheTests {
             persistentStrategies.contains(lookup.strategy) && lookup.reusedTokenCount >= 256
         }, summary)
         #expect(counters.ssdDiskLoads > 0, summary)
+        try MLXRealModelHarness.verifyPromptCacheProgress(
+            run.result,
+            reusedTokenCount: reused,
+            summary: summary
+        )
     }
 
     private static let persistentStrategies: Set<MLXPromptCacheLookupSnapshot.Strategy> = [
@@ -216,7 +226,8 @@ struct MLXRealModelPersistentPromptCacheTests {
         [
             "usageReused=\(result.metrics?.usage?.promptCacheReusedTokenCount ?? -1)",
             "plans=\(promptCachePlans(from: events))",
-            "lookups=\(promptCacheLookups(from: events))"
+            "lookups=\(promptCacheLookups(from: events))",
+            "lifecycle=\(result.lifecycleEvents)"
         ].joined(separator: "\n")
     }
 

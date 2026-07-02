@@ -89,6 +89,11 @@ struct MLXRealModelBatchCacheTests {
         #expect(selectedStrategy == .continuousBatching)
         #expect(promptCachePlans(from: run.events).contains { $0.reusedTokenCount > 0 }, summary)
         #expect(reused > 0, summary)
+        try MLXRealModelHarness.verifyPromptCacheProgress(
+            run.result.second,
+            reusedTokenCount: reused,
+            summary: summary
+        )
     }
 
     private static func input(identity: PromptCacheIdentity) -> LLMInput {
@@ -166,7 +171,8 @@ struct MLXRealModelBatchCacheTests {
     ) -> String {
         [
             "usageReused=\(result.metrics?.usage?.promptCacheReusedTokenCount ?? -1)",
-            "plans=\(promptCachePlans(from: events))"
+            "plans=\(promptCachePlans(from: events))",
+            "lifecycle=\(result.lifecycleEvents)"
         ].joined(separator: "\n")
     }
 
