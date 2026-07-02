@@ -18,6 +18,8 @@ MEMORY_GUARD_HARD_LIMIT_FRACTION="${MLX_REAL_MODEL_MEMORY_GUARD_HARD_LIMIT_FRACT
 DRY_RUN="${MLX_REAL_MODEL_DRY_RUN:-0}"
 BENCHMARK_DIR="${MLX_REAL_MODEL_BENCHMARK_DIR:-$ROOT_DIR/.build/benchmarks}"
 BENCHMARK_LOG="${MLX_REAL_MODEL_BENCHMARK_LOG:-$BENCHMARK_DIR/real-models-$(date -u +%Y%m%dT%H%M%SZ).log}"
+BENCHMARK_SUMMARY="${MLX_REAL_MODEL_BENCHMARK_SUMMARY:-${BENCHMARK_LOG%.log}-summary.json}"
+RUN_STARTED_UTC="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 if ! command -v python3 >/dev/null 2>&1; then
   echo "python3 is required"
@@ -296,10 +298,10 @@ if [[ "$DRY_RUN" == "1" ]]; then
   exit 0
 fi
 
-mkdir -p "$(dirname "$BENCHMARK_LOG")"
+mkdir -p "$(dirname "$BENCHMARK_LOG")" "$(dirname "$BENCHMARK_SUMMARY")"
 {
   echo "MLXFoundationModel real-model validation"
-  echo "started_utc: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "started_utc: $RUN_STARTED_UTC"
   echo "catalog: $CATALOG_PATH"
   echo "models: $MODEL_DIR"
   echo "scope: $SCOPE"
@@ -308,10 +310,129 @@ mkdir -p "$(dirname "$BENCHMARK_LOG")"
   echo
 } >"$BENCHMARK_LOG"
 echo "Benchmark log:         $BENCHMARK_LOG"
+echo "Benchmark summary:     $BENCHMARK_SUMMARY"
 echo
 
 log_benchmark_line() {
   printf '%s\n' "$*" | tee -a "$BENCHMARK_LOG"
+}
+
+write_benchmark_summary() {
+  local result="$1"
+  MLX_REAL_MODEL_BENCHMARK_LOG_PATH="$BENCHMARK_LOG" \
+  MLX_REAL_MODEL_BENCHMARK_SUMMARY_PATH="$BENCHMARK_SUMMARY" \
+  MLX_REAL_MODEL_RUN_STARTED_UTC="$RUN_STARTED_UTC" \
+  MLX_REAL_MODEL_RUN_RESULT="$result" \
+  MLX_REAL_MODEL_CATALOG_PATH="$CATALOG_PATH" \
+  MLX_REAL_MODEL_DIR="$MODEL_DIR" \
+  MLX_REAL_MODEL_SCOPE_VALUE="$SCOPE" \
+  MLX_REAL_MODEL_HOST_MEMORY_GB="$HOST_MEMORY_GB" \
+  MLX_REAL_MODEL_SELECTED_COUNT="${#MODELS[@]}" \
+  MLX_REAL_MODEL_SWIFT_TEST_INVOCATION_COUNT="$SWIFT_TEST_INVOCATION_COUNT" \
+  python3 <<'PY'
+import json
+import os
+from datetime import datetime, timezone
+
+log_path = os.environ["MLX_REAL_MODEL_BENCHMARK_LOG_PATH"]
+summary_path = os.environ["MLX_REAL_MODEL_BENCHMARK_SUMMARY_PATH"]
+
+
+def integer(name):
+    try:
+        return int(os.environ[name])
+    except (KeyError, ValueError):
+        return None
+
+
+def parse_status(line):
+    stripped = line.strip()
+    if stripped == "passed":
+        return {"status": "passed"}
+    if stripped.startswith("skipped: "):
+        return {"status": "skipped", "reason": stripped.removeprefix("skipped: ")}
+    if stripped.startswith("failed with exit status "):
+        return {
+            "status": "failed",
+            "exit_status": stripped.removeprefix("failed with exit status "),
+        }
+    return None
+
+
+benchmark_records = []
+tests = []
+parse_errors = []
+current_test = None
+
+with open(log_path, "r", encoding="utf-8") as file:
+    for line_number, raw_line in enumerate(file, start=1):
+        line = raw_line.rstrip("\n")
+        if line.startswith("BENCH_JSON "):
+            payload = line.removeprefix("BENCH_JSON ")
+            try:
+                benchmark_records.append(json.loads(payload))
+            except json.JSONDecodeError as error:
+                parse_errors.append({
+                    "line": line_number,
+                    "kind": "BENCH_JSON",
+                    "message": str(error),
+                })
+        elif line.startswith("STRESS_JSON "):
+            payload = line.removeprefix("STRESS_JSON ")
+            try:
+                benchmark_records.append(json.loads(payload))
+            except json.JSONDecodeError as error:
+                parse_errors.append({
+                    "line": line_number,
+                    "kind": "STRESS_JSON",
+                    "message": str(error),
+                })
+
+        if line.startswith("-> "):
+            if current_test is not None:
+                tests.append(current_test)
+            current_test = {"label": line.removeprefix("-> "), "status": "unknown"}
+            continue
+
+        if current_test is not None:
+            status = parse_status(line)
+            if status is not None:
+                current_test.update(status)
+
+if current_test is not None:
+    tests.append(current_test)
+
+status_counts = {
+    "passed": sum(1 for test in tests if test["status"] == "passed"),
+    "skipped": sum(1 for test in tests if test["status"] == "skipped"),
+    "failed": sum(1 for test in tests if test["status"] == "failed"),
+    "unknown": sum(1 for test in tests if test["status"] == "unknown"),
+}
+
+summary = {
+    "schema_version": 1,
+    "result": os.environ["MLX_REAL_MODEL_RUN_RESULT"],
+    "started_utc": os.environ["MLX_REAL_MODEL_RUN_STARTED_UTC"],
+    "ended_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "catalog": os.environ["MLX_REAL_MODEL_CATALOG_PATH"],
+    "models": os.environ["MLX_REAL_MODEL_DIR"],
+    "scope": os.environ["MLX_REAL_MODEL_SCOPE_VALUE"],
+    "host_ram_gib": integer("MLX_REAL_MODEL_HOST_MEMORY_GB"),
+    "selected_model_count": integer("MLX_REAL_MODEL_SELECTED_COUNT"),
+    "swift_test_invocation_count": integer("MLX_REAL_MODEL_SWIFT_TEST_INVOCATION_COUNT"),
+    "benchmark_log": log_path,
+    "benchmark_records": benchmark_records,
+    "benchmark_record_count": len(benchmark_records),
+    "tests": tests,
+    "test_status_counts": status_counts,
+    "benchmark_parse_errors": parse_errors,
+}
+
+with open(summary_path, "w", encoding="utf-8") as file:
+    json.dump(summary, file, indent=2, sort_keys=True)
+    file.write("\n")
+PY
+  log_benchmark_line "Benchmark summary: $BENCHMARK_SUMMARY"
 }
 
 SWIFT_TEST_FLAGS=(--configuration "$CONFIGURATION" --no-parallel)
@@ -579,6 +700,7 @@ done
 log_benchmark_line ""
 if [[ "${#FAILURES[@]}" -eq 0 ]]; then
   log_benchmark_line "All per-model real validations passed."
+  write_benchmark_summary "passed"
   exit 0
 fi
 
@@ -586,4 +708,5 @@ log_benchmark_line "Real-model validation failures:"
 for FAILURE in "${FAILURES[@]}"; do
   log_benchmark_line "- $FAILURE"
 done
+write_benchmark_summary "failed"
 exit 1

@@ -102,5 +102,8 @@ and `STRESS_JSON` lines.
 
 The serialized runner also writes its model labels, skip/pass/fail lines, and
 Swift test output to `.build/benchmarks/real-models-<timestamp>.log` by default.
-Override the file with `MLX_REAL_MODEL_BENCHMARK_LOG` or the directory with
+It writes a compact parsed summary to
+`.build/benchmarks/real-models-<timestamp>-summary.json`. Override the log with
+`MLX_REAL_MODEL_BENCHMARK_LOG`, the summary with
+`MLX_REAL_MODEL_BENCHMARK_SUMMARY`, or the directory with
 `MLX_REAL_MODEL_BENCHMARK_DIR`.
