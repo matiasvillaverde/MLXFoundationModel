@@ -110,11 +110,16 @@ and `STRESS_JSON` lines.
 The serialized runner also writes its model labels, skip/pass/fail lines,
 per-test wall time, and Swift test output to
 `.build/benchmarks/real-models-<timestamp>.log` by default. It writes a compact
-parsed summary with per-test `duration_seconds` fields to
+parsed summary with per-test `feature_key`, model metadata, `duration_seconds`,
+and `feature_coverage` fields to
 `.build/benchmarks/real-models-<timestamp>-summary.json`. Override the log with
 `MLX_REAL_MODEL_BENCHMARK_LOG`, the summary with
 `MLX_REAL_MODEL_BENCHMARK_SUMMARY`, or the directory with
 `MLX_REAL_MODEL_BENCHMARK_DIR`.
+
+The runner fails if a selected model is missing a required feature check in the
+summary. Required coverage is architecture-aware: attention models must cover
+rotating/quantized KV cache options, while Mamba/RWKV-style models are exempt.
 
 Compare two summary files with:
 

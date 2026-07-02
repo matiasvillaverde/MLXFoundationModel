@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CATALOG_PATH="${MLX_MODEL_CATALOG_PATH:-$ROOT_DIR/Tests/MLXRealModelTests/Resources/model-catalog.json}"
+SUMMARY_SCRIPT="$ROOT_DIR/scripts/summarize-real-model-run.py"
 MODEL_DIR="${MLX_TEST_MODELS_DIR:-$ROOT_DIR/.models}"
 SCOPE="${MLX_REAL_MODEL_SCOPE:-relevant}"
 CONFIGURATION="${CONFIGURATION:-debug}"
@@ -317,144 +318,74 @@ log_benchmark_line() {
   printf '%s\n' "$*" | tee -a "$BENCHMARK_LOG"
 }
 
+lookup_model_metadata() {
+  local expected_id="$1"
+  local model
+  local id
+  local display_name
+  local architecture
+  local tags
+
+  for model in "${MODELS[@]}"; do
+    IFS=$'\t' read -r id display_name architecture tags <<<"$model"
+    if [[ "$id" == "$expected_id" ]]; then
+      printf '%s\t%s\n' "$architecture" "$tags"
+      return 0
+    fi
+  done
+  printf '\t\n'
+}
+
+test_metadata_json() {
+  local label="$1"
+  local model_id="$2"
+  local feature_key="$3"
+  local architecture="$4"
+  local tags="$5"
+
+  python3 - "$label" "$model_id" "$feature_key" "$architecture" "$tags" <<'PY'
+import json
+import sys
+
+label, model_id, feature_key, architecture, tags = sys.argv[1:]
+record = {
+    "schema_version": 1,
+    "label": label,
+    "model_id": model_id or None,
+    "feature_key": feature_key or None,
+    "architecture": architecture or None,
+    "tags": [value for value in tags.split(",") if value],
+}
+print(json.dumps(record, sort_keys=True))
+PY
+}
+
+log_test_start() {
+  local label="$1"
+  local model_id="$2"
+  local feature_key="$3"
+  local architecture="$4"
+  local tags="$5"
+  local metadata_json
+
+  log_benchmark_line "-> $label"
+  metadata_json="$(test_metadata_json "$label" "$model_id" "$feature_key" "$architecture" "$tags")"
+  log_benchmark_line "TEST_META_JSON $metadata_json"
+}
+
 write_benchmark_summary() {
   local result="$1"
-  MLX_REAL_MODEL_BENCHMARK_LOG_PATH="$BENCHMARK_LOG" \
-  MLX_REAL_MODEL_BENCHMARK_SUMMARY_PATH="$BENCHMARK_SUMMARY" \
-  MLX_REAL_MODEL_RUN_STARTED_UTC="$RUN_STARTED_UTC" \
-  MLX_REAL_MODEL_RUN_RESULT="$result" \
-  MLX_REAL_MODEL_CATALOG_PATH="$CATALOG_PATH" \
-  MLX_REAL_MODEL_DIR="$MODEL_DIR" \
-  MLX_REAL_MODEL_SCOPE_VALUE="$SCOPE" \
-  MLX_REAL_MODEL_HOST_MEMORY_GB="$HOST_MEMORY_GB" \
-  MLX_REAL_MODEL_SELECTED_COUNT="${#MODELS[@]}" \
-  MLX_REAL_MODEL_SWIFT_TEST_INVOCATION_COUNT="$SWIFT_TEST_INVOCATION_COUNT" \
-  python3 <<'PY'
-import json
-import os
-from datetime import datetime, timezone
-
-log_path = os.environ["MLX_REAL_MODEL_BENCHMARK_LOG_PATH"]
-summary_path = os.environ["MLX_REAL_MODEL_BENCHMARK_SUMMARY_PATH"]
-
-
-def integer(name):
-    try:
-        return int(os.environ[name])
-    except (KeyError, ValueError):
-        return None
-
-
-def parse_status(line):
-    stripped = line.strip()
-    if stripped == "passed":
-        return {"status": "passed"}
-    if stripped.startswith("skipped: "):
-        return {"status": "skipped", "reason": stripped.removeprefix("skipped: ")}
-    if stripped.startswith("failed with exit status "):
-        return {
-            "status": "failed",
-            "exit_status": stripped.removeprefix("failed with exit status "),
-        }
-    return None
-
-
-def parse_duration(line):
-    stripped = line.strip()
-    if not stripped.startswith("duration_seconds: "):
-        return None
-    value = stripped.removeprefix("duration_seconds: ")
-    try:
-        return float(value)
-    except ValueError:
-        parse_errors.append({
-            "line": line_number,
-            "kind": "duration_seconds",
-            "message": f"Invalid duration_seconds value: {value}",
-        })
-        return None
-
-
-benchmark_records = []
-tests = []
-parse_errors = []
-current_test = None
-
-with open(log_path, "r", encoding="utf-8") as file:
-    for line_number, raw_line in enumerate(file, start=1):
-        line = raw_line.rstrip("\n")
-        if line.startswith("BENCH_JSON "):
-            payload = line.removeprefix("BENCH_JSON ")
-            try:
-                benchmark_records.append(json.loads(payload))
-            except json.JSONDecodeError as error:
-                parse_errors.append({
-                    "line": line_number,
-                    "kind": "BENCH_JSON",
-                    "message": str(error),
-                })
-        elif line.startswith("STRESS_JSON "):
-            payload = line.removeprefix("STRESS_JSON ")
-            try:
-                benchmark_records.append(json.loads(payload))
-            except json.JSONDecodeError as error:
-                parse_errors.append({
-                    "line": line_number,
-                    "kind": "STRESS_JSON",
-                    "message": str(error),
-                })
-
-        if line.startswith("-> "):
-            if current_test is not None:
-                tests.append(current_test)
-            current_test = {
-                "label": line.removeprefix("-> "),
-                "status": "unknown",
-                "duration_seconds": None,
-            }
-            continue
-
-        if current_test is not None:
-            status = parse_status(line)
-            if status is not None:
-                current_test.update(status)
-            duration_seconds = parse_duration(line)
-            if duration_seconds is not None:
-                current_test["duration_seconds"] = duration_seconds
-
-if current_test is not None:
-    tests.append(current_test)
-
-status_counts = {
-    "passed": sum(1 for test in tests if test["status"] == "passed"),
-    "skipped": sum(1 for test in tests if test["status"] == "skipped"),
-    "failed": sum(1 for test in tests if test["status"] == "failed"),
-    "unknown": sum(1 for test in tests if test["status"] == "unknown"),
-}
-
-summary = {
-    "schema_version": 1,
-    "result": os.environ["MLX_REAL_MODEL_RUN_RESULT"],
-    "started_utc": os.environ["MLX_REAL_MODEL_RUN_STARTED_UTC"],
-    "ended_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-    "catalog": os.environ["MLX_REAL_MODEL_CATALOG_PATH"],
-    "models": os.environ["MLX_REAL_MODEL_DIR"],
-    "scope": os.environ["MLX_REAL_MODEL_SCOPE_VALUE"],
-    "host_ram_gib": integer("MLX_REAL_MODEL_HOST_MEMORY_GB"),
-    "selected_model_count": integer("MLX_REAL_MODEL_SELECTED_COUNT"),
-    "swift_test_invocation_count": integer("MLX_REAL_MODEL_SWIFT_TEST_INVOCATION_COUNT"),
-    "benchmark_log": log_path,
-    "benchmark_records": benchmark_records,
-    "benchmark_record_count": len(benchmark_records),
-    "tests": tests,
-    "test_status_counts": status_counts,
-    "benchmark_parse_errors": parse_errors,
-}
-
-with open(summary_path, "w", encoding="utf-8") as file:
-    json.dump(summary, file, indent=2, sort_keys=True)
-    file.write("\n")
-PY
+  python3 "$SUMMARY_SCRIPT" \
+    --log "$BENCHMARK_LOG" \
+    --summary "$BENCHMARK_SUMMARY" \
+    --result "$result" \
+    --started-utc "$RUN_STARTED_UTC" \
+    --catalog "$CATALOG_PATH" \
+    --models "$MODEL_DIR" \
+    --scope "$SCOPE" \
+    --host-memory-gb "$HOST_MEMORY_GB" \
+    --selected-count "${#MODELS[@]}" \
+    --swift-test-invocation-count "$SWIFT_TEST_INVOCATION_COUNT"
   log_benchmark_line "Benchmark summary: $BENCHMARK_SUMMARY"
 }
 
@@ -482,17 +413,23 @@ run_swift_test() {
   local timeout_seconds="$2"
   local filter="$3"
   local model_id="${4:-}"
+  local feature_key="${5:-}"
+  local architecture=""
+  local tags=""
+  local metadata=""
   local environment=("${COMMON_ENV[@]}")
   local swift_test_flags=("${SWIFT_TEST_FLAGS[@]}")
   if [[ -n "$model_id" ]]; then
     environment+=(MLX_REAL_MODEL_IDS="$model_id")
+    metadata="$(lookup_model_metadata "$model_id")"
+    IFS=$'\t' read -r architecture tags <<<"$metadata"
   fi
   if [[ "$SKIP_BUILD_AFTER_FIRST" == "1" && "$SWIFT_TEST_INVOCATION_COUNT" -gt 0 ]]; then
     swift_test_flags+=(--skip-build)
   fi
 
   local started_seconds=$SECONDS
-  log_benchmark_line "-> $label"
+  log_test_start "$label" "$model_id" "$feature_key" "$architecture" "$tags"
   if run_with_timeout "$timeout_seconds" \
     env "${environment[@]}" swift test "${swift_test_flags[@]}" --filter "$filter" \
     2>&1 | tee -a "$BENCHMARK_LOG"; then
@@ -536,152 +473,209 @@ run_model_feature_test() {
   local label="$2"
   local timeout_seconds="$3"
   local filter="$4"
+  local feature_key="$5"
 
   if model_is_selected "$model_id"; then
-    run_swift_test "$label" "$timeout_seconds" "$filter" "$model_id"
+    run_swift_test "$label" "$timeout_seconds" "$filter" "$model_id" "$feature_key"
   else
-    log_benchmark_line "-> $label"
+    log_test_start "$label" "$model_id" "$feature_key" "" ""
     log_benchmark_line "   skipped: $model_id is not selected for scope '$SCOPE'"
     log_benchmark_line "   duration_seconds: 0"
   fi
 }
 
+coverage_passed() {
+  python3 - "$BENCHMARK_SUMMARY" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as file:
+    summary = json.load(file)
+
+coverage = summary.get("feature_coverage", {})
+sys.exit(0 if coverage.get("passed") is True else 1)
+PY
+}
+
+log_coverage_failures() {
+  python3 - "$BENCHMARK_SUMMARY" <<'PY' | tee -a "$BENCHMARK_LOG"
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as file:
+    summary = json.load(file)
+
+rows = summary.get("feature_coverage", {}).get("rows", [])
+for row in rows:
+    if row.get("status") == "passed":
+        continue
+    model_id = row.get("model_id") or "<unknown>"
+    feature_key = row.get("feature_key") or "<unknown>"
+    status = row.get("status") or "<unknown>"
+    print(f"- {model_id} {feature_key}: {status}")
+PY
+}
+
 run_swift_test \
   "catalog metadata" \
   "$FEATURE_TIMEOUT_SECONDS" \
-  "MLXRealModelTests.MLXRealModelCatalogTests"
+  "MLXRealModelTests.MLXRealModelCatalogTests" \
+  "" \
+  "catalog_metadata"
 
 run_model_feature_test \
   "qwen3-0.6b-4bit" \
   "Qwen3 sampling and logits controls" \
   "$FEATURE_TIMEOUT_SECONDS" \
-  "MLXRealModelTests.MLXRealModelSamplingTests/qwen3GenerationAppliesSamplingAndLogitsControls"
+  "MLXRealModelTests.MLXRealModelSamplingTests/qwen3GenerationAppliesSamplingAndLogitsControls" \
+  "sampling_logits"
 
 run_model_feature_test \
   "qwen3-0.6b-4bit" \
   "Qwen3 rendered text streaming" \
   "$FEATURE_TIMEOUT_SECONDS" \
-  "MLXRealModelTests.MLXRealModelInterfaceTests/qwen3StreamsMultipleChunksFromRenderedTextRequest"
+  "MLXRealModelTests.MLXRealModelInterfaceTests/qwen3StreamsMultipleChunksFromRenderedTextRequest" \
+  "rendered_text_streaming"
 
 run_model_feature_test \
   "qwen3-0.6b-4bit" \
   "Qwen3 stream lifecycle events" \
   "$FEATURE_TIMEOUT_SECONDS" \
-  "MLXRealModelTests.MLXRealModelInterfaceTests/qwen3RawStreamReportsLifecyclePhaseBoundaries"
+  "MLXRealModelTests.MLXRealModelInterfaceTests/qwen3RawStreamReportsLifecyclePhaseBoundaries" \
+  "stream_lifecycle"
 
 run_model_feature_test \
   "qwen3-0.6b-4bit" \
   "Qwen3 on-demand stream model-load progress" \
   "$FEATURE_TIMEOUT_SECONDS" \
-  "MLXRealModelTests.MLXRealModelInterfaceTests/qwen3OnDemandStreamReportsModelLoadProgress"
+  "MLXRealModelTests.MLXRealModelInterfaceTests/qwen3OnDemandStreamReportsModelLoadProgress" \
+  "model_load_progress"
 
 run_model_feature_test \
   "qwen3-0.6b-4bit" \
   "Qwen3 stop sequence" \
   "$FEATURE_TIMEOUT_SECONDS" \
-  "MLXRealModelTests.MLXRealModelGenerationTests/qwen3StopsOnConfiguredStopSequence"
+  "MLXRealModelTests.MLXRealModelGenerationTests/qwen3StopsOnConfiguredStopSequence" \
+  "stop_sequence"
 
 run_model_feature_test \
   "qwen3-0.6b-4bit" \
   "Qwen3 rotating and quantized KV cache options" \
   "$FEATURE_TIMEOUT_SECONDS" \
-  "MLXRealModelTests.MLXRealModelGenerationTests/qwen3RunsRuntimeKVCacheOptions"
+  "MLXRealModelTests.MLXRealModelGenerationTests/qwen3RunsRuntimeKVCacheOptions" \
+  "runtime_kv_cache"
 
 run_model_feature_test \
   "qwen3-0.6b-4bit" \
   "Qwen3 memory guard admission decisions" \
   "$FEATURE_TIMEOUT_SECONDS" \
-  "MLXRealModelTests.MLXRealModelGenerationTests/qwen3RecordsMemoryGuardAdmissionDecisions"
+  "MLXRealModelTests.MLXRealModelGenerationTests/qwen3RecordsMemoryGuardAdmissionDecisions" \
+  "memory_guard"
 
 run_model_feature_test \
   "qwen3-0.6b-4bit" \
   "Qwen3 redacted request summary observability" \
   "$FEATURE_TIMEOUT_SECONDS" \
-  "MLXRealModelTests.MLXRealModelGenerationTests/qwen3RecordsRedactedRequestSummaryObservability"
+  "MLXRealModelTests.MLXRealModelGenerationTests/qwen3RecordsRedactedRequestSummaryObservability" \
+  "observability"
 
 run_model_feature_test \
   "qwen3-0.6b-4bit" \
   "Qwen3 greedy and constrained decode paths" \
   "$FEATURE_TIMEOUT_SECONDS" \
-  "MLXRealModelTests.MLXRealModelGenerationTests/qwen3ReportsGreedyAndConstrainedDecodePaths"
+  "MLXRealModelTests.MLXRealModelGenerationTests/qwen3ReportsGreedyAndConstrainedDecodePaths" \
+  "greedy_constrained_decode"
 
 run_model_feature_test \
   "qwen3-0.6b-4bit" \
   "Qwen3 tool call rendering" \
   "$FEATURE_TIMEOUT_SECONDS" \
-  "MLXRealModelTests.MLXRealModelToolCallingTests/qwen3EmitsParseableToolCall"
+  "MLXRealModelTests.MLXRealModelToolCallingTests/qwen3EmitsParseableToolCall" \
+  "tool_call_rendering"
 
 run_model_feature_test \
   "qwen3-0.6b-4bit" \
   "Qwen3 translated tool streaming" \
   "$FEATURE_TIMEOUT_SECONDS" \
-  "MLXRealModelTests.MLXRealModelToolCallingTests/qwen3ToolStreamEmitsToolEventsWithoutProtocolMarkup"
+  "MLXRealModelTests.MLXRealModelToolCallingTests/qwen3ToolStreamEmitsToolEventsWithoutProtocolMarkup" \
+  "tool_stream_translation"
 
 run_model_feature_test \
   "qwen3-0.6b-4bit" \
   "Qwen3 schema-normalized tool streaming" \
   "$FEATURE_TIMEOUT_SECONDS" \
-  "MLXRealModelTests.MLXRealModelToolCallingTests/qwen3ToolStreamNormalizesArgumentsWithToolSchemas"
+  "MLXRealModelTests.MLXRealModelToolCallingTests/qwen3ToolStreamNormalizesArgumentsWithToolSchemas" \
+  "tool_schema_normalization"
 
 run_model_feature_test \
   "qwen3-0.6b-4bit" \
   "Qwen3 constrained native tool streaming" \
   "$FEATURE_TIMEOUT_SECONDS" \
-  "MLXRealModelTests.MLXRealModelToolCallingTests/qwen3ConstrainedNativeToolStreamEmitsTypedArguments"
+  "MLXRealModelTests.MLXRealModelToolCallingTests/qwen3ConstrainedNativeToolStreamEmitsTypedArguments" \
+  "native_tool_constraints"
 
 run_model_feature_test \
   "gemma-4-e2b-it-4bit" \
   "Gemma 4 native translated tool streaming" \
   "$FEATURE_TIMEOUT_SECONDS" \
-  "MLXRealModelTests.MLXRealModelToolCallingTests/gemma4NativeToolStreamEmitsStructuredToolEvents"
+  "MLXRealModelTests.MLXRealModelToolCallingTests/gemma4NativeToolStreamEmitsStructuredToolEvents" \
+  "native_tool_stream_translation"
 
 run_model_feature_test \
   "gemma-4-e2b-it-4bit" \
   "Gemma 4 constrained native tool streaming" \
   "$FEATURE_TIMEOUT_SECONDS" \
-  "MLXRealModelTests.MLXRealModelToolCallingTests/gemma4ConstrainedNativeToolStreamEmitsTypedArguments"
+  "MLXRealModelTests.MLXRealModelToolCallingTests/gemma4ConstrainedNativeToolStreamEmitsTypedArguments" \
+  "native_tool_constraints"
 
 run_model_feature_test \
   "mistral-7b-v0.3-4bit" \
   "Mistral constrained native tool streaming" \
   "$FEATURE_TIMEOUT_SECONDS" \
-  "MLXRealModelTests.MLXRealModelToolCallingTests/mistralConstrainedNativeToolStreamEmitsTypedArguments"
+  "MLXRealModelTests.MLXRealModelToolCallingTests/mistralConstrainedNativeToolStreamEmitsTypedArguments" \
+  "native_tool_constraints"
 
 run_model_feature_test \
   "glm-4-9b-0414-4bit" \
   "GLM constrained native tool streaming" \
   "$FEATURE_TIMEOUT_SECONDS" \
-  "MLXRealModelTests.MLXRealModelToolCallingTests/glmConstrainedNativeToolStreamEmitsTypedArguments"
+  "MLXRealModelTests.MLXRealModelToolCallingTests/glmConstrainedNativeToolStreamEmitsTypedArguments" \
+  "native_tool_constraints"
 
 run_model_feature_test \
   "gpt-oss" \
   "Harmony constrained native tool streaming" \
   "$FEATURE_TIMEOUT_SECONDS" \
-  "MLXRealModelTests.MLXRealModelToolCallingTests/harmonyConstrainedNativeToolStreamEmitsTypedArguments"
+  "MLXRealModelTests.MLXRealModelToolCallingTests/harmonyConstrainedNativeToolStreamEmitsTypedArguments" \
+  "native_tool_constraints"
 
 run_model_feature_test \
   "qwen3-0.6b-4bit" \
   "Qwen3 JSON schema constraints" \
   "$FEATURE_TIMEOUT_SECONDS" \
-  "MLXRealModelTests.MLXRealModelConstrainedDecodingTests/qwen3GeneratesValidJSONThroughTokenLevelSchemaConstraints"
+  "MLXRealModelTests.MLXRealModelConstrainedDecodingTests/qwen3GeneratesValidJSONThroughTokenLevelSchemaConstraints" \
+  "json_schema_constraints"
 
 run_model_feature_test \
   "qwen3-0.6b-4bit" \
   "Qwen3 finite choice constraints" \
   "$FEATURE_TIMEOUT_SECONDS" \
-  "MLXRealModelTests.MLXRealModelConstrainedDecodingTests/qwen3GeneratesOnlyOneFiniteChoiceTokenSequence"
+  "MLXRealModelTests.MLXRealModelConstrainedDecodingTests/qwen3GeneratesOnlyOneFiniteChoiceTokenSequence" \
+  "finite_choice_constraints"
 
 run_model_feature_test \
   "qwen3-0.6b-4bit" \
   "Qwen3 persistent prompt cache restore" \
   "$FEATURE_TIMEOUT_SECONDS" \
-  "MLXRealModelTests.MLXRealModelPersistentPromptCacheTests/qwen3RestoresPersistentPromptCacheAcrossSessions"
+  "MLXRealModelTests.MLXRealModelPersistentPromptCacheTests/qwen3RestoresPersistentPromptCacheAcrossSessions" \
+  "persistent_prompt_cache"
 
 run_model_feature_test \
   "qwen3-0.6b-4bit" \
   "Qwen3 continuous-batch prompt cache reuse" \
   "$FEATURE_TIMEOUT_SECONDS" \
-  "MLXRealModelTests.MLXRealModelBatchCacheTests/qwen3ReusesMemoryPromptCacheThroughContinuousBatching"
+  "MLXRealModelTests.MLXRealModelBatchCacheTests/qwen3ReusesMemoryPromptCacheThroughContinuousBatching" \
+  "continuous_batch_prompt_cache"
 
 COUNT=0
 for MODEL in "${MODELS[@]}"; do
@@ -697,7 +691,8 @@ for MODEL in "${MODELS[@]}"; do
     "$ID generation" \
     "$MODEL_TIMEOUT_SECONDS" \
     "MLXRealModelTests.MLXRealModelGenerationTests/selectedCatalogModelsLoadAndGenerate" \
-    "$ID"
+    "$ID" \
+    "generation"
   if [[ "$LAST_TEST_STATUS" -ne 0 ]]; then
     log_benchmark_line "   skipping follow-up checks for $ID because generation did not pass"
     continue
@@ -707,98 +702,117 @@ for MODEL in "${MODELS[@]}"; do
     "$ID sampling and logits controls" \
     "$MODEL_TIMEOUT_SECONDS" \
     "MLXRealModelTests.MLXRealModelSamplingTests/selectedCatalogModelsApplySamplingAndLogitsControls" \
-    "$ID"
+    "$ID" \
+    "sampling_logits"
 
   run_swift_test \
     "$ID stream lifecycle phase boundaries" \
     "$MODEL_TIMEOUT_SECONDS" \
     "MLXRealModelTests.MLXRealModelInterfaceTests/selectedModelsReportStreamLifecyclePhaseBoundaries" \
-    "$ID"
+    "$ID" \
+    "stream_lifecycle"
 
   run_swift_test \
     "$ID on-demand stream model-load progress" \
     "$MODEL_TIMEOUT_SECONDS" \
     "MLXRealModelTests.MLXRealModelInterfaceTests/selectedModelsReportOnDemandStreamModelLoadProgress" \
-    "$ID"
+    "$ID" \
+    "model_load_progress"
 
   run_swift_test \
     "$ID memory guard admission decisions" \
     "$MODEL_TIMEOUT_SECONDS" \
     "MLXRealModelTests.MLXRealModelGenerationTests/selectedModelsRecordMemoryGuardAdmissionDecisions" \
-    "$ID"
+    "$ID" \
+    "memory_guard"
 
   run_swift_test \
     "$ID redacted request summary observability" \
     "$MODEL_TIMEOUT_SECONDS" \
     "MLXRealModelTests.MLXRealModelGenerationTests/selectedModelsRecordRedactedRequestSummaryObservability" \
-    "$ID"
+    "$ID" \
+    "observability"
 
   run_swift_test \
     "$ID greedy and constrained decode paths" \
     "$MODEL_TIMEOUT_SECONDS" \
     "MLXRealModelTests.MLXRealModelGenerationTests/selectedModelsReportGreedyAndConstrainedDecodePaths" \
-    "$ID"
+    "$ID" \
+    "greedy_constrained_decode"
 
   if [[ "$ARCHITECTURE" != "mamba" && "$ARCHITECTURE" != "mamba2" && "$ARCHITECTURE" != "rwkv7" ]]; then
     run_swift_test \
       "$ID rotating and quantized KV cache options" \
       "$MODEL_TIMEOUT_SECONDS" \
       "MLXRealModelTests.MLXRealModelGenerationTests/selectedAttentionModelsRunRuntimeKVCacheOptions" \
-      "$ID"
+      "$ID" \
+      "runtime_kv_cache"
   fi
 
   run_swift_test \
     "$ID continuous-batch prompt cache reuse" \
     "$MODEL_TIMEOUT_SECONDS" \
     "MLXRealModelTests.MLXRealModelBatchCacheTests/selectedModelsReuseMemoryPromptCacheThroughContinuousBatching" \
-    "$ID"
+    "$ID" \
+    "continuous_batch_prompt_cache"
 
   run_swift_test \
     "$ID persistent prompt cache restore" \
     "$MODEL_TIMEOUT_SECONDS" \
     "MLXRealModelTests.MLXRealModelPersistentPromptCacheTests/selectedModelsRestorePersistentPromptCacheAcrossSessions" \
-    "$ID"
+    "$ID" \
+    "persistent_prompt_cache"
 
   if [[ "$TAGS" != *"native-template-only"* ]]; then
     run_swift_test \
       "$ID session-style request" \
       "$MODEL_TIMEOUT_SECONDS" \
       "MLXRealModelTests.MLXRealModelInterfaceTests/selectedModelsRunRenderedSessionStyleRequests" \
-      "$ID"
+      "$ID" \
+      "session_style_request"
   fi
 
   run_swift_test \
     "$ID JSON schema constraints" \
     "$MODEL_TIMEOUT_SECONDS" \
     "MLXRealModelTests.MLXRealModelConstrainedDecodingTests/selectedModelsGenerateValidJSONThroughTokenLevelSchemaConstraints" \
-    "$ID"
+    "$ID" \
+    "json_schema_constraints"
 
   run_swift_test \
     "$ID finite choice constraints" \
     "$MODEL_TIMEOUT_SECONDS" \
     "MLXRealModelTests.MLXRealModelConstrainedDecodingTests/selectedModelsGenerateOnlyOneFiniteChoiceTokenSequence" \
-    "$ID"
+    "$ID" \
+    "finite_choice_constraints"
 
   run_swift_test \
     "$ID token-level grammar constraint" \
     "$MODEL_TIMEOUT_SECONDS" \
     "MLXRealModelTests.MLXRealModelConstrainedDecodingTests/selectedArchitecturesForceGrammarValidFirstToken" \
-    "$ID"
+    "$ID" \
+    "token_grammar_constraints"
 
   if [[ "$TAGS" == *"stress"* ]]; then
     run_swift_test \
       "$ID stress generation" \
       "$MODEL_TIMEOUT_SECONDS" \
       "MLXRealModelTests.MLXRealModelStressTests/selectedModelsSurviveRepeatedGeneration" \
-      "$ID"
+      "$ID" \
+      "stress_generation"
   fi
 done
 
 log_benchmark_line ""
 if [[ "${#FAILURES[@]}" -eq 0 ]]; then
-  log_benchmark_line "All per-model real validations passed."
+  log_benchmark_line "All real-model test commands passed."
   write_benchmark_summary "passed"
-  exit 0
+  if coverage_passed; then
+    exit 0
+  fi
+  log_benchmark_line "Feature coverage validation failed:"
+  log_coverage_failures
+  exit 1
 fi
 
 log_benchmark_line "Real-model validation failures:"
