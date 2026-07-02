@@ -752,6 +752,13 @@ for MODEL in "${MODELS[@]}"; do
     "sampling_logits"
 
   run_swift_test \
+    "$ID advanced sampling controls" \
+    "$MODEL_TIMEOUT_SECONDS" \
+    "MLXRealModelTests.MLXRealModelSamplingTests/selectedCatalogModelsApplyAdvancedSamplingControls" \
+    "$ID" \
+    "advanced_sampling"
+
+  run_swift_test \
     "$ID stream lifecycle phase boundaries" \
     "$MODEL_TIMEOUT_SECONDS" \
     "MLXRealModelTests.MLXRealModelInterfaceTests/selectedModelsReportStreamLifecyclePhaseBoundaries" \

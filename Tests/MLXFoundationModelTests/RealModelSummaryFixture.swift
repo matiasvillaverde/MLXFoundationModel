@@ -63,6 +63,7 @@ enum RealModelSummaryFixture {
         [
             "generation",
             "sampling_logits",
+            "advanced_sampling",
             "stream_lifecycle",
             "model_load_progress",
             "memory_guard",

@@ -50,6 +50,7 @@ NATIVE_TOOL_ARCHITECTURES = {
 BASE_REQUIRED_FEATURES = (
     "generation",
     "sampling_logits",
+    "advanced_sampling",
     "stream_lifecycle",
     "model_load_progress",
     "memory_guard",
