@@ -217,6 +217,67 @@ def summarize_coverage(
     }
 
 
+def summarize_benchmark_coverage(
+    tests: list[dict[str, Any]],
+    benchmark_records: list[dict[str, Any]],
+    selected_count: int | None,
+) -> dict[str, Any]:
+    selected_models = selected_models_from_tests(tests)
+    if selected_count and not selected_models:
+        return {
+            "schema_version": 1,
+            "status": "missing_model_metadata",
+            "passed": False,
+            "rows": [
+                benchmark_coverage_row(
+                    model_id=None,
+                    architecture=None,
+                    benchmark_records=[],
+                    status="missing_model_metadata",
+                )
+            ],
+            "failed_count": 1,
+        }
+
+    rows = [
+        benchmark_coverage_row(
+            model_id=model_id,
+            architecture=optional_string(model.get("architecture")),
+            benchmark_records=benchmark_records,
+        )
+        for model_id, model in sorted(selected_models.items())
+    ]
+    failed_rows = [row for row in rows if row["status"] != "passed"]
+    return {
+        "schema_version": 1,
+        "status": "available" if selected_models else "not_available",
+        "passed": not failed_rows,
+        "rows": rows,
+        "failed_count": len(failed_rows),
+    }
+
+
+def benchmark_coverage_row(
+    model_id: str | None,
+    architecture: str | None,
+    benchmark_records: list[dict[str, Any]],
+    status: str | None = None,
+) -> dict[str, Any]:
+    records = [
+        record
+        for record in benchmark_records
+        if record.get("kind") == "bench"
+        and record.get("model") == model_id
+        and (architecture is None or record.get("architecture") == architecture)
+    ]
+    return {
+        "model_id": model_id,
+        "architecture": architecture,
+        "status": status or ("passed" if records else "missing"),
+        "benchmark_count": len(records),
+    }
+
+
 def selected_models_from_tests(tests: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     models: dict[str, dict[str, Any]] = {}
     for test in tests:
@@ -331,6 +392,11 @@ def main() -> int:
         "tests": tests,
         "test_status_counts": status_counts(tests),
         "feature_coverage": summarize_coverage(tests, selected_count),
+        "benchmark_coverage": summarize_benchmark_coverage(
+            tests,
+            benchmark_records,
+            selected_count,
+        ),
         "benchmark_parse_errors": parse_errors,
     }
 

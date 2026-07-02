@@ -497,6 +497,19 @@ sys.exit(0 if coverage.get("passed") is True else 1)
 PY
 }
 
+benchmark_coverage_passed() {
+  python3 - "$BENCHMARK_SUMMARY" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as file:
+    summary = json.load(file)
+
+coverage = summary.get("benchmark_coverage", {})
+sys.exit(0 if coverage.get("passed") is True else 1)
+PY
+}
+
 log_coverage_failures() {
   python3 - "$BENCHMARK_SUMMARY" <<'PY' | tee -a "$BENCHMARK_LOG"
 import json
@@ -513,6 +526,24 @@ for row in rows:
     feature_key = row.get("feature_key") or "<unknown>"
     status = row.get("status") or "<unknown>"
     print(f"- {model_id} {feature_key}: {status}")
+PY
+}
+
+log_benchmark_coverage_failures() {
+  python3 - "$BENCHMARK_SUMMARY" <<'PY' | tee -a "$BENCHMARK_LOG"
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as file:
+    summary = json.load(file)
+
+rows = summary.get("benchmark_coverage", {}).get("rows", [])
+for row in rows:
+    if row.get("status") == "passed":
+        continue
+    model_id = row.get("model_id") or "<unknown>"
+    status = row.get("status") or "<unknown>"
+    print(f"- {model_id}: {status}")
 PY
 }
 
@@ -807,11 +838,17 @@ log_benchmark_line ""
 if [[ "${#FAILURES[@]}" -eq 0 ]]; then
   log_benchmark_line "All real-model test commands passed."
   write_benchmark_summary "passed"
-  if coverage_passed; then
+  if coverage_passed && benchmark_coverage_passed; then
     exit 0
   fi
-  log_benchmark_line "Feature coverage validation failed:"
-  log_coverage_failures
+  if ! coverage_passed; then
+    log_benchmark_line "Feature coverage validation failed:"
+    log_coverage_failures
+  fi
+  if ! benchmark_coverage_passed; then
+    log_benchmark_line "Benchmark coverage validation failed:"
+    log_benchmark_coverage_failures
+  fi
   exit 1
 fi
 

@@ -8,12 +8,14 @@ struct RealModelSummaryScriptTests {
         let fixture = try Self.makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
 
-        try Self.writeLog(try Self.completeLog(), to: fixture.log)
+        try Self.writeLog(try Self.completeLogWithBenchmark(), to: fixture.log)
         try Self.runSummary(fixture: fixture)
         let coverage = try Self.coverage(from: fixture.summary)
+        let benchmarkCoverage = try Self.benchmarkCoverage(from: fixture.summary)
         let rows = try #require(coverage["rows"] as? [[String: Any]])
 
         #expect(coverage["passed"] as? Bool == true)
+        #expect(benchmarkCoverage["passed"] as? Bool == true)
         #expect(rows.count == 14)
     }
 
@@ -22,7 +24,7 @@ struct RealModelSummaryScriptTests {
         let fixture = try Self.makeFixture()
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
 
-        try Self.writeLog(try Self.incompleteLog(), to: fixture.log)
+        try Self.writeLog(try Self.incompleteLogWithBenchmark(), to: fixture.log)
         try Self.runSummary(fixture: fixture)
         let coverage = try Self.coverage(from: fixture.summary)
         let rows = try #require(coverage["rows"] as? [[String: Any]])
@@ -34,6 +36,23 @@ struct RealModelSummaryScriptTests {
         #expect(missing.contains { row in
             row["feature_key"] as? String == "sampling_logits"
         })
+    }
+
+    @Test("marks benchmark coverage failed when generation emits no benchmark record")
+    func failsForMissingBenchmarkRecord() throws {
+        let fixture = try Self.makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+
+        try Self.writeLog(try Self.completeLogWithoutBenchmark(), to: fixture.log)
+        try Self.runSummary(fixture: fixture)
+        let coverage = try Self.coverage(from: fixture.summary)
+        let benchmarkCoverage = try Self.benchmarkCoverage(from: fixture.summary)
+        let rows = try #require(benchmarkCoverage["rows"] as? [[String: Any]])
+        let row = try #require(rows.first)
+
+        #expect(coverage["passed"] as? Bool == true)
+        #expect(benchmarkCoverage["passed"] as? Bool == false)
+        #expect(row["status"] as? String == "missing")
     }
 
     private struct Fixture {
@@ -51,7 +70,16 @@ struct RealModelSummaryScriptTests {
         return Fixture(directory: directory, log: log, summary: summary)
     }
 
-    private static func completeLog() throws -> String {
+    private static func completeLogWithBenchmark() throws -> String {
+        var lines = ["MLXFoundationModel real-model validation"]
+        for featureKey in Self.attentionFeatureKeys() {
+            lines.append(contentsOf: try Self.testLines(featureKey: featureKey))
+        }
+        lines.append(try Self.benchmarkLine())
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    private static func completeLogWithoutBenchmark() throws -> String {
         var lines = ["MLXFoundationModel real-model validation"]
         for featureKey in Self.attentionFeatureKeys() {
             lines.append(contentsOf: try Self.testLines(featureKey: featureKey))
@@ -59,11 +87,12 @@ struct RealModelSummaryScriptTests {
         return lines.joined(separator: "\n") + "\n"
     }
 
-    private static func incompleteLog() throws -> String {
+    private static func incompleteLogWithBenchmark() throws -> String {
         var lines = ["MLXFoundationModel real-model validation"]
         for featureKey in Self.attentionFeatureKeys() where featureKey != "sampling_logits" {
             lines.append(contentsOf: try Self.testLines(featureKey: featureKey))
         }
+        lines.append(try Self.benchmarkLine())
         return lines.joined(separator: "\n") + "\n"
     }
 
@@ -110,6 +139,28 @@ struct RealModelSummaryScriptTests {
         return try #require(String(data: data, encoding: .utf8))
     }
 
+    private static func benchmarkLine() throws -> String {
+        let data = try JSONSerialization.data(
+            withJSONObject: Self.benchmarkRecord(),
+            options: [.sortedKeys]
+        )
+        let json = try #require(String(data: data, encoding: .utf8))
+        return "BENCH_JSON \(json)"
+    }
+
+    private static func benchmarkRecord() -> [String: Any] {
+        [
+            "schema_version": 1,
+            "kind": "bench",
+            "model": "demo-model",
+            "architecture": "qwen3",
+            "decode_tps": 10.0,
+            "prompt_tps": 20.0,
+            "total_tps": 30.0,
+            "e2e_tps": 40.0
+        ]
+    }
+
     private static func writeLog(_ value: String, to url: URL) throws {
         try value.write(to: url, atomically: true, encoding: .utf8)
     }
@@ -151,6 +202,13 @@ struct RealModelSummaryScriptTests {
         let object = try JSONSerialization.jsonObject(with: data)
         let summary = try #require(object as? [String: Any])
         return try #require(summary["feature_coverage"] as? [String: Any])
+    }
+
+    private static func benchmarkCoverage(from url: URL) throws -> [String: Any] {
+        let data = try Data(contentsOf: url)
+        let object = try JSONSerialization.jsonObject(with: data)
+        let summary = try #require(object as? [String: Any])
+        return try #require(summary["benchmark_coverage"] as? [String: Any])
     }
 
     private static var scriptURL: URL {
