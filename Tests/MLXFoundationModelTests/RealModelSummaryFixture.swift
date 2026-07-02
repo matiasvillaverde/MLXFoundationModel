@@ -72,6 +72,7 @@ enum RealModelSummaryFixture {
             "continuous_batch_prompt_cache",
             "persistent_prompt_cache",
             "json_schema_constraints",
+            "json_constraints",
             "finite_choice_constraints",
             "token_grammar_constraints",
             "regex_constraints",

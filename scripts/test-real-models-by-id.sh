@@ -837,7 +837,7 @@ for MODEL in "${MODELS[@]}"; do
     "$MODEL_TIMEOUT_SECONDS" \
     "MLXRealModelTests.MLXRealModelConstrainedDecodingTests/selectedArchitecturesForceGrammarValidTokenSequences" \
     "$ID" \
-    "token_grammar_constraints,regex_constraints"
+    "token_grammar_constraints,json_constraints,regex_constraints"
 
   if architecture_supports_native_tool_constraints "$ARCHITECTURE"; then
     run_swift_test \
