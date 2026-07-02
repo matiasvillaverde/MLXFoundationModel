@@ -1,0 +1,234 @@
+#!/usr/bin/env python3
+"""Compare MLX real-model benchmark summary JSON files."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from collections import defaultdict
+from dataclasses import dataclass
+from pathlib import Path
+from statistics import mean
+from typing import Any
+
+
+DEFAULT_METRICS = ("decode_tps", "total_tps", "prompt_tps", "e2e_tps")
+
+
+@dataclass(frozen=True)
+class BenchmarkKey:
+    kind: str
+    model: str
+    architecture: str
+
+    @property
+    def label(self) -> str:
+        return f"{self.kind}:{self.model}:{self.architecture}"
+
+
+@dataclass
+class BenchmarkAggregate:
+    count: int
+    metrics: dict[str, float]
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Compare BENCH_JSON/STRESS_JSON records from two real-model summary files."
+    )
+    parser.add_argument("--baseline", required=True, type=Path, help="Baseline summary JSON.")
+    parser.add_argument("--current", required=True, type=Path, help="Current summary JSON.")
+    parser.add_argument(
+        "--metric",
+        action="append",
+        dest="metrics",
+        choices=DEFAULT_METRICS,
+        help="Metric to compare. Repeat for multiple metrics. Defaults to all throughput metrics.",
+    )
+    parser.add_argument(
+        "--min-ratio",
+        type=float,
+        default=0.90,
+        help="Minimum current/baseline ratio for every selected metric. Defaults to 0.90.",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Print the comparison report as JSON instead of a text table.",
+    )
+    return parser.parse_args()
+
+
+def load_summary(path: Path) -> dict[str, Any]:
+    try:
+        with path.open("r", encoding="utf-8") as file:
+            value = json.load(file)
+    except OSError as error:
+        raise SystemExit(f"Cannot read {path}: {error}") from error
+    except json.JSONDecodeError as error:
+        raise SystemExit(f"Cannot parse {path}: {error}") from error
+
+    if not isinstance(value, dict):
+        raise SystemExit(f"Summary is not a JSON object: {path}")
+    return value
+
+
+def aggregate_records(summary: dict[str, Any], path: Path) -> dict[BenchmarkKey, BenchmarkAggregate]:
+    records = summary.get("benchmark_records")
+    if not isinstance(records, list):
+        raise SystemExit(f"Summary missing benchmark_records array: {path}")
+
+    parse_errors = summary.get("benchmark_parse_errors", [])
+    if parse_errors:
+        raise SystemExit(f"Summary contains benchmark_parse_errors: {path}")
+
+    grouped: dict[BenchmarkKey, list[dict[str, Any]]] = defaultdict(list)
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        key = BenchmarkKey(
+            kind=str(record.get("kind", "unknown")),
+            model=str(record.get("model", "unknown")),
+            architecture=str(record.get("architecture", "unknown")),
+        )
+        grouped[key].append(record)
+
+    if not grouped:
+        raise SystemExit(f"Summary contains no benchmark records: {path}")
+
+    return {
+        key: BenchmarkAggregate(
+            count=len(key_records),
+            metrics=average_metrics(key_records),
+        )
+        for key, key_records in grouped.items()
+    }
+
+
+def average_metrics(records: list[dict[str, Any]]) -> dict[str, float]:
+    averaged: dict[str, float] = {}
+    for metric in DEFAULT_METRICS:
+        values = [
+            float(record[metric])
+            for record in records
+            if isinstance(record.get(metric), (int, float))
+        ]
+        if values:
+            averaged[metric] = mean(values)
+    return averaged
+
+
+def compare(
+    baseline: dict[BenchmarkKey, BenchmarkAggregate],
+    current: dict[BenchmarkKey, BenchmarkAggregate],
+    metrics: list[str],
+    min_ratio: float,
+) -> dict[str, Any]:
+    rows = []
+    failures = []
+
+    for key in sorted(baseline, key=lambda item: item.label):
+        baseline_record = baseline[key]
+        current_record = current.get(key)
+        if current_record is None:
+            failure = {
+                "key": key.label,
+                "metric": None,
+                "status": "missing_current",
+            }
+            rows.append(failure)
+            failures.append(failure)
+            continue
+
+        for metric in metrics:
+            baseline_value = baseline_record.metrics.get(metric)
+            current_value = current_record.metrics.get(metric)
+            row = {
+                "key": key.label,
+                "metric": metric,
+                "baseline": baseline_value,
+                "current": current_value,
+                "baseline_count": baseline_record.count,
+                "current_count": current_record.count,
+                "ratio": ratio(current_value, baseline_value),
+            }
+            row["status"] = status_for(row["ratio"], min_ratio)
+            rows.append(row)
+            if row["status"] != "passed":
+                failures.append(row)
+
+    extra_current = [
+        key.label for key in sorted(set(current).difference(baseline), key=lambda item: item.label)
+    ]
+    return {
+        "schema_version": 1,
+        "min_ratio": min_ratio,
+        "metrics": metrics,
+        "rows": rows,
+        "extra_current": extra_current,
+        "failure_count": len(failures),
+        "passed": not failures,
+    }
+
+
+def ratio(current_value: float | None, baseline_value: float | None) -> float | None:
+    if current_value is None or baseline_value is None or baseline_value <= 0:
+        return None
+    return current_value / baseline_value
+
+
+def status_for(value: float | None, min_ratio: float) -> str:
+    if value is None:
+        return "missing_metric"
+    if value < min_ratio:
+        return "regressed"
+    return "passed"
+
+
+def print_text_report(report: dict[str, Any]) -> None:
+    print(f"Benchmark comparison min_ratio={report['min_ratio']:.3f}")
+    for row in report["rows"]:
+        if row["status"] == "missing_current":
+            print(f"FAIL {row['key']} missing in current summary")
+            continue
+
+        ratio_value = row["ratio"]
+        ratio_text = "n/a" if ratio_value is None else f"{ratio_value:.3f}"
+        baseline = format_number(row["baseline"])
+        current = format_number(row["current"])
+        prefix = "PASS" if row["status"] == "passed" else "FAIL"
+        print(
+            f"{prefix} {row['key']} {row['metric']} "
+            f"baseline={baseline} current={current} ratio={ratio_text}"
+        )
+
+    if report["extra_current"]:
+        print("Extra current records:")
+        for key in report["extra_current"]:
+            print(f"- {key}")
+
+
+def format_number(value: Any) -> str:
+    if isinstance(value, (int, float)):
+        return f"{value:.4f}"
+    return "n/a"
+
+
+def main() -> int:
+    args = parse_args()
+    metrics = args.metrics or list(DEFAULT_METRICS)
+    baseline = aggregate_records(load_summary(args.baseline), args.baseline)
+    current = aggregate_records(load_summary(args.current), args.current)
+    report = compare(baseline, current, metrics, args.min_ratio)
+
+    if args.json:
+        json.dump(report, sys.stdout, indent=2, sort_keys=True)
+        print()
+    else:
+        print_text_report(report)
+    return 0 if report["passed"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -107,3 +107,13 @@ It writes a compact parsed summary to
 `MLX_REAL_MODEL_BENCHMARK_LOG`, the summary with
 `MLX_REAL_MODEL_BENCHMARK_SUMMARY`, or the directory with
 `MLX_REAL_MODEL_BENCHMARK_DIR`.
+
+Compare two summary files with:
+
+```sh
+make compare-benchmarks BASELINE=.build/benchmarks/old-summary.json \
+  CURRENT=.build/benchmarks/new-summary.json
+```
+
+`COMPARE_MIN_RATIO` controls the minimum current/baseline throughput ratio for
+`decode_tps`, `total_tps`, `prompt_tps`, and `e2e_tps`.

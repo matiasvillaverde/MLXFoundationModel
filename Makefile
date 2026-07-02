@@ -12,6 +12,7 @@ PROVIDER_REAL_MODEL_ID ?= qwen3-0.6b-4bit
 MLX_REAL_MODEL_SCOPE ?= smoke
 DEMO_MODEL_ID ?= qwen3-0.6b-4bit
 DEMO_EXAMPLE ?= streaming-chat
+COMPARE_MIN_RATIO ?= 0.90
 
 GREEN = \033[0;32m
 YELLOW = \033[0;33m
@@ -76,6 +77,16 @@ test-small-fit-models: ## Run 32 GiB-oriented architecture coverage and stress t
 
 profile-real-model: ## Profile the release playground with Instruments/xctrace
 	@bash scripts/profile-real-model.sh
+
+compare-benchmarks: ## Compare two real-model benchmark summary JSON files
+	@if [ -z "$(BASELINE)" ] || [ -z "$(CURRENT)" ]; then \
+		echo "$(RED)Usage: make compare-benchmarks BASELINE=old-summary.json CURRENT=new-summary.json [COMPARE_MIN_RATIO=0.90]$(NC)"; \
+		exit 2; \
+	fi
+	@python3 scripts/compare-benchmark-summaries.py \
+		--baseline "$(BASELINE)" \
+		--current "$(CURRENT)" \
+		--min-ratio "$(COMPARE_MIN_RATIO)"
 
 test-acceptance: test-real-models ## Alias for opt-in real-model acceptance
 
