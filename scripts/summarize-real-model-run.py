@@ -183,35 +183,20 @@ def summarize_coverage(
     selected_models = selected_models_from_tests(tests)
     rows = []
 
-    if selected_count and not selected_models:
-        return {
-            "schema_version": 1,
-            "status": "missing_model_metadata",
-            "passed": False,
-            "rows": [
-                {
-                    "model_id": None,
-                    "architecture": None,
-                    "feature_key": "generation",
-                    "status": "missing_model_metadata",
-                    "label": None,
-                    "test_status": None,
-                    "duration_seconds": None,
-                }
-            ],
-            "failed_count": 1,
-        }
-
     for model_id, model in sorted(selected_models.items()):
         for feature_key in required_features(model):
             row = coverage_row(model_id, model, feature_key, tests)
             rows.append(row)
+    count_status = selected_model_count_status(selected_count, selected_models)
+    if count_status is not None:
+        rows.append(feature_count_mismatch_row(count_status))
 
     failed_rows = [row for row in rows if row["status"] != "passed"]
     return {
         "schema_version": 1,
-        "status": "available" if selected_models else "not_available",
+        "status": coverage_summary_status(selected_models, count_status),
         "passed": not failed_rows,
+        "selected_model_metadata_count": len(selected_models),
         "rows": rows,
         "failed_count": len(failed_rows),
     }
@@ -223,22 +208,6 @@ def summarize_benchmark_coverage(
     selected_count: int | None,
 ) -> dict[str, Any]:
     selected_models = selected_models_from_tests(tests)
-    if selected_count and not selected_models:
-        return {
-            "schema_version": 1,
-            "status": "missing_model_metadata",
-            "passed": False,
-            "rows": [
-                benchmark_coverage_row(
-                    model_id=None,
-                    architecture=None,
-                    benchmark_records=[],
-                    status="missing_model_metadata",
-                )
-            ],
-            "failed_count": 1,
-        }
-
     rows = [
         benchmark_coverage_row(
             model_id=model_id,
@@ -247,11 +216,16 @@ def summarize_benchmark_coverage(
         )
         for model_id, model in sorted(selected_models.items())
     ]
+    count_status = selected_model_count_status(selected_count, selected_models)
+    if count_status is not None:
+        rows.append(benchmark_count_mismatch_row(count_status))
+
     failed_rows = [row for row in rows if row["status"] != "passed"]
     return {
         "schema_version": 1,
-        "status": "available" if selected_models else "not_available",
+        "status": coverage_summary_status(selected_models, count_status),
         "passed": not failed_rows,
+        "selected_model_metadata_count": len(selected_models),
         "rows": rows,
         "failed_count": len(failed_rows),
     }
@@ -276,6 +250,56 @@ def benchmark_coverage_row(
         "status": status or ("passed" if records else "missing"),
         "benchmark_count": len(records),
     }
+
+
+def selected_model_count_status(
+    selected_count: int | None,
+    selected_models: dict[str, dict[str, Any]],
+) -> dict[str, int | str] | None:
+    if selected_count is None:
+        return None
+    observed_count = len(selected_models)
+    if selected_count == observed_count:
+        return None
+    return {
+        "status": "selected_model_count_mismatch",
+        "selected_model_count": selected_count,
+        "selected_model_metadata_count": observed_count,
+    }
+
+
+def feature_count_mismatch_row(count_status: dict[str, int | str]) -> dict[str, Any]:
+    return {
+        "model_id": None,
+        "architecture": None,
+        "feature_key": "generation",
+        "status": count_status["status"],
+        "label": None,
+        "test_status": None,
+        "duration_seconds": None,
+        "selected_model_count": count_status["selected_model_count"],
+        "selected_model_metadata_count": count_status["selected_model_metadata_count"],
+    }
+
+
+def benchmark_count_mismatch_row(count_status: dict[str, int | str]) -> dict[str, Any]:
+    return {
+        "model_id": None,
+        "architecture": None,
+        "status": count_status["status"],
+        "benchmark_count": 0,
+        "selected_model_count": count_status["selected_model_count"],
+        "selected_model_metadata_count": count_status["selected_model_metadata_count"],
+    }
+
+
+def coverage_summary_status(
+    selected_models: dict[str, dict[str, Any]],
+    count_status: dict[str, int | str] | None,
+) -> str:
+    if count_status is not None:
+        return str(count_status["status"])
+    return "available" if selected_models else "not_available"
 
 
 def selected_models_from_tests(tests: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:

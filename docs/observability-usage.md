@@ -120,8 +120,8 @@ parsed summary with per-test `feature_key`, model metadata, `duration_seconds`,
 The runner fails if a selected model is missing a required feature check in the
 summary. Required coverage is architecture-aware: attention models must cover
 rotating/quantized KV cache options, while Mamba/RWKV-style models are exempt.
-The runner also fails if any selected model does not emit a `BENCH_JSON`
-record during generation.
+It also fails if the selected model count does not match generation metadata,
+or if any selected model does not emit a `BENCH_JSON` record during generation.
 
 Compare two summary files with:
 

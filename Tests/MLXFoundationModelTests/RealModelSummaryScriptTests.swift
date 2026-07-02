@@ -9,7 +9,7 @@ struct RealModelSummaryScriptTests {
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
 
         try Self.writeLog(try Self.completeLogWithBenchmark(), to: fixture.log)
-        try Self.runSummary(fixture: fixture)
+        try Self.runSummary(fixture: fixture, selectedCount: "1")
         let coverage = try Self.coverage(from: fixture.summary)
         let benchmarkCoverage = try Self.benchmarkCoverage(from: fixture.summary)
         let rows = try #require(coverage["rows"] as? [[String: Any]])
@@ -25,7 +25,7 @@ struct RealModelSummaryScriptTests {
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
 
         try Self.writeLog(try Self.incompleteLogWithBenchmark(), to: fixture.log)
-        try Self.runSummary(fixture: fixture)
+        try Self.runSummary(fixture: fixture, selectedCount: "1")
         let coverage = try Self.coverage(from: fixture.summary)
         let rows = try #require(coverage["rows"] as? [[String: Any]])
         let missing = rows.filter { row in
@@ -44,7 +44,7 @@ struct RealModelSummaryScriptTests {
         defer { try? FileManager.default.removeItem(at: fixture.directory) }
 
         try Self.writeLog(try Self.completeLogWithoutBenchmark(), to: fixture.log)
-        try Self.runSummary(fixture: fixture)
+        try Self.runSummary(fixture: fixture, selectedCount: "1")
         let coverage = try Self.coverage(from: fixture.summary)
         let benchmarkCoverage = try Self.benchmarkCoverage(from: fixture.summary)
         let rows = try #require(benchmarkCoverage["rows"] as? [[String: Any]])
@@ -53,6 +53,26 @@ struct RealModelSummaryScriptTests {
         #expect(coverage["passed"] as? Bool == true)
         #expect(benchmarkCoverage["passed"] as? Bool == false)
         #expect(row["status"] as? String == "missing")
+    }
+
+    @Test("marks coverage failed when selected model metadata is incomplete")
+    func failsForSelectedModelMetadataCountMismatch() throws {
+        let fixture = try Self.makeFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+
+        try Self.writeLog(try Self.completeLogWithBenchmark(), to: fixture.log)
+        try Self.runSummary(fixture: fixture, selectedCount: "2")
+        let coverage = try Self.coverage(from: fixture.summary)
+        let benchmarkCoverage = try Self.benchmarkCoverage(from: fixture.summary)
+        let featureRows = try #require(coverage["rows"] as? [[String: Any]])
+        let benchmarkRows = try #require(benchmarkCoverage["rows"] as? [[String: Any]])
+        let featureMismatch = try Self.requiredMismatchRow(in: featureRows)
+        let benchmarkMismatch = try Self.requiredMismatchRow(in: benchmarkRows)
+
+        #expect(coverage["passed"] as? Bool == false)
+        #expect(benchmarkCoverage["passed"] as? Bool == false)
+        #expect(featureMismatch["selected_model_count"] as? Int == 2)
+        #expect(benchmarkMismatch["selected_model_metadata_count"] as? Int == 1)
     }
 
     private struct Fixture {
@@ -165,7 +185,10 @@ struct RealModelSummaryScriptTests {
         try value.write(to: url, atomically: true, encoding: .utf8)
     }
 
-    private static func runSummary(fixture: Fixture) throws {
+    private static func runSummary(
+        fixture: Fixture,
+        selectedCount: String
+    ) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = [
@@ -188,13 +211,19 @@ struct RealModelSummaryScriptTests {
             "--host-memory-gb",
             "32",
             "--selected-count",
-            "1",
+            selectedCount,
             "--swift-test-invocation-count",
             "14"
         ]
         try process.run()
         process.waitUntilExit()
         #expect(process.terminationStatus == 0)
+    }
+
+    private static func requiredMismatchRow(in rows: [[String: Any]]) throws -> [String: Any] {
+        try #require(rows.first { row in
+            row["status"] as? String == "selected_model_count_mismatch"
+        })
     }
 
     private static func coverage(from url: URL) throws -> [String: Any] {
