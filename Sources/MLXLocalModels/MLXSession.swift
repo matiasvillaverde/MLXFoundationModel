@@ -105,6 +105,14 @@ internal actor MLXSession: LLMSession {
     }
 
     func loadModel() async throws {
+        try await loadModel { _ in
+            // No stream progress requested.
+        }
+    }
+
+    func loadModel(
+        progressHandler: @Sendable @escaping (Progress) -> Void
+    ) async throws {
         guard let configuration else {
             logger.error("Model not loaded: Configuration must be set via preload() before generation")
             throw LLMError.invalidConfiguration("Configuration not set. Call preload first.")
@@ -124,7 +132,7 @@ internal actor MLXSession: LLMSession {
         let modelConfig = ModelConfiguration(directory: configuration.location)
         modelContainer = try await LLMModelFactory.shared.loadContainer(
             configuration: modelConfig
-        ) { _ in /* Progress callback not used */ }
+        ) { progressHandler($0) }
         try await applyRuntimeConfiguration()
 
         let duration = loadStart.duration(to: clock.now)

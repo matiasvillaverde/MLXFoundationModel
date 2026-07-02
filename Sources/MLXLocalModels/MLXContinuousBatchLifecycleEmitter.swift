@@ -76,6 +76,21 @@ extension AsyncThrowingStream<LLMStreamChunk, Error>.Continuation {
     }
 }
 
+extension StreamLifecycleEvent {
+    internal init(modelLoadProgress progress: Progress, message: String?) {
+        let progressMessage = progress.localizedDescription.isEmpty
+            ? nil
+            : progress.localizedDescription
+        self.init(
+            phase: .modelLoad,
+            state: .progress,
+            completedUnitCount: progress.completedUnitCount,
+            totalUnitCount: progress.totalUnitCount >= 0 ? progress.totalUnitCount : nil,
+            message: message ?? progressMessage
+        )
+    }
+}
+
 extension MLXContinuousBatchStreamSink {
     internal func reportingLifecycle(
         promptTokenCount: Int,

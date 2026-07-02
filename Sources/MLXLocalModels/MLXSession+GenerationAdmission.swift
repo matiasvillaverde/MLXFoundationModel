@@ -39,18 +39,7 @@ extension MLXSession {
         continuation.yieldLifecycle(.init(phase: .request, state: .started))
 
         if modelContainer == nil {
-            logger.info("Model not preloaded - loading on demand")
-            continuation.yieldLifecycle(.init(
-                phase: .modelLoad,
-                state: .started,
-                message: configuration?.modelName
-            ))
-            try await loadModel()
-            continuation.yieldLifecycle(.init(
-                phase: .modelLoad,
-                state: .ended,
-                message: configuration?.modelName
-            ))
+            try await loadModelOnDemand(continuation: continuation)
         }
 
         try Task.checkCancellation()
@@ -60,6 +49,26 @@ extension MLXSession {
         } else {
             try await generateStream(input: input, continuation: continuation)
         }
+    }
+
+    private func loadModelOnDemand(
+        continuation: AsyncThrowingStream<LLMStreamChunk, Error>.Continuation
+    ) async throws {
+        logger.info("Model not preloaded - loading on demand")
+        let modelName = configuration?.modelName
+        continuation.yieldLifecycle(.init(
+            phase: .modelLoad,
+            state: .started,
+            message: modelName
+        ))
+        try await loadModel { progress in
+            continuation.yieldLifecycle(.init(modelLoadProgress: progress, message: modelName))
+        }
+        continuation.yieldLifecycle(.init(
+            phase: .modelLoad,
+            state: .ended,
+            message: modelName
+        ))
     }
 
     private func finishGenerationAdmission(

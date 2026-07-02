@@ -400,6 +400,12 @@ run_model_feature_test \
 
 run_model_feature_test \
   "qwen3-0.6b-4bit" \
+  "Qwen3 on-demand stream model-load progress" \
+  "$FEATURE_TIMEOUT_SECONDS" \
+  "MLXRealModelTests.MLXRealModelInterfaceTests/qwen3OnDemandStreamReportsModelLoadProgress"
+
+run_model_feature_test \
+  "qwen3-0.6b-4bit" \
   "Qwen3 stop sequence" \
   "$FEATURE_TIMEOUT_SECONDS" \
   "MLXRealModelTests.MLXRealModelGenerationTests/qwen3StopsOnConfiguredStopSequence"

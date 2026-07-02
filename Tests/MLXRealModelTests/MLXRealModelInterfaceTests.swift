@@ -1,5 +1,5 @@
 import MLXFoundationModel
-import MLXLocalModels
+@testable import MLXLocalModels
 import Testing
 
 @Suite(
@@ -73,6 +73,24 @@ struct MLXRealModelInterfaceTests {
         try Self.verifyLifecycleEvents(result.lifecycleEvents)
     }
 
+    @Test("Qwen3 on-demand stream reports model-load progress")
+    func qwen3OnDemandStreamReportsModelLoadProgress() async throws {
+        let models = try MLXRealModelCatalog.load()
+        guard let model = try MLXRealModelHarness.selectedModel("qwen3-0.6b-4bit", in: models) else {
+            return
+        }
+
+        let input = LLMInput(
+            context: "/no_think\nReply with one short word.",
+            sampling: .deterministic,
+            limits: ResourceLimits(maxTokens: 4, maxTime: .seconds(120), reusePromptCache: false)
+        )
+        let result = try await Self.runOnDemandStream(model: model, input: input)
+
+        MLXRealModelHarness.verifyGenerated(result)
+        try Self.verifyModelLoadProgressEvents(result.lifecycleEvents)
+    }
+
     private static var sessionStyleRequest: MLXBridgeRequest {
         MLXBridgeRequest(
             messages: [
@@ -115,6 +133,35 @@ struct MLXRealModelInterfaceTests {
         )
     }
 
+    private static func providerConfiguration(
+        for model: MLXRealModelCatalog.Model
+    ) -> ProviderConfiguration {
+        ProviderConfiguration(
+            location: MLXRealModelEnvironment.modelURL(for: model),
+            authentication: .noAuth,
+            modelName: model.displayName,
+            compute: .small,
+            runtime: MLXRealModelEnvironment.runtimePreferences(for: model)
+        )
+    }
+
+    private static func runOnDemandStream(
+        model: MLXRealModelCatalog.Model,
+        input: LLMInput
+    ) async throws -> MLXRealModelHarness.GenerationResult {
+        let session = MLXSession(configuration: Self.providerConfiguration(for: model))
+        do {
+            let result = try await MLXRealModelHarness.collectGeneration(
+                from: await session.stream(input)
+            )
+            await session.unload()
+            return result
+        } catch {
+            await session.unload()
+            throw error
+        }
+    }
+
     private static func verifyLifecycleEvents(
         _ events: [StreamLifecycleEvent]
     ) throws {
@@ -147,6 +194,28 @@ struct MLXRealModelInterfaceTests {
         #expect((promptEndEvent.totalUnitCount ?? 0) > 0)
         #expect(promptEndEvent.completedUnitCount == promptEndEvent.totalUnitCount)
         #expect(promptEndEvent.cachedUnitCount == 0)
+    }
+
+    private static func verifyModelLoadProgressEvents(
+        _ events: [StreamLifecycleEvent]
+    ) throws {
+        let loadStart = try #require(Self.index(of: .modelLoad, state: .started, in: events))
+        let loadEnd = try #require(Self.index(of: .modelLoad, state: .ended, in: events))
+        let promptStart = try #require(Self.index(
+            of: .promptProcessing,
+            state: .started,
+            in: events
+        ))
+        let progressEvents = events.enumerated().filter { _, event in
+            event.phase == .modelLoad && event.state == .progress
+        }
+
+        #expect(loadStart < loadEnd)
+        #expect(loadEnd < promptStart)
+        #expect(!progressEvents.isEmpty)
+        #expect(progressEvents.allSatisfy { index, _ in loadStart < index && index < loadEnd })
+        #expect(progressEvents.last?.element.totalUnitCount == 100)
+        #expect(progressEvents.last?.element.completedUnitCount == 100)
     }
 
     private static func index(
