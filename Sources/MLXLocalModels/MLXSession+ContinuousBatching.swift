@@ -119,6 +119,7 @@ extension MLXSession {
         speculativeDecoding: MLXSpeculativeDecodingConfiguration?,
         promptCacheVariant: String?
     ) throws -> MLXContinuousBatchPreparedRequest {
+        genContext.continuation.yieldLifecycle(.init(phase: .promptProcessing, state: .started))
         let prepared = try prepareGeneration(
             genContext: genContext,
             promptCacheEntries: &promptCacheEntries,
@@ -132,7 +133,11 @@ extension MLXSession {
         }
         let completion = MLXContinuousBatchStreamCompletion(state: prepared.state)
         let prefillRequest = try prepared.makeContinuousBatchPrefillRequest(
-            sink: completion.streamSink(continuation: genContext.continuation),
+            sink: makeContinuousBatchLifecycleSink(
+                completion: completion,
+                genContext: genContext,
+                prepared: prepared
+            ),
             promptCacheVariant: promptCacheVariant
         )
         return MLXContinuousBatchPreparedRequest(
@@ -143,6 +148,18 @@ extension MLXSession {
             promptStartTime: prepared.promptStartTime,
             promptTokenCount: prepared.promptTokenIDs.count,
             state: prepared.state
+        )
+    }
+
+    nonisolated private func makeContinuousBatchLifecycleSink(
+        completion: MLXContinuousBatchStreamCompletion,
+        genContext: GenerationContext,
+        prepared: MLXPreparedGeneration
+    ) -> MLXContinuousBatchStreamSink {
+        let sink = completion.streamSink(continuation: genContext.continuation)
+        return sink.reportingLifecycle(
+            promptTokenCount: prepared.promptTokenIDs.count,
+            cachedTokenCount: prepared.cachePlan.reusedTokenCount
         )
     }
 

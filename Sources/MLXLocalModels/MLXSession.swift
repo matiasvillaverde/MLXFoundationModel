@@ -276,6 +276,7 @@ internal actor MLXSession: LLMSession {
         speculativeDecoding: MLXSpeculativeDecodingConfiguration?,
         promptCacheVariant: String?
     ) throws -> MetricsData {
+        genContext.continuation.yieldLifecycle(.init(phase: .promptProcessing, state: .started))
         let prepared = try prepareGeneration(
             genContext: genContext,
             promptCacheEntries: &promptCacheEntries,
@@ -301,6 +302,14 @@ internal actor MLXSession: LLMSession {
         }
 
         let promptEndTime = genContext.clock.now
+        genContext.continuation.yieldLifecycle(.init(
+            phase: .promptProcessing,
+            state: .ended,
+            completedUnitCount: Int64(prepared.promptTokenIDs.count),
+            totalUnitCount: Int64(prepared.promptTokenIDs.count),
+            cachedUnitCount: Int64(prepared.cachePlan.reusedTokenCount)
+        ))
+        genContext.continuation.yieldLifecycle(.init(phase: .decode, state: .started))
 
         let reusableState = iterator.cacheForPromptReuse
         updatePromptCacheEntries(

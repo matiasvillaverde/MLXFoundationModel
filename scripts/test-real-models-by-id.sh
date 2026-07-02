@@ -394,6 +394,12 @@ run_model_feature_test \
 
 run_model_feature_test \
   "qwen3-0.6b-4bit" \
+  "Qwen3 stream lifecycle events" \
+  "$FEATURE_TIMEOUT_SECONDS" \
+  "MLXRealModelTests.MLXRealModelInterfaceTests/qwen3RawStreamReportsLifecyclePhaseBoundaries"
+
+run_model_feature_test \
+  "qwen3-0.6b-4bit" \
   "Qwen3 stop sequence" \
   "$FEATURE_TIMEOUT_SECONDS" \
   "MLXRealModelTests.MLXRealModelGenerationTests/qwen3StopsOnConfiguredStopSequence"

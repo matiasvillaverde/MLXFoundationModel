@@ -89,8 +89,50 @@ public struct LLMStreamChunk: Sendable {
 public enum StreamEvent: Sendable {
     case text
     case metrics
+    case lifecycle(StreamLifecycleEvent)
     case finished
     case error(Error)
+}
+
+/// High-level phase reported by a local inference stream.
+public enum StreamLifecyclePhase: String, Sendable, Equatable, Hashable, Codable {
+    case request
+    case modelLoad
+    case promptProcessing
+    case decode
+}
+
+/// State for a lifecycle phase reported by a local inference stream.
+public enum StreamLifecycleState: String, Sendable, Equatable, Hashable, Codable {
+    case started
+    case progress
+    case ended
+}
+
+/// Metadata-only stream event for request, loading, prompt, and decode phases.
+public struct StreamLifecycleEvent: Sendable, Equatable, Hashable, Codable {
+    public let phase: StreamLifecyclePhase
+    public let state: StreamLifecycleState
+    public let completedUnitCount: Int64?
+    public let totalUnitCount: Int64?
+    public let cachedUnitCount: Int64?
+    public let message: String?
+
+    public init(
+        phase: StreamLifecyclePhase,
+        state: StreamLifecycleState,
+        completedUnitCount: Int64? = nil,
+        totalUnitCount: Int64? = nil,
+        cachedUnitCount: Int64? = nil,
+        message: String? = nil
+    ) {
+        self.phase = phase
+        self.state = state
+        self.completedUnitCount = completedUnitCount
+        self.totalUnitCount = totalUnitCount
+        self.cachedUnitCount = cachedUnitCount
+        self.message = message
+    }
 }
 
 /// Common local provider errors.

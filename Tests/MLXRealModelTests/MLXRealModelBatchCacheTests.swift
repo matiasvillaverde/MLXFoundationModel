@@ -130,14 +130,23 @@ struct MLXRealModelBatchCacheTests {
         var text = ""
         var textChunkCount = 0
         var metrics: ChunkMetrics?
+        var lifecycleEvents: [StreamLifecycleEvent] = []
         for try await chunk in stream {
             if case .text = chunk.event {
                 text += chunk.text
                 textChunkCount += chunk.text.isEmpty ? 0 : 1
             }
+            if case .lifecycle(let event) = chunk.event {
+                lifecycleEvents.append(event)
+            }
             metrics = chunk.metrics ?? metrics
         }
-        return .init(text: text, textChunkCount: textChunkCount, metrics: metrics)
+        return .init(
+            text: text,
+            textChunkCount: textChunkCount,
+            metrics: metrics,
+            lifecycleEvents: lifecycleEvents
+        )
     }
 
     private static func promptCachePlans(

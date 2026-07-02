@@ -36,10 +36,21 @@ extension MLXSession {
         try Task.checkCancellation()
         beginGeneration()
         defer { finishGeneration() }
+        continuation.yieldLifecycle(.init(phase: .request, state: .started))
 
         if modelContainer == nil {
             logger.info("Model not preloaded - loading on demand")
+            continuation.yieldLifecycle(.init(
+                phase: .modelLoad,
+                state: .started,
+                message: configuration?.modelName
+            ))
             try await loadModel()
+            continuation.yieldLifecycle(.init(
+                phase: .modelLoad,
+                state: .ended,
+                message: configuration?.modelName
+            ))
         }
 
         try Task.checkCancellation()

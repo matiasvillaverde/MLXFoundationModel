@@ -56,6 +56,23 @@ struct MLXRealModelInterfaceTests {
         #expect(result.textChunkCount > 1)
     }
 
+    @Test("Qwen3 raw stream reports lifecycle phase boundaries")
+    func qwen3RawStreamReportsLifecyclePhaseBoundaries() async throws {
+        let models = try MLXRealModelCatalog.load()
+        guard let model = try MLXRealModelHarness.selectedModel("qwen3-0.6b-4bit", in: models) else {
+            return
+        }
+
+        let result = try await MLXRealModelHarness.run(
+            model: model,
+            prompt: "/no_think\nReply with one short word.",
+            limits: ResourceLimits(maxTokens: 4, maxTime: .seconds(120), reusePromptCache: false)
+        )
+
+        MLXRealModelHarness.verifyGenerated(result)
+        try Self.verifyLifecycleEvents(result.lifecycleEvents)
+    }
+
     private static var sessionStyleRequest: MLXBridgeRequest {
         MLXBridgeRequest(
             messages: [
@@ -96,5 +113,49 @@ struct MLXRealModelInterfaceTests {
             ],
             instructions: "Answer in plain text. Do not include Markdown."
         )
+    }
+
+    private static func verifyLifecycleEvents(
+        _ events: [StreamLifecycleEvent]
+    ) throws {
+        let requestStart = try #require(Self.index(
+            of: .request,
+            state: .started,
+            in: events
+        ))
+        let promptStart = try #require(Self.index(
+            of: .promptProcessing,
+            state: .started,
+            in: events
+        ))
+        let promptEnd = try #require(Self.index(
+            of: .promptProcessing,
+            state: .ended,
+            in: events
+        ))
+        let decodeStart = try #require(Self.index(
+            of: .decode,
+            state: .started,
+            in: events
+        ))
+
+        #expect(requestStart < promptStart)
+        #expect(promptStart < promptEnd)
+        #expect(promptEnd < decodeStart)
+
+        let promptEndEvent = events[promptEnd]
+        #expect((promptEndEvent.totalUnitCount ?? 0) > 0)
+        #expect(promptEndEvent.completedUnitCount == promptEndEvent.totalUnitCount)
+        #expect(promptEndEvent.cachedUnitCount == 0)
+    }
+
+    private static func index(
+        of phase: StreamLifecyclePhase,
+        state: StreamLifecycleState,
+        in events: [StreamLifecycleEvent]
+    ) -> Int? {
+        events.firstIndex { event in
+            event.phase == phase && event.state == state
+        }
     }
 }
