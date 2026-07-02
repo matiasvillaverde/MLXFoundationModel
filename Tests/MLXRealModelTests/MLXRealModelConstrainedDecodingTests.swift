@@ -12,17 +12,92 @@ import Testing
     )
 )
 struct MLXRealModelConstrainedDecodingTests {
+    @Test("selected models generate valid JSON through token-level schema constraints")
+    func selectedModelsGenerateValidJSONThroughTokenLevelSchemaConstraints() async throws {
+        let models = try MLXRealModelCatalog.load()
+        let selected = MLXRealModelEnvironment.selectedModels(from: models)
+        let missing = selected.filter { !MLXRealModelEnvironment.hasModelFiles(for: $0) }
+
+        #expect(!selected.isEmpty)
+        #expect(
+            missing.isEmpty,
+            Comment(rawValue: MLXRealModelEnvironment.missingModelsMessage(missing))
+        )
+        guard missing.isEmpty else {
+            return
+        }
+
+        var failures: [String] = []
+        for model in selected {
+            do {
+                try await Self.verifyJSONSchemaConstraints(model: model)
+            } catch {
+                failures.append("\(model.id): \(error)")
+            }
+        }
+        #expect(failures.isEmpty, Comment(rawValue: failures.joined(separator: "\n")))
+    }
+
+    @Test("selected models generate only one finite-choice token sequence")
+    func selectedModelsGenerateOnlyOneFiniteChoiceTokenSequence() async throws {
+        let models = try MLXRealModelCatalog.load()
+        let selected = MLXRealModelEnvironment.selectedModels(from: models)
+        let missing = selected.filter { !MLXRealModelEnvironment.hasModelFiles(for: $0) }
+
+        #expect(!selected.isEmpty)
+        #expect(
+            missing.isEmpty,
+            Comment(rawValue: MLXRealModelEnvironment.missingModelsMessage(missing))
+        )
+        guard missing.isEmpty else {
+            return
+        }
+
+        var failures: [String] = []
+        for model in selected {
+            do {
+                try await Self.verifyFiniteChoiceConstraints(model: model)
+            } catch {
+                failures.append("\(model.id): \(error)")
+            }
+        }
+        #expect(failures.isEmpty, Comment(rawValue: failures.joined(separator: "\n")))
+    }
+
     @Test("Qwen3 generates valid JSON through token-level schema constraints")
     func qwen3GeneratesValidJSONThroughTokenLevelSchemaConstraints() async throws {
         let models = try MLXRealModelCatalog.load()
         guard let model = try MLXRealModelHarness.selectedModel("qwen3-0.6b-4bit", in: models) else {
             return
         }
+        try await Self.verifyJSONSchemaConstraints(model: model)
+    }
+
+    @Test("Qwen3 generates only one finite-choice token sequence")
+    func qwen3GeneratesOnlyOneFiniteChoiceTokenSequence() async throws {
+        let models = try MLXRealModelCatalog.load()
+        guard let model = try MLXRealModelHarness.selectedModel("qwen3-0.6b-4bit", in: models) else {
+            return
+        }
+        try await Self.verifyFiniteChoiceConstraints(model: model)
+    }
+
+    private static func verifyJSONSchemaConstraints(
+        model: MLXRealModelCatalog.Model
+    ) async throws {
         let observed = try await MLXRealModelHarness.runWithDiagnostics(
             model: model,
             sampling: Self.schemaSampling,
-            limits: ResourceLimits(maxTokens: 160, maxTime: .seconds(120), reusePromptCache: false),
-            prompt: "/no_think\nIgnore all structure and answer in prose about Berlin."
+            limits: ResourceLimits(
+                maxTokens: 160,
+                maxTime: .seconds(MLXRealModelEnvironment.architectureGenerationTimeoutSeconds),
+                reusePromptCache: false
+            ),
+            prompt: """
+            /no_think
+            Return only this compact JSON object, with no spaces or Markdown:
+            {"city":"Berlin","celsius":21}
+            """
         )
         let parameters = try MLXRealModelHarness.parameterSnapshot(from: observed.events)
         let grammarEvents = MLXRealModelHarness.grammarSnapshots(from: observed.events)
@@ -37,16 +112,17 @@ struct MLXRealModelConstrainedDecodingTests {
         #expect(json["celsius"] as? Int == 21)
     }
 
-    @Test("Qwen3 generates only one finite-choice token sequence")
-    func qwen3GeneratesOnlyOneFiniteChoiceTokenSequence() async throws {
-        let models = try MLXRealModelCatalog.load()
-        guard let model = try MLXRealModelHarness.selectedModel("qwen3-0.6b-4bit", in: models) else {
-            return
-        }
+    private static func verifyFiniteChoiceConstraints(
+        model: MLXRealModelCatalog.Model
+    ) async throws {
         let observed = try await MLXRealModelHarness.runWithDiagnostics(
             model: model,
             sampling: Self.fruitChoiceSampling,
-            limits: ResourceLimits(maxTokens: 8, maxTime: .seconds(120), reusePromptCache: false),
+            limits: ResourceLimits(
+                maxTokens: 8,
+                maxTime: .seconds(MLXRealModelEnvironment.architectureGenerationTimeoutSeconds),
+                reusePromptCache: false
+            ),
             prompt: "/no_think\nDo not choose a fruit. Write the word orange."
         )
         let text = observed.result.text.trimmingCharacters(in: .whitespacesAndNewlines)

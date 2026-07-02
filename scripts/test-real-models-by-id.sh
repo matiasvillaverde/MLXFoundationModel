@@ -733,6 +733,18 @@ for MODEL in "${MODELS[@]}"; do
   fi
 
   run_swift_test \
+    "$ID JSON schema constraints" \
+    "$MODEL_TIMEOUT_SECONDS" \
+    "MLXRealModelTests.MLXRealModelConstrainedDecodingTests/selectedModelsGenerateValidJSONThroughTokenLevelSchemaConstraints" \
+    "$ID"
+
+  run_swift_test \
+    "$ID finite choice constraints" \
+    "$MODEL_TIMEOUT_SECONDS" \
+    "MLXRealModelTests.MLXRealModelConstrainedDecodingTests/selectedModelsGenerateOnlyOneFiniteChoiceTokenSequence" \
+    "$ID"
+
+  run_swift_test \
     "$ID token-level grammar constraint" \
     "$MODEL_TIMEOUT_SECONDS" \
     "MLXRealModelTests.MLXRealModelConstrainedDecodingTests/selectedArchitecturesForceGrammarValidFirstToken" \
