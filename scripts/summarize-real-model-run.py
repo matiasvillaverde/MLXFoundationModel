@@ -61,6 +61,7 @@ BASE_REQUIRED_FEATURES = (
     "json_schema_constraints",
     "finite_choice_constraints",
     "token_grammar_constraints",
+    "regex_constraints",
 )
 ATTENTION_REQUIRED_FEATURES = ("runtime_kv_cache",)
 NATIVE_TOOL_REQUIRED_FEATURES = (

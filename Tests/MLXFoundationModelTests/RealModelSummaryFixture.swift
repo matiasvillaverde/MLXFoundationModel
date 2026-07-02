@@ -74,6 +74,7 @@ enum RealModelSummaryFixture {
             "json_schema_constraints",
             "finite_choice_constraints",
             "token_grammar_constraints",
+            "regex_constraints",
             "tool_call_rendering",
             "tool_stream_translation",
             "tool_schema_normalization",

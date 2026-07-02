@@ -135,8 +135,8 @@ struct MLXRealModelConstrainedDecodingTests {
         #expect(Self.fruitChoices.contains(text), "Expected a constrained fruit choice, got \(text)")
     }
 
-    @Test("Selected architectures force a grammar-valid first token")
-    func selectedArchitecturesForceGrammarValidFirstToken() async throws {
+    @Test("Selected architectures force grammar-valid token sequences")
+    func selectedArchitecturesForceGrammarValidTokenSequences() async throws {
         let models = MLXRealModelEnvironment.selectedModels(from: try MLXRealModelCatalog.load())
         let missingModels = models.filter { !MLXRealModelEnvironment.hasModelFiles(for: $0) }
         #expect(!models.isEmpty)
@@ -146,27 +146,49 @@ struct MLXRealModelConstrainedDecodingTests {
         )
 
         for model in models where MLXRealModelEnvironment.hasModelFiles(for: model) {
-            let observed = try await MLXRealModelHarness.runWithDiagnostics(
-                model: model,
-                sampling: Self.openBraceSampling,
-                limits: ResourceLimits(maxTokens: 1, maxTime: .seconds(120), reusePromptCache: false),
-                prompt: "Do not output JSON. Say hello in plain English."
-            )
-            let grammarEvents = MLXRealModelHarness.grammarSnapshots(from: observed.events)
-            let tokenEvents = MLXRealModelHarness.generatedTokenSnapshots(from: observed.events)
-
-            MLXRealModelHarness.verifyGenerated(observed.result)
-            MLXRealModelHarness.verifyGeneratedTokenDiagnostics(tokenEvents, result: observed.result)
-            Self.verifySuccessfulGrammarDiagnostics(grammarEvents, kind: .ebnf)
-            #expect(tokenEvents.first?.tokenText.contains("{") == true)
-            #expect(
-                observed.result.text == "{",
-                """
-                Expected \(model.id) to emit the exact grammar-forced token, \
-                got \(observed.result.text.debugDescription)
-                """
-            )
+            try await Self.verifyEBNFConstraint(model: model)
+            try await Self.verifyRegexConstraint(model: model)
         }
+    }
+
+    private static func verifyEBNFConstraint(model: MLXRealModelCatalog.Model) async throws {
+        let observed = try await MLXRealModelHarness.runWithDiagnostics(
+            model: model,
+            sampling: Self.openBraceSampling,
+            limits: ResourceLimits(maxTokens: 1, maxTime: .seconds(120), reusePromptCache: false),
+            prompt: "Do not output JSON. Say hello in plain English."
+        )
+        let grammarEvents = MLXRealModelHarness.grammarSnapshots(from: observed.events)
+        let tokenEvents = MLXRealModelHarness.generatedTokenSnapshots(from: observed.events)
+
+        MLXRealModelHarness.verifyGenerated(observed.result)
+        MLXRealModelHarness.verifyGeneratedTokenDiagnostics(tokenEvents, result: observed.result)
+        Self.verifySuccessfulGrammarDiagnostics(grammarEvents, kind: .ebnf)
+        #expect(tokenEvents.first?.tokenText.contains("{") == true)
+        #expect(
+            observed.result.text == "{",
+            """
+            Expected \(model.id) to emit the exact grammar-forced token, \
+            got \(observed.result.text.debugDescription)
+            """
+        )
+    }
+
+    private static func verifyRegexConstraint(model: MLXRealModelCatalog.Model) async throws {
+        let observed = try await MLXRealModelHarness.runWithDiagnostics(
+            model: model,
+            sampling: Self.regexSampling,
+            limits: ResourceLimits(maxTokens: 4, maxTime: .seconds(120), reusePromptCache: false),
+            prompt: "Do not write a color. Reply with a city name."
+        )
+        let grammarEvents = MLXRealModelHarness.grammarSnapshots(from: observed.events)
+        let tokenEvents = MLXRealModelHarness.generatedTokenSnapshots(from: observed.events)
+        let text = observed.result.text.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        MLXRealModelHarness.verifyGenerated(observed.result)
+        MLXRealModelHarness.verifyGeneratedTokenDiagnostics(tokenEvents, result: observed.result)
+        Self.verifySuccessfulGrammarDiagnostics(grammarEvents, kind: .regex)
+        #expect(["red", "blue"].contains(text), "Expected regex-constrained color, got \(text)")
     }
 
     private static func extractJSONObject(from text: String) throws -> [String: Any] {
@@ -206,6 +228,16 @@ struct MLXRealModelConstrainedDecodingTests {
             topK: 1,
             seed: 42,
             advanced: AdvancedSamplingParameters(grammar: .choices(fruitChoices))
+        )
+    }
+
+    private static var regexSampling: SamplingParameters {
+        SamplingParameters(
+            temperature: 0,
+            topP: 1,
+            topK: 1,
+            seed: 42,
+            advanced: AdvancedSamplingParameters(grammar: .regex("red|blue"))
         )
     }
 
