@@ -11,6 +11,42 @@ from typing import Any
 
 
 ATTENTIONLESS_ARCHITECTURES = {"mamba", "mamba2", "rwkv7"}
+NATIVE_TOOL_ARCHITECTURES = {
+    "cohere",
+    "cohere2",
+    "deepseek_v4",
+    "function_gemma",
+    "gemma",
+    "gemma2",
+    "gemma3",
+    "gemma3_text",
+    "gemma3n",
+    "gemma4",
+    "gemma4_text",
+    "glm",
+    "glm4",
+    "glm4_moe",
+    "glm4_moe_lite",
+    "glm_moe_dsa",
+    "gpt_oss",
+    "kimi_k2",
+    "kimi_k25",
+    "longcat_flash",
+    "longcat_flash_ngram",
+    "minimax",
+    "minimax_m3",
+    "mistral",
+    "mistral3",
+    "mixtral",
+    "qwen",
+    "qwen2",
+    "qwen2_moe",
+    "qwen3",
+    "qwen3_5",
+    "qwen3_5_moe",
+    "qwen3_moe",
+    "qwen3_next",
+}
 BASE_REQUIRED_FEATURES = (
     "generation",
     "sampling_logits",
@@ -26,6 +62,7 @@ BASE_REQUIRED_FEATURES = (
     "token_grammar_constraints",
 )
 ATTENTION_REQUIRED_FEATURES = ("runtime_kv_cache",)
+NATIVE_TOOL_REQUIRED_FEATURES = ("native_tool_constraints",)
 SESSION_REQUIRED_FEATURES = ("session_style_request",)
 STRESS_REQUIRED_FEATURES = ("stress_generation",)
 
@@ -322,6 +359,8 @@ def required_features(model: dict[str, Any]) -> list[str]:
     architecture = model.get("architecture")
     if architecture not in ATTENTIONLESS_ARCHITECTURES:
         features.extend(ATTENTION_REQUIRED_FEATURES)
+    if architecture in NATIVE_TOOL_ARCHITECTURES:
+        features.extend(NATIVE_TOOL_REQUIRED_FEATURES)
 
     tags = set(string_list(model.get("tags")))
     if "native-template-only" not in tags:

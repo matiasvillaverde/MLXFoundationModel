@@ -1,9 +1,6 @@
-#if FOUNDATION_MODELS_PROVIDER_API && canImport(FoundationModels)
-import FoundationModels
-import MLXLocalModels
+import Foundation
 
-@available(macOS 27.0, iOS 27.0, visionOS 27.0, *)
-extension FMRequiredToolGrammarBuilder {
+extension MLXRequiredToolGrammarBuilder {
     static func nativeParameterRules(
         from schema: [String: Any],
         parameterRuleName: String,
@@ -112,4 +109,3 @@ extension FMRequiredToolGrammarBuilder {
         return rules.filter { requiredKeys.contains($0.key) }
     }
 }
-#endif

@@ -16,7 +16,7 @@ struct RealModelSummaryScriptTests {
 
         #expect(coverage["passed"] as? Bool == true)
         #expect(benchmarkCoverage["passed"] as? Bool == true)
-        #expect(rows.count == 14)
+        #expect(rows.count == 15)
     }
 
     @Test("marks coverage failed when a required feature is missing")
@@ -130,6 +130,7 @@ struct RealModelSummaryScriptTests {
             "json_schema_constraints",
             "finite_choice_constraints",
             "token_grammar_constraints",
+            "native_tool_constraints",
             "runtime_kv_cache",
             "session_style_request"
         ]

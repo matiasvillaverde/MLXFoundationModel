@@ -1,8 +1,6 @@
-#if FOUNDATION_MODELS_PROVIDER_API && canImport(FoundationModels)
-import FoundationModels
+import Foundation
 
-@available(macOS 27.0, iOS 27.0, visionOS 27.0, *)
-extension FMRequiredToolGrammarBuilder {
+extension MLXRequiredToolGrammarBuilder {
     static func stringEncodedParameterValue(
         _ schema: [String: Any],
         format: FMNativeToolGrammarFormat
@@ -33,4 +31,3 @@ extension FMRequiredToolGrammarBuilder {
         return []
     }
 }
-#endif

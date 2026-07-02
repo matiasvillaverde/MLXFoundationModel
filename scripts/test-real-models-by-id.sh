@@ -510,6 +510,16 @@ sys.exit(0 if coverage.get("passed") is True else 1)
 PY
 }
 
+architecture_supports_native_tool_constraints() {
+  case "$1" in
+    cohere|cohere2|deepseek_v4|function_gemma|gemma|gemma2|gemma3|gemma3_text|gemma3n|gemma4|gemma4_text) return 0 ;;
+    glm|glm4|glm4_moe|glm4_moe_lite|glm_moe_dsa|gpt_oss|kimi_k2|kimi_k25) return 0 ;;
+    longcat_flash|longcat_flash_ngram|minimax|minimax_m3|mistral|mistral3|mixtral) return 0 ;;
+    qwen|qwen2|qwen2_moe|qwen3|qwen3_5|qwen3_5_moe|qwen3_moe|qwen3_next) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 log_coverage_failures() {
   python3 - "$BENCHMARK_SUMMARY" <<'PY' | tee -a "$BENCHMARK_LOG"
 import json
@@ -823,6 +833,15 @@ for MODEL in "${MODELS[@]}"; do
     "MLXRealModelTests.MLXRealModelConstrainedDecodingTests/selectedArchitecturesForceGrammarValidFirstToken" \
     "$ID" \
     "token_grammar_constraints"
+
+  if architecture_supports_native_tool_constraints "$ARCHITECTURE"; then
+    run_swift_test \
+      "$ID constrained native tool streaming" \
+      "$MODEL_TIMEOUT_SECONDS" \
+      "MLXRealModelTests.MLXRealModelToolCallingTests/selectedNativeToolModelsEmitConstrainedTypedToolCalls" \
+      "$ID" \
+      "native_tool_constraints"
+  fi
 
   if [[ "$TAGS" == *"stress"* ]]; then
     run_swift_test \

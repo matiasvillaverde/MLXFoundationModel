@@ -1,12 +1,9 @@
-#if FOUNDATION_MODELS_PROVIDER_API && canImport(FoundationModels)
 import Foundation
-import FoundationModels
 import MLXLocalModels
 
-@available(macOS 27.0, iOS 27.0, visionOS 27.0, *)
-extension FMRequiredToolGrammarBuilder {
+extension MLXRequiredToolGrammarBuilder {
     static func structuralTagGrammar(
-        from definitions: [Transcript.ToolDefinition],
+        from definitions: [MLXBridgeToolDefinition],
         format: FMNativeToolGrammarFormat
     ) -> GrammarSamplingConfiguration? {
         guard
@@ -38,7 +35,7 @@ extension FMRequiredToolGrammarBuilder {
     }
 
     private static func structuralToolTag(
-        definition: Transcript.ToolDefinition,
+        definition: MLXBridgeToolDefinition,
         format: FMNativeToolGrammarFormat,
         style: String
     ) -> [String: Any] {
@@ -48,17 +45,10 @@ extension FMRequiredToolGrammarBuilder {
             "content": [
                 "type": "json_schema",
                 "style": style,
-                "json_schema": structuralSchemaValue(for: definition)
+                "json_schema": schemaValue(for: definition)
             ],
             "end": format.structuralTagEnd
         ]
-    }
-
-    private static func structuralSchemaValue(
-        for definition: Transcript.ToolDefinition
-    ) -> Any {
-        let schema = FoundationModelsSchemaSupport.jsonSchemaString(from: definition.parameters)
-        return FoundationModelsSchemaSupport.jsonValue(from: schema)
     }
 
     private static func serializedJSON(_ object: [String: Any]) -> String? {
@@ -74,4 +64,3 @@ extension FMRequiredToolGrammarBuilder {
         return String(data: data, encoding: .utf8)
     }
 }
-#endif
