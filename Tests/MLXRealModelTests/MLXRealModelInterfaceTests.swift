@@ -47,6 +47,32 @@ struct MLXRealModelInterfaceTests {
         #expect(failures.isEmpty, Comment(rawValue: failures.joined(separator: "\n")))
     }
 
+    @Test("selected models report stream lifecycle phase boundaries")
+    func selectedModelsReportStreamLifecyclePhaseBoundaries() async throws {
+        let models = try MLXRealModelCatalog.load()
+        let selected = MLXRealModelEnvironment.selectedModels(from: models)
+        let missing = selected.filter { !MLXRealModelEnvironment.hasModelFiles(for: $0) }
+
+        #expect(!selected.isEmpty)
+        #expect(
+            missing.isEmpty,
+            Comment(rawValue: MLXRealModelEnvironment.missingModelsMessage(missing))
+        )
+        guard missing.isEmpty else {
+            return
+        }
+
+        var failures: [String] = []
+        for model in selected {
+            do {
+                try await Self.verifyLifecycleEvents(on: model)
+            } catch {
+                failures.append("\(model.id): \(error)")
+            }
+        }
+        #expect(failures.isEmpty, Comment(rawValue: failures.joined(separator: "\n")))
+    }
+
     @Test("Qwen3 streams multiple chunks from a rendered text request")
     func qwen3StreamsMultipleChunksFromRenderedTextRequest() async throws {
         let models = try MLXRealModelCatalog.load()
@@ -127,6 +153,26 @@ struct MLXRealModelInterfaceTests {
             )
         )
         MLXRealModelHarness.verifyGenerated(result)
+    }
+
+    private static func verifyLifecycleEvents(
+        on model: MLXRealModelCatalog.Model
+    ) async throws {
+        let result = try await MLXRealModelHarness.run(
+            model: model,
+            prompt: "/no_think\nReply with one short word.",
+            limits: ResourceLimits(
+                maxTokens: min(
+                    4,
+                    max(1, MLXRealModelEnvironment.architectureGenerationTokenLimit)
+                ),
+                maxTime: .seconds(MLXRealModelEnvironment.architectureGenerationTimeoutSeconds),
+                reusePromptCache: false
+            )
+        )
+
+        MLXRealModelHarness.verifyGenerated(result)
+        try Self.verifyLifecycleEvents(result.lifecycleEvents)
     }
 
     private static var textStreamingRequest: MLXBridgeRequest {

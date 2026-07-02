@@ -680,6 +680,12 @@ for MODEL in "${MODELS[@]}"; do
     "MLXRealModelTests.MLXRealModelSamplingTests/selectedCatalogModelsApplySamplingAndLogitsControls" \
     "$ID"
 
+  run_swift_test \
+    "$ID stream lifecycle phase boundaries" \
+    "$MODEL_TIMEOUT_SECONDS" \
+    "MLXRealModelTests.MLXRealModelInterfaceTests/selectedModelsReportStreamLifecyclePhaseBoundaries" \
+    "$ID"
+
   if [[ "$TAGS" != *"native-template-only"* ]]; then
     run_swift_test \
       "$ID session-style request" \
