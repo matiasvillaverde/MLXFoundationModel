@@ -62,7 +62,10 @@ BASE_REQUIRED_FEATURES = (
     "token_grammar_constraints",
 )
 ATTENTION_REQUIRED_FEATURES = ("runtime_kv_cache",)
-NATIVE_TOOL_REQUIRED_FEATURES = ("native_tool_constraints",)
+NATIVE_TOOL_REQUIRED_FEATURES = (
+    "native_tool_constraints",
+    "native_tool_stream_translation",
+)
 SESSION_REQUIRED_FEATURES = ("session_style_request",)
 STRESS_REQUIRED_FEATURES = ("stress_generation",)
 
@@ -174,6 +177,7 @@ def apply_test_metadata(
 
     for key in ("feature_key", "model_id", "architecture"):
         current_test[key] = optional_string(value.get(key))
+    current_test["feature_keys"] = feature_keys(value)
     current_test["tags"] = string_list(value.get("tags"))
 
 
@@ -379,7 +383,7 @@ def coverage_row(
     matches = [
         test
         for test in tests
-        if test.get("model_id") == model_id and test.get("feature_key") == feature_key
+        if test.get("model_id") == model_id and feature_matches(test, feature_key)
     ]
     passed = next((test for test in matches if test.get("status") == "passed"), None)
     selected = passed or (matches[0] if matches else None)
@@ -400,6 +404,12 @@ def coverage_status(matches: list[dict[str, Any]], passed: dict[str, Any] | None
     if not matches:
         return "missing"
     return "not_passed"
+
+
+def feature_matches(test: dict[str, Any], feature_key: str) -> bool:
+    if test.get("feature_key") == feature_key:
+        return True
+    return feature_key in string_list(test.get("feature_keys"))
 
 
 def status_counts(tests: list[dict[str, Any]]) -> dict[str, int]:
@@ -425,6 +435,14 @@ def string_list(value: Any) -> list[str]:
     if isinstance(value, str) and value:
         return [item for item in value.split(",") if item]
     return []
+
+
+def feature_keys(value: dict[str, Any]) -> list[str]:
+    keys = string_list(value.get("feature_keys"))
+    if keys:
+        return keys
+    feature_key = optional_string(value.get("feature_key"))
+    return [feature_key] if feature_key else []
 
 
 def integer(value: str) -> int | None:

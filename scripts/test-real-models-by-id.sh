@@ -348,11 +348,13 @@ import json
 import sys
 
 label, model_id, feature_key, architecture, tags = sys.argv[1:]
+feature_keys = [value.strip() for value in feature_key.split(",") if value.strip()]
 record = {
     "schema_version": 1,
     "label": label,
     "model_id": model_id or None,
-    "feature_key": feature_key or None,
+    "feature_key": feature_keys[0] if feature_keys else None,
+    "feature_keys": feature_keys,
     "architecture": architecture or None,
     "tags": [value for value in tags.split(",") if value],
 }
@@ -840,7 +842,7 @@ for MODEL in "${MODELS[@]}"; do
       "$MODEL_TIMEOUT_SECONDS" \
       "MLXRealModelTests.MLXRealModelToolCallingTests/selectedNativeToolModelsEmitConstrainedTypedToolCalls" \
       "$ID" \
-      "native_tool_constraints"
+      "native_tool_constraints,native_tool_stream_translation"
   fi
 
   if [[ "$TAGS" == *"stress"* ]]; then
