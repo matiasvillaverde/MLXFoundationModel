@@ -68,17 +68,18 @@ extension MLXRealModelGenerationTests {
     ) async throws {
         let observed = try await MLXRealModelHarness.runWithDiagnostics(
             model: model,
-            sampling: Self.singleTokenJSONSampling,
-            limits: ResourceLimits(maxTokens: 1, maxTime: .seconds(120), reusePromptCache: false),
+            sampling: Self.stopSequenceConstrainedSampling,
+            limits: ResourceLimits(maxTokens: 8, maxTime: .seconds(120), reusePromptCache: false),
             prompt: "/no_think\nDo not output JSON. Say hello in plain English."
         )
         let snapshots = MLXRealModelHarness.decodePathSnapshots(from: observed.events)
+        let tokenEvents = MLXRealModelHarness.generatedTokenSnapshots(from: observed.events)
         let summary = Comment(rawValue: Self.decodePathSummary(snapshots))
         let allUseProcessor = snapshots.allSatisfy(\.processorActive)
         let allUseArgmaxSampler = snapshots.allSatisfy(\.argmaxSampler)
         let allHaveGreedyModel = snapshots.allSatisfy(\.greedyModelAvailable)
 
-        MLXRealModelHarness.verifyGenerated(observed.result)
+        try Self.verifyStopSequenceResult(observed.result, tokenEvents: tokenEvents)
         #expect(!snapshots.isEmpty, summary)
         #expect(snapshots.allSatisfy { $0.path == .logits }, summary)
         #expect(allUseProcessor, summary)
@@ -86,16 +87,35 @@ extension MLXRealModelGenerationTests {
         #expect(allHaveGreedyModel, summary)
     }
 
-    private static var singleTokenJSONSampling: SamplingParameters {
+    private static var stopSequenceConstrainedSampling: SamplingParameters {
         SamplingParameters(
             temperature: 0,
             topP: 1,
             topK: 1,
             seed: 42,
+            stopSequences: ["STOP"],
             advanced: AdvancedSamplingParameters(
-                grammar: GrammarSamplingConfiguration(grammar: #"root ::= "{""#)
+                grammar: GrammarSamplingConfiguration(grammar: #"root ::= "STOP""#)
             )
         )
+    }
+
+    private static func verifyStopSequenceResult(
+        _ result: MLXRealModelHarness.GenerationResult,
+        tokenEvents: [MLXGeneratedTokenSnapshot]
+    ) throws {
+        let summary = Comment(rawValue: [
+            "text=\(result.text.debugDescription)",
+            "textChunkCount=\(result.textChunkCount)",
+            "generatedTokens=\(result.metrics?.usage?.generatedTokens ?? 0)",
+            "stopReason=\(String(describing: result.metrics?.generation?.stopReason))",
+            "tokenEvents=\(tokenEvents.count)"
+        ].joined(separator: "\n"))
+
+        try #require(result.metrics?.generation?.stopReason == .stopSequence, summary)
+        #expect((result.metrics?.usage?.generatedTokens ?? 0) > 0, summary)
+        #expect(!tokenEvents.isEmpty, summary)
+        #expect(!result.text.contains("STOP"), summary)
     }
 
     private static func decodePathSummary(_ snapshots: [MLXDecodePathSnapshot]) -> String {

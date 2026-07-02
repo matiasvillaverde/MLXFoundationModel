@@ -781,7 +781,7 @@ for MODEL in "${MODELS[@]}"; do
     "$MODEL_TIMEOUT_SECONDS" \
     "MLXRealModelTests.MLXRealModelGenerationTests/selectedModelsReportGreedyAndConstrainedDecodePaths" \
     "$ID" \
-    "greedy_constrained_decode"
+    "greedy_constrained_decode,stop_sequence"
 
   if [[ "$ARCHITECTURE" != "mamba" && "$ARCHITECTURE" != "mamba2" && "$ARCHITECTURE" != "rwkv7" ]]; then
     run_swift_test \
@@ -812,7 +812,7 @@ for MODEL in "${MODELS[@]}"; do
       "$MODEL_TIMEOUT_SECONDS" \
       "MLXRealModelTests.MLXRealModelInterfaceTests/selectedModelsRunRenderedSessionStyleRequests" \
       "$ID" \
-      "session_style_request"
+      "session_style_request,rendered_text_streaming"
   fi
 
   run_swift_test \

@@ -68,6 +68,7 @@ enum RealModelSummaryFixture {
             "memory_guard",
             "observability",
             "greedy_constrained_decode",
+            "stop_sequence",
             "continuous_batch_prompt_cache",
             "persistent_prompt_cache",
             "json_schema_constraints",
@@ -76,7 +77,8 @@ enum RealModelSummaryFixture {
             "native_tool_constraints",
             "native_tool_stream_translation",
             "runtime_kv_cache",
-            "session_style_request"
+            "session_style_request",
+            "rendered_text_streaming"
         ]
     }
 

@@ -55,6 +55,7 @@ BASE_REQUIRED_FEATURES = (
     "memory_guard",
     "observability",
     "greedy_constrained_decode",
+    "stop_sequence",
     "continuous_batch_prompt_cache",
     "persistent_prompt_cache",
     "json_schema_constraints",
@@ -66,7 +67,10 @@ NATIVE_TOOL_REQUIRED_FEATURES = (
     "native_tool_constraints",
     "native_tool_stream_translation",
 )
-SESSION_REQUIRED_FEATURES = ("session_style_request",)
+SESSION_REQUIRED_FEATURES = (
+    "session_style_request",
+    "rendered_text_streaming",
+)
 STRESS_REQUIRED_FEATURES = ("stress_generation",)
 
 
