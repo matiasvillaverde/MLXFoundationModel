@@ -134,5 +134,6 @@ make compare-benchmarks BASELINE=.build/benchmarks/old-summary.json \
 `decode_tps`, `total_tps`, `prompt_tps`, and `e2e_tps`.
 `COMPARE_TEST_DURATION_MAX_RATIO` controls the maximum current/baseline
 wall-time ratio for passed feature tests; set it to `0` to skip duration checks.
-If the baseline summary includes `feature_coverage`, benchmark comparison also
-fails when the current summary loses a previously passing model feature row.
+If the baseline summary includes coverage fields, benchmark comparison also
+fails when the current summary loses previously passing feature or benchmark
+coverage.

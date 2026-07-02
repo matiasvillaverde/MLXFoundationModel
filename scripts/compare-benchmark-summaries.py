@@ -45,6 +45,16 @@ class CoverageKey:
         return f"{self.model}:{self.architecture}:{self.feature}"
 
 
+@dataclass(frozen=True)
+class BenchmarkCoverageKey:
+    model: str
+    architecture: str
+
+    @property
+    def label(self) -> str:
+        return f"{self.model}:{self.architecture}"
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Compare BENCH_JSON/STRESS_JSON records from two real-model summary files."
@@ -177,6 +187,47 @@ def aggregate_coverage(summary: dict[str, Any]) -> dict[CoverageKey, dict[str, A
     return records
 
 
+def aggregate_benchmark_coverage(summary: dict[str, Any]) -> dict[BenchmarkCoverageKey, dict[str, Any]]:
+    coverage = summary.get("benchmark_coverage")
+    if not isinstance(coverage, dict):
+        return {}
+    rows = coverage.get("rows", [])
+    if not isinstance(rows, list):
+        return {}
+
+    records: dict[BenchmarkCoverageKey, dict[str, Any]] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        model = optional_string(row.get("model_id"))
+        architecture = optional_string(row.get("architecture"))
+        if model is None:
+            continue
+        key = BenchmarkCoverageKey(
+            model=model,
+            architecture=architecture or "unknown",
+        )
+        records[key] = {
+            "status": str(row.get("status", "unknown")),
+            "benchmark_count": numeric_value(row.get("benchmark_count")),
+        }
+    return records
+
+
+def coverage_summary(summary: dict[str, Any], key: str) -> dict[str, Any] | None:
+    coverage = summary.get(key)
+    if not isinstance(coverage, dict):
+        return None
+    return {
+        "status": str(coverage.get("status", "unknown")),
+        "passed": coverage.get("passed") is True,
+        "failed_count": numeric_value(coverage.get("failed_count")),
+        "selected_model_metadata_count": numeric_value(
+            coverage.get("selected_model_metadata_count")
+        ),
+    }
+
+
 def average_metrics(records: list[dict[str, Any]]) -> dict[str, float]:
     averaged: dict[str, float] = {}
     for metric in DEFAULT_METRICS:
@@ -209,6 +260,12 @@ def compare(
     current_tests: dict[str, dict[str, Any]],
     baseline_coverage: dict[CoverageKey, dict[str, Any]],
     current_coverage: dict[CoverageKey, dict[str, Any]],
+    baseline_feature_coverage_summary: dict[str, Any] | None,
+    current_feature_coverage_summary: dict[str, Any] | None,
+    baseline_benchmark_coverage: dict[BenchmarkCoverageKey, dict[str, Any]],
+    current_benchmark_coverage: dict[BenchmarkCoverageKey, dict[str, Any]],
+    baseline_benchmark_coverage_summary: dict[str, Any] | None,
+    current_benchmark_coverage_summary: dict[str, Any] | None,
     metrics: list[str],
     min_ratio: float,
     test_duration_max_ratio: float,
@@ -268,6 +325,31 @@ def compare(
         )
     ]
     failures.extend(coverage_failures)
+    coverage_summary_rows, coverage_summary_failures = compare_coverage_summaries(
+        (
+            "feature_coverage",
+            baseline_feature_coverage_summary,
+            current_feature_coverage_summary,
+        ),
+        (
+            "benchmark_coverage",
+            baseline_benchmark_coverage_summary,
+            current_benchmark_coverage_summary,
+        ),
+    )
+    failures.extend(coverage_summary_failures)
+    benchmark_coverage_rows, benchmark_coverage_failures = compare_benchmark_coverage(
+        baseline_benchmark_coverage,
+        current_benchmark_coverage,
+    )
+    extra_current_benchmark_coverage = [
+        key.label
+        for key in sorted(
+            set(current_benchmark_coverage).difference(baseline_benchmark_coverage),
+            key=lambda item: item.label,
+        )
+    ]
+    failures.extend(benchmark_coverage_failures)
     return {
         "schema_version": 1,
         "min_ratio": min_ratio,
@@ -276,9 +358,12 @@ def compare(
         "rows": rows,
         "test_rows": test_rows,
         "coverage_rows": coverage_rows,
+        "coverage_summary_rows": coverage_summary_rows,
+        "benchmark_coverage_rows": benchmark_coverage_rows,
         "extra_current": extra_current,
         "extra_current_tests": extra_current_tests,
         "extra_current_coverage": extra_current_coverage,
+        "extra_current_benchmark_coverage": extra_current_benchmark_coverage,
         "failure_count": len(failures),
         "passed": not failures,
     }
@@ -355,6 +440,75 @@ def compare_coverage(
             row["status"] = "missing_current_coverage"
         elif current_record["status"] != "passed":
             row["status"] = "coverage_regressed"
+        else:
+            row["status"] = "passed"
+
+        rows.append(row)
+        if row["status"] != "passed":
+            failures.append(row)
+    return rows, failures
+
+
+def compare_coverage_summaries(
+    *summaries: tuple[str, dict[str, Any] | None, dict[str, Any] | None],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    rows: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    for name, baseline, current in summaries:
+        if baseline is None or baseline["passed"] is not True:
+            continue
+        row = {
+            "key": name,
+            "baseline_status": baseline["status"],
+            "current_status": current["status"] if current else None,
+            "baseline_selected_model_metadata_count": baseline[
+                "selected_model_metadata_count"
+            ],
+            "current_selected_model_metadata_count": (
+                current["selected_model_metadata_count"] if current else None
+            ),
+        }
+
+        if current is None:
+            row["status"] = "missing_current_coverage_summary"
+        elif current["passed"] is not True:
+            row["status"] = "coverage_summary_regressed"
+        else:
+            row["status"] = "passed"
+
+        rows.append(row)
+        if row["status"] != "passed":
+            failures.append(row)
+    return rows, failures
+
+
+def compare_benchmark_coverage(
+    baseline: dict[BenchmarkCoverageKey, dict[str, Any]],
+    current: dict[BenchmarkCoverageKey, dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    rows: list[dict[str, Any]] = []
+    failures: list[dict[str, Any]] = []
+    for key in sorted(baseline, key=lambda item: item.label):
+        baseline_record = baseline[key]
+        if baseline_record["status"] != "passed":
+            continue
+        current_record = current.get(key)
+        row = {
+            "key": key.label,
+            "model": key.model,
+            "architecture": key.architecture,
+            "baseline_status": baseline_record["status"],
+            "current_status": current_record["status"] if current_record else None,
+            "baseline_benchmark_count": baseline_record["benchmark_count"],
+            "current_benchmark_count": (
+                current_record["benchmark_count"] if current_record else None
+            ),
+        }
+
+        if current_record is None:
+            row["status"] = "missing_current_benchmark_coverage"
+        elif current_record["status"] != "passed":
+            row["status"] = "benchmark_coverage_regressed"
         else:
             row["status"] = "passed"
 
@@ -455,6 +609,32 @@ def print_text_report(report: dict[str, Any]) -> None:
         for key in report["extra_current_coverage"]:
             print(f"- {key}")
 
+    if report["coverage_summary_rows"]:
+        print("Coverage summary comparison")
+    for row in report["coverage_summary_rows"]:
+        prefix = "PASS" if row["status"] == "passed" else "FAIL"
+        print(
+            f"{prefix} {row['key']} "
+            f"baseline={row['baseline_status']} current={row['current_status']} "
+            f"status={row['status']}"
+        )
+
+    if report["benchmark_coverage_rows"]:
+        print("Benchmark coverage comparison")
+    for row in report["benchmark_coverage_rows"]:
+        prefix = "PASS" if row["status"] == "passed" else "FAIL"
+        baseline = format_number(row["baseline_benchmark_count"])
+        current = format_number(row["current_benchmark_count"])
+        print(
+            f"{prefix} {row['key']} benchmark_count "
+            f"baseline={baseline} current={current} status={row['status']}"
+        )
+
+    if report["extra_current_benchmark_coverage"]:
+        print("Extra current benchmark coverage:")
+        for key in report["extra_current_benchmark_coverage"]:
+            print(f"- {key}")
+
 
 def format_number(value: Any) -> str:
     if isinstance(value, (int, float)):
@@ -476,6 +656,12 @@ def main() -> int:
         aggregate_tests(current_summary),
         aggregate_coverage(baseline_summary),
         aggregate_coverage(current_summary),
+        coverage_summary(baseline_summary, "feature_coverage"),
+        coverage_summary(current_summary, "feature_coverage"),
+        aggregate_benchmark_coverage(baseline_summary),
+        aggregate_benchmark_coverage(current_summary),
+        coverage_summary(baseline_summary, "benchmark_coverage"),
+        coverage_summary(current_summary, "benchmark_coverage"),
         metrics,
         args.min_ratio,
         args.test_duration_max_ratio,
