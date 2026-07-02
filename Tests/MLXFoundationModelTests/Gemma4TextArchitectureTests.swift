@@ -75,6 +75,18 @@ struct Gemma4TextArchitectureTests {
         }
     }
 
+    @Test("runtime max KV size bounds full and sliding caches")
+    func runtimeMaxKVSizeBoundsFullAndSlidingCaches() throws {
+        try Device.withDefaultDevice(.cpu) {
+            let model = Gemma4Model(try Self.decodeConfig(numKVSharedLayers: 0))
+            let cache = model.newCache(parameters: GenerateParameters(maxKVSize: 8))
+
+            #expect(cache.count == 4)
+            #expect(cache.allSatisfy { $0.maxSize == 8 })
+            #expect(cache.allSatisfy { $0 is RotatingKVCache })
+        }
+    }
+
     // swiftlint:disable function_body_length closure_body_length
     @Test("assistant model drafts from shared KV state")
     func assistantModelDraftsFromSharedKVState() throws {

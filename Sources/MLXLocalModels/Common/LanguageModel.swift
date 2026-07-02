@@ -332,26 +332,59 @@ extension LanguageModel where Self: KVCacheDimensionProvider {
     internal func newCache(parameters: GenerateParameters?) -> [KVCache] {
         LanguageModelCacheFactory.make(
             layerCount: kvHeads.count,
-            maxKVSize: parameters?.maxKVSize
+            parameters: parameters
         )
     }
 }
 
-private enum LanguageModelCacheFactory {
-    static func make(layerCount: Int, maxKVSize: Int?) -> [KVCache] {
+internal enum LanguageModelCacheFactory {
+    static func make(layerCount: Int, parameters: GenerateParameters?) -> [KVCache] {
         guard layerCount > 0 else {
             return []
         }
 
-        if let maxKVSize {
-            return (0 ..< layerCount).map { _ in
-                RotatingKVCache(
-                    maxSize: maxKVSize,
-                    keep: GenerationConstants.rotatingCacheKeepTokens
-                )
+        return (0 ..< layerCount).map { _ in
+            attentionCache(parameters: parameters)
+        }
+    }
+
+    static func attentionCache(
+        parameters: GenerateParameters?,
+        defaultMaxSize: Int? = nil,
+        keep: Int = GenerationConstants.rotatingCacheKeepTokens,
+        step: Int? = nil
+    ) -> KVCache {
+        guard let maxSize = effectiveMaxSize(
+            requestedMaxSize: parameters?.maxKVSize,
+            defaultMaxSize: defaultMaxSize
+        ) else {
+            let cache = KVCacheSimple()
+            if let step {
+                cache.step = step
             }
+            return cache
         }
 
-        return (0 ..< layerCount).map { _ in KVCacheSimple() }
+        return RotatingKVCache(
+            maxSize: maxSize,
+            keep: keep,
+            step: step ?? 256
+        )
+    }
+
+    private static func effectiveMaxSize(
+        requestedMaxSize: Int?,
+        defaultMaxSize: Int?
+    ) -> Int? {
+        switch (requestedMaxSize, defaultMaxSize) {
+        case let (requested?, fallback?):
+            min(requested, fallback)
+        case let (requested?, nil):
+            requested
+        case let (nil, fallback?):
+            fallback
+        case (nil, nil):
+            nil
+        }
     }
 }

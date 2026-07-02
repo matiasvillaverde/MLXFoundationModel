@@ -743,9 +743,13 @@ private final class Gemma4TextModelInner: Module {
     func newCache(parameters: GenerateParameters?) -> [KVCache] {
         config.layerTypes[..<firstKVSharedLayerIndex].map { layerType in
             if layerType == "full_attention" {
-                KVCacheSimple()
+                LanguageModelCacheFactory.attentionCache(parameters: parameters)
             } else {
-                RotatingKVCache(maxSize: config.slidingWindow, keep: 0)
+                LanguageModelCacheFactory.attentionCache(
+                    parameters: parameters,
+                    defaultMaxSize: config.slidingWindow,
+                    keep: 0
+                )
             }
         }
     }

@@ -91,7 +91,8 @@ uses short generations by default, and skips oversized models unless
 `MLX_ALLOW_OVERSIZED_MODELS=1` is set.
 For each selected model, the runner verifies generation, sampling/logits
 controls, stream lifecycle events, greedy/constrained decode paths,
-session-style requests when supported, and token-level grammar constraints.
+rotating/quantized KV cache options for attention models, session-style
+requests when supported, and token-level grammar constraints.
 
 The real-model and profiling scripts fail fast when the model volume is not
 responsive. Override the default 10-second storage preflight with

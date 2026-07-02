@@ -692,6 +692,14 @@ for MODEL in "${MODELS[@]}"; do
     "MLXRealModelTests.MLXRealModelGenerationTests/selectedModelsReportGreedyAndConstrainedDecodePaths" \
     "$ID"
 
+  if [[ "$ARCHITECTURE" != "mamba" && "$ARCHITECTURE" != "mamba2" && "$ARCHITECTURE" != "rwkv7" ]]; then
+    run_swift_test \
+      "$ID rotating and quantized KV cache options" \
+      "$MODEL_TIMEOUT_SECONDS" \
+      "MLXRealModelTests.MLXRealModelGenerationTests/selectedAttentionModelsRunRuntimeKVCacheOptions" \
+      "$ID"
+  fi
+
   if [[ "$TAGS" != *"native-template-only"* ]]; then
     run_swift_test \
       "$ID session-style request" \
