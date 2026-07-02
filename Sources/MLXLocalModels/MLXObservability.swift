@@ -748,17 +748,22 @@ private final class MLXObservabilityStore: @unchecked Sendable {
     }
 
     private static func requestSummaryEvent(_ summary: MLXRequestSummary) -> MLXObservabilityEvent {
-        MLXObservabilityEvent(
+        var attributes = [
+            "request_id": summary.requestID.uuidString,
+            "model": summary.modelName ?? "unknown",
+            "strategy": summary.strategy ?? "unknown",
+            "stop_reason": summary.stopReason
+        ]
+        if let grammarKind = summary.grammarKind {
+            attributes["grammar_kind"] = grammarKind
+        }
+
+        return MLXObservabilityEvent(
             name: "generation.request_summary",
             kind: .requestSummary,
             category: .generation,
             severity: .info,
-            attributes: [
-                "request_id": summary.requestID.uuidString,
-                "model": summary.modelName ?? "unknown",
-                "strategy": summary.strategy ?? "unknown",
-                "stop_reason": summary.stopReason
-            ],
+            attributes: attributes,
             measurements: requestSummaryMeasurements(summary)
         )
     }
@@ -776,6 +781,12 @@ private final class MLXObservabilityStore: @unchecked Sendable {
         measurements["prompt_tokens_per_second"] = summary.promptTokensPerSecond
         measurements["generation_tokens_per_second"] = summary.generationTokensPerSecond
         measurements["total_tokens_per_second"] = summary.totalTokensPerSecond
+        measurements["cached_prompt_tokens"] = summary.cachedPromptTokens.map(Double.init)
+        measurements["kv_cache_bytes"] = summary.kvCacheBytes.map(Double.init)
+        measurements["kv_cache_entries"] = summary.kvCacheEntries.map(Double.init)
+        measurements["temperature"] = summary.temperature
+        measurements["top_p"] = summary.topP
+        measurements["top_k"] = summary.topK.map(Double.init)
         return measurements
     }
 

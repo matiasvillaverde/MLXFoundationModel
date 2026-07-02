@@ -27,9 +27,17 @@ struct MLXObservabilityTests {
         #expect(snapshot.histograms["generation.total_tokens_per_second"]?.average == 6)
         #expect(snapshot.recentRequests == [summary])
         #expect(sink.requests() == [summary])
-        #expect(Self.requestSummaryEvent(from: sink)?.measurements["prompt_tokens_per_second"] == 7)
-        #expect(Self.requestSummaryEvent(from: sink)?.measurements["generation_tokens_per_second"] == 3.3)
-        #expect(Self.requestSummaryEvent(from: sink)?.measurements["total_tokens_per_second"] == 6)
+        let event = try #require(Self.requestSummaryEvent(from: sink))
+        #expect(event.attributes["grammar_kind"] == "builtinJSON")
+        #expect(event.measurements["prompt_tokens_per_second"] == 7)
+        #expect(event.measurements["generation_tokens_per_second"] == 3.3)
+        #expect(event.measurements["total_tokens_per_second"] == 6)
+        #expect(event.measurements["cached_prompt_tokens"] == 3)
+        #expect(event.measurements["kv_cache_bytes"] == 2_048)
+        #expect(event.measurements["kv_cache_entries"] == 8)
+        #expect(event.measurements["temperature"] == 0.2)
+        #expect(event.measurements["top_p"] == 0.9)
+        #expect(event.measurements["top_k"] == 5)
     }
 
     @Test("diagnostic prompt cache plans map to central counters and histograms")
@@ -200,9 +208,13 @@ struct MLXObservabilityTests {
             promptTokensPerSecond: 7,
             generationTokensPerSecond: 3.3,
             totalTokensPerSecond: 6,
+            kvCacheBytes: 2_048,
+            kvCacheEntries: 8,
             stopReason: "max_tokens",
             temperature: 0.2,
-            topP: 0.9
+            topP: 0.9,
+            topK: 5,
+            grammarKind: "builtinJSON"
         )
     }
 

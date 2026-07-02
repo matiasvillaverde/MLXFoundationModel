@@ -42,6 +42,8 @@ let histograms = snapshot.histograms
 
 Request summaries are redacted. Prompt text, generated token text, and tool
 payload content are not exported by the central observability path.
+The final request-summary event includes token counts, throughput, cache reuse,
+KV cache size, stop reason, grammar kind, and generation controls.
 
 ## Core Metrics
 
